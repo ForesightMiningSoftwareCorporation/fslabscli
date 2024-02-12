@@ -1,0 +1,13 @@
+[package]
+name = "fslabsci"
+version = "0.1.0"
+edition = "2021"
+authors = ["FSLABS DevOps Gods"]
+repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
+description = "Command line interface for helping FSLABS ci"
+
+[dependencies]
+clap = { version = "4.5.0", features = ["derive"] }
+anyhow = { version = "1.0.79", features = [] }
+tokio = { version = "1.36.0", features = ["full"] }
+log = "0.4.20"
