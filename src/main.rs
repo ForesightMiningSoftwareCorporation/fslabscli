@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+use log4rs::append::console::ConsoleAppender;
+use log4rs::config::{Appender, Root};
+use log4rs::encode::pattern::PatternEncoder;
+use log::LevelFilter;
 
 use crate::commands::publishable;
 use crate::commands::publishable::publishable;
@@ -17,8 +21,13 @@ subcommand_required(true),
 propagate_version(true),
 )]
 struct Cli {
-    #[arg(short, long, global = true, default_value_t = None)]
-    working_directory: Option<PathBuf>,
+    /// Enables verbose logging
+    #[clap(short, long, global = true, action = ArgAction::Count)]
+    verbose: u8,
+    #[arg(long, global = true)]
+    json: bool,
+    #[arg(short, long, global = true, default_missing_value = ".", required = false)]
+    working_directory: PathBuf,
     #[command(subcommand)]
     command: Commands,
 }
@@ -26,15 +35,52 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Check which crates needs to be published
-    #[command(arg_required_else_help = true)]
     Publishable(publishable::Options),
 }
 
+pub fn setup_logging(verbosity: u8) {
+    let logging_level = match verbosity {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        4.. => LevelFilter::Trace,
+    };
+
+    // Encoders
+    let stdout: ConsoleAppender = ConsoleAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("{h({d(%Y-%m-%d %H:%M:%S)(utc)} - {l}: {m}{n})}")))
+        .build();
+
+    let log_config = log4rs::config::Config::builder()
+        .appender(Appender::builder().build("stderr", Box::new(stdout)))
+        .build(Root::builder().appender("stderr").build(logging_level))
+        .unwrap();
+    log4rs::init_config(log_config)
+        .map_err(|e| format!("Could not setup logging: {}", e)).unwrap();
+}
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let _ = match cli.command {
+    setup_logging(cli.verbose);
+    let result = match cli.command {
         Commands::Publishable(options) => publishable(options, cli.working_directory).await,
+    };
+    match result {
+        Ok(r) => {
+            // match cli.json {
+            //     true => {
+            //         let s = serde_json::to_string(&r).unwrap();
+            //         println!("{}", s);
+            //     }
+            //     false => println!("{}", r),
+            // }
+            std::process::exit(exitcode::OK);
+        }
+        Err(e) => {
+            log::error!("Could not execute command: {}", e);
+            std::process::exit(exitcode::DATAERR);
+        }
     };
 }
