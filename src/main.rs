@@ -12,7 +12,7 @@ use crate::commands::publishable::publishable;
 mod commands;
 
 #[derive(Debug, Parser)] // requires `derive` feature
-#[clap(
+#[command(
 author,
 version,
 about,
@@ -22,7 +22,7 @@ propagate_version(true),
 )]
 struct Cli {
     /// Enables verbose logging
-    #[clap(short, long, global = true, action = ArgAction::Count)]
+    #[arg(short, long, global = true, action = ArgAction::Count)]
     verbose: u8,
     #[arg(long, global = true)]
     json: bool,
@@ -69,13 +69,13 @@ async fn main() {
     };
     match result {
         Ok(r) => {
-            // match cli.json {
-            //     true => {
-            //         let s = serde_json::to_string(&r).unwrap();
-            //         println!("{}", s);
-            //     }
-            //     false => println!("{}", r),
-            // }
+            match cli.json {
+                true => {
+                    let s = serde_json::to_string(&r).unwrap();
+                    println!("{}", s);
+                }
+                false => println!("{}", r),
+            }
             std::process::exit(exitcode::OK);
         }
         Err(e) => {
