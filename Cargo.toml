@@ -25,7 +25,10 @@ hyper-util = { version = "0.1", default-features = false, features = ["tokio", "
 rustls = { version = "0.22", default-features = false, features = ["tls12"] }
 http-body-util = "0.1"
 cargo-expand = "1.0.79"
+docker_credential = "1.0.1"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"
 wiremock = "0.6"
+indoc = "2.0"
+serial_test = "3.0.0"

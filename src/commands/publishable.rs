@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use cargo_metadata::{MetadataCommand, Package};
 use clap::Parser;
+use docker_credential::{CredentialRetrievalError, DockerCredential};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Method, Request, Uri};
 use hyper::body::Bytes;
@@ -61,9 +62,15 @@ pub struct PackageMetadataFslabsCiPublishNpmNapi {
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PackageMetadataFslabsCiPublishDocker {
+    pub publish: bool,
+    pub repository: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct PackageMetadataFslabsCiPublish {
-    #[serde(default = "default_false")]
-    pub docker: bool,
+    #[serde(default = "PackageMetadataFslabsCiPublishDocker::default")]
+    pub docker: PackageMetadataFslabsCiPublishDocker,
     #[serde(default = "default_false")]
     pub private_registry: bool,
     #[serde(default = "default_false")]
@@ -98,14 +105,17 @@ impl Result {
     }
 
     pub async fn check_publishable(mut self, options: &Options, npm: &Npm) -> anyhow::Result<Self> {
-        if self.publish.docker {
+        if self.publish.docker.publish {
             log::debug!("Docker: checking if version {} of {} already exists", self.version, self.package);
             let docker_registry = match options.docker_registry.clone() {
                 Some(r) => r,
-                None => anyhow::bail!("Tried to check docker image without setting the registry"),
+                None => match self.publish.docker.repository.clone() {
+                    Some(r) => r,
+                    None => anyhow::bail!("Tried to check docker image without setting the registry"),
+                }
             };
             let image: Reference = format!("{}/{}:{}", docker_registry, self.package.clone(), self.version.clone()).parse()?;
-            self.publish.docker = !check_docker_image_exists(
+            self.publish.docker.publish = !check_docker_image_exists(
                 &image,
                 options.docker_registry_username.clone(),
                 options.docker_registry_password.clone(),
@@ -130,7 +140,7 @@ impl Display for Result {
         write!(f,
                "{} -- {} -- {}: docker: {}, private registry: {}, public registry: {}, npm_napi: {}, binary: {}",
                self.workspace, self.package, self.version,
-               self.publish.docker,
+               self.publish.docker.publish,
                self.publish.private_registry,
                self.publish.public_registry,
                self.publish.npm_napi.publish,
@@ -174,7 +184,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
             for package in workspace_metadata.packages {
                 let result = Result::new(workspace_name.to_string_lossy().to_string(), package)?.check_publishable(&options, &npm).await?;
                 let should_add = match options.hide_unpublishable {
-                    true => vec![result.publish.docker, result.publish.binary, result.publish.npm_napi.publish, result.publish.private_registry, result.publish.public_registry].into_iter().any(|x| x),
+                    true => vec![result.publish.docker.publish, result.publish.binary, result.publish.npm_napi.publish, result.publish.private_registry, result.publish.public_registry].into_iter().any(|x| x),
                     false => false,
                 };
                 if should_add {
@@ -212,15 +222,36 @@ async fn check_docker_image_exists(
 ) -> anyhow::Result<bool> {
     let protocol = docker_registry_protcol.unwrap_or(ClientProtocol::Https);
     let mut docker_client = Client::new(ClientConfig {
-        protocol,
+        protocol: protocol.clone(),
         ..Default::default()
     });
     let auth = match (docker_registry_username, docker_registry_password) {
         (Some(username), Some(password)) => {
             RegistryAuth::Basic(username, password)
         }
-        _ => RegistryAuth::Anonymous,
+        _ => {
+            let server = image
+                .resolve_registry()
+                .strip_suffix('/')
+                .unwrap_or_else(|| image.resolve_registry());
+            println!("Got server: {}", server);
+            match docker_credential::get_credential(server) {
+                Err(CredentialRetrievalError::ConfigNotFound) => RegistryAuth::Anonymous,
+                Err(CredentialRetrievalError::NoCredentialConfigured) => RegistryAuth::Anonymous,
+                Err(_) => {
+                    RegistryAuth::Anonymous
+                }
+                Ok(DockerCredential::UsernamePassword(username, password)) => {
+                    RegistryAuth::Basic(username, password)
+                }
+                Ok(DockerCredential::IdentityToken(_)) => {
+                    log::warn!("Cannot use contents of docker config, identity token not supported. Using anonymous auth");
+                    RegistryAuth::Anonymous
+                }
+            }
+        }
     };
+    println!("Checking image: {}, with auth: {:?} and protocol: {:?}", image, auth, protocol);
     match docker_client.fetch_manifest_digest(
         image,
         &auth,
@@ -312,7 +343,6 @@ impl NpmRCConfig {
         config
     }
 }
-
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 struct NpmPackageVersion {
@@ -414,8 +444,9 @@ mod tests {
     use std::io::Write;
 
     use assert_fs::TempDir;
-    use oci_distribution::manifest;
-    use testcontainers::{clients, GenericImage};
+    use indoc::formatdoc;
+    use serial_test::serial;
+    use testcontainers::{clients, Container, GenericImage};
     use testcontainers::core::WaitFor;
     use wiremock::{matchers::{method, path}, Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::bearer_token;
@@ -425,8 +456,7 @@ mod tests {
     const DOCKER_HTPASSWD: &str = "testuser:$2y$05$8/q2bfRcX74EuxGf0qOcSuhWDQJXrgWiy6Fi73/JM2tKC66qSrLve";
     const DOCKER_HTPASSWD_USERNAME: &str = "testuser";
     const DOCKER_HTPASSWD_PASSWORD: &str = "testpassword";
-
-    const DOCKER_HELLO_IMAGE_TAG_AND_DIGEST: &str = "webassembly.azurecr.io/hello-wasm:v1@sha256:51d9b231d5129e3ffc267c9d455c49d789bf3167b611a07ab6e4b3304c96b0e7";
+    const DOCKER_HTPASSWD_AUTH: &str = "dGVzdHVzZXI6dGVzdHBhc3N3b3Jk";
 
     const NPM_EXISTING_PACKAGE_DATA: &str = "{\"_id\":\"axios\",\"_rev\":\"779-b37ceeb27a03858a89a0226f7c554aaf\",\"name\":\"axios\",\"description\":\"Promise based HTTP client for the browser and node.js\",\"dist-tags\":{\"latest\":\"0.1.0\",\"next\":\"0.2.0\"},\"versions\":{\"0.1.0\":{\"name\":\"axios\",\"version\":\"0.1.0\",\"description\":\"Promise based XHR library\",\"main\":\"index.js\",\"scripts\":{\"test\":\"grunt test\",\"start\":\"node ./sandbox/index.js\"},\"repository\":{\"type\":\"git\",\"url\":\"https://github.com/mzabriskie/axios.git\"},\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\"],\"author\":{\"name\":\"Matt Zabriskie\"},\"license\":\"MIT\",\"bugs\":{\"url\":\"https://github.com/mzabriskie/axios/issues\"},\"homepage\":\"https://github.com/mzabriskie/axios\",\"dependencies\":{\"es6-promise\":\"^1.0.0\"},\"devDependencies\":{\"grunt\":\"^0.4.5\",\"grunt-contrib-clean\":\"^0.6.0\",\"grunt-contrib-watch\":\"^0.6.1\",\"webpack\":\"^1.3.3-beta2\",\"webpack-dev-server\":\"^1.4.10\",\"grunt-webpack\":\"^1.0.8\",\"load-grunt-tasks\":\"^0.6.0\",\"karma\":\"^0.12.21\",\"karma-jasmine\":\"^0.1.5\",\"grunt-karma\":\"^0.8.3\",\"karma-phantomjs-launcher\":\"^0.1.4\",\"karma-jasmine-ajax\":\"^0.1.4\",\"grunt-update-json\":\"^0.1.3\",\"grunt-contrib-nodeunit\":\"^0.4.1\",\"grunt-banner\":\"^0.2.3\"},\"_id\":\"axios@0.1.0\",\"dist\":{\"shasum\":\"854e14f2999c2ef7fab058654fd995dd183688f2\",\"tarball\":\"https://registry.npmjs.org/axios/-/axios-0.1.0.tgz\",\"integrity\":\"sha512-hRPotWTy88LEsJ31RWEs2fmU7mV2YJs3Cw7Tk5XkKGtnT5NKOyIvPU+6qTWfwQFusxzChe8ozjay8r56wfpX8w==\",\"signatures\":[{\"keyid\":\"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA\",\"sig\":\"MEYCIQC/cOvHsV7UqLAet6WE89O4Ga3AUHgkqqoP0riLs6sgTAIhAIrePavu3Uw0T3vLyYMlfEI9bqENYjPzH5jGK8vYQVJK\"}]},\"_from\":\"./\",\"_npmVersion\":\"1.4.3\",\"_npmUser\":{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"},\"maintainers\":[{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"}],\"directories\":{},\"deprecated\":\"Critical security vulnerability fixed in v0.21.1. For more information, see https://github.com/axios/axios/pull/3410\"},\"0.2.0\":{\"name\":\"axios\",\"version\":\"0.2.0\",\"description\":\"Promise based HTTP client for the browser and node.js\",\"main\":\"index.js\",\"scripts\":{\"test\":\"grunt test\",\"start\":\"node ./sandbox/server.js\"},\"repository\":{\"type\":\"git\",\"url\":\"https://github.com/mzabriskie/axios.git\"},\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\",\"node\"],\"author\":{\"name\":\"Matt Zabriskie\"},\"license\":\"MIT\",\"bugs\":{\"url\":\"https://github.com/mzabriskie/axios/issues\"},\"homepage\":\"https://github.com/mzabriskie/axios\",\"dependencies\":{\"es6-promise\":\"^1.0.0\"},\"devDependencies\":{\"grunt\":\"^0.4.5\",\"grunt-contrib-clean\":\"^0.6.0\",\"grunt-contrib-watch\":\"^0.6.1\",\"webpack\":\"^1.3.3-beta2\",\"webpack-dev-server\":\"^1.4.10\",\"grunt-webpack\":\"^1.0.8\",\"load-grunt-tasks\":\"^0.6.0\",\"karma\":\"^0.12.21\",\"karma-jasmine\":\"^0.1.5\",\"grunt-karma\":\"^0.8.3\",\"karma-phantomjs-launcher\":\"^0.1.4\",\"karma-jasmine-ajax\":\"^0.1.4\",\"grunt-update-json\":\"^0.1.3\",\"grunt-contrib-nodeunit\":\"^0.4.1\",\"grunt-banner\":\"^0.2.3\"},\"_id\":\"axios@0.2.0\",\"dist\":{\"shasum\":\"315cd618142078fd22f2cea35380caad19e32069\",\"tarball\":\"https://registry.npmjs.org/axios/-/axios-0.2.0.tgz\",\"integrity\":\"sha512-ZQb2IDQfop5Asx8PlKvccsSVPD8yFCwYZpXrJCyU+MqL4XgJVjMHkCTNQV/pmB0Wv7l74LUJizSM/SiPz6r9uw==\",\"signatures\":[{\"keyid\":\"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA\",\"sig\":\"MEQCIAkrijLTtL7uiw0fQf5GL/y7bJ+3J8Z0zrrzNLC5fTXlAiBd4Nr/EJ2nWfBGWv/9OkrAONoboG5C8t8plIt5LVeGQA==\"}]},\"_from\":\"./\",\"_npmVersion\":\"1.4.3\",\"_npmUser\":{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"},\"maintainers\":[{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"}],\"directories\":{},\"deprecated\":\"Critical security vulnerability fixed in v0.21.1. For more information, see https://github.com/axios/axios/pull/3410\"}},\"readme\":\"axios\",\"maintainers\":[],\"time\":{\"modified\":\"2022-12-29T06:38:42.456Z\",\"created\":\"2014-08-29T23:08:36.810Z\",\"0.1.0\":\"2014-08-29T23:08:36.810Z\",\"0.2.0\":\"2014-09-12T20:06:33.167Z\"},\"homepage\":\"https://axios-http.com\",\"keywords\":[],\"repository\":{\"type\":\"git\",\"url\":\"git+https://github.com/axios/axios.git\"},\"author\":{\"name\":\"Matt Zabriskie\"},\"bugs\":{\"url\":\"https://github.com/axios/axios/issues\"},\"license\":\"MIT\",\"readmeFilename\":\"README.md\",\"users\":{},\"contributors\":[]}\n";
     const NPM_EXISTING_SCOPE_PACKAGE_DATA: &str = "{\"_id\":\"@TestScope/test\",\"_rev\":\"779-b37ceeb27a03858a89a0226f7c554aaf\",\"name\":\"@TestScope/test\",\"description\":\"Promise based HTTP client for the browser and node.js\",\"dist-tags\":{\"latest\":\"0.1.0\",\"next\":\"0.2.0\"},\"versions\":{\"0.1.0\":{\"name\":\"@TestScope/test\",\"version\":\"0.1.0\",\"description\":\"Promise based XHR library\",\"main\":\"index.js\",\"scripts\":{\"test\":\"grunt test\",\"start\":\"node ./sandbox/index.js\"},\"repository\":{\"type\":\"git\",\"url\":\"https://github.com/mzabriskie/@TestScope/test.git\"},\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\"],\"author\":{\"name\":\"Matt Zabriskie\"},\"license\":\"MIT\",\"bugs\":{\"url\":\"https://github.com/mzabriskie/@TestScope/test/issues\"},\"homepage\":\"https://github.com/mzabriskie/@TestScope/test\",\"dependencies\":{\"es6-promise\":\"^1.0.0\"},\"devDependencies\":{\"grunt\":\"^0.4.5\",\"grunt-contrib-clean\":\"^0.6.0\",\"grunt-contrib-watch\":\"^0.6.1\",\"webpack\":\"^1.3.3-beta2\",\"webpack-dev-server\":\"^1.4.10\",\"grunt-webpack\":\"^1.0.8\",\"load-grunt-tasks\":\"^0.6.0\",\"karma\":\"^0.12.21\",\"karma-jasmine\":\"^0.1.5\",\"grunt-karma\":\"^0.8.3\",\"karma-phantomjs-launcher\":\"^0.1.4\",\"karma-jasmine-ajax\":\"^0.1.4\",\"grunt-update-json\":\"^0.1.3\",\"grunt-contrib-nodeunit\":\"^0.4.1\",\"grunt-banner\":\"^0.2.3\"},\"_id\":\"@TestScope/test@0.1.0\",\"dist\":{\"shasum\":\"854e14f2999c2ef7fab058654fd995dd183688f2\",\"tarball\":\"https://registry.npmjs.org/@TestScope/test/-/@TestScope/test-0.1.0.tgz\",\"integrity\":\"sha512-hRPotWTy88LEsJ31RWEs2fmU7mV2YJs3Cw7Tk5XkKGtnT5NKOyIvPU+6qTWfwQFusxzChe8ozjay8r56wfpX8w==\",\"signatures\":[{\"keyid\":\"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA\",\"sig\":\"MEYCIQC/cOvHsV7UqLAet6WE89O4Ga3AUHgkqqoP0riLs6sgTAIhAIrePavu3Uw0T3vLyYMlfEI9bqENYjPzH5jGK8vYQVJK\"}]},\"_from\":\"./\",\"_npmVersion\":\"1.4.3\",\"_npmUser\":{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"},\"maintainers\":[{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"}],\"directories\":{},\"deprecated\":\"Critical security vulnerability fixed in v0.21.1. For more information, see https://github.com/@TestScope/test/@TestScope/test/pull/3410\"},\"0.2.0\":{\"name\":\"@TestScope/test\",\"version\":\"0.2.0\",\"description\":\"Promise based HTTP client for the browser and node.js\",\"main\":\"index.js\",\"scripts\":{\"test\":\"grunt test\",\"start\":\"node ./sandbox/server.js\"},\"repository\":{\"type\":\"git\",\"url\":\"https://github.com/mzabriskie/@TestScope/test.git\"},\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\",\"node\"],\"author\":{\"name\":\"Matt Zabriskie\"},\"license\":\"MIT\",\"bugs\":{\"url\":\"https://github.com/mzabriskie/@TestScope/test/issues\"},\"homepage\":\"https://github.com/mzabriskie/@TestScope/test\",\"dependencies\":{\"es6-promise\":\"^1.0.0\"},\"devDependencies\":{\"grunt\":\"^0.4.5\",\"grunt-contrib-clean\":\"^0.6.0\",\"grunt-contrib-watch\":\"^0.6.1\",\"webpack\":\"^1.3.3-beta2\",\"webpack-dev-server\":\"^1.4.10\",\"grunt-webpack\":\"^1.0.8\",\"load-grunt-tasks\":\"^0.6.0\",\"karma\":\"^0.12.21\",\"karma-jasmine\":\"^0.1.5\",\"grunt-karma\":\"^0.8.3\",\"karma-phantomjs-launcher\":\"^0.1.4\",\"karma-jasmine-ajax\":\"^0.1.4\",\"grunt-update-json\":\"^0.1.3\",\"grunt-contrib-nodeunit\":\"^0.4.1\",\"grunt-banner\":\"^0.2.3\"},\"_id\":\"@TestScope/test@0.2.0\",\"dist\":{\"shasum\":\"315cd618142078fd22f2cea35380caad19e32069\",\"tarball\":\"https://registry.npmjs.org/@TestScope/test/-/@TestScope/test-0.2.0.tgz\",\"integrity\":\"sha512-ZQb2IDQfop5Asx8PlKvccsSVPD8yFCwYZpXrJCyU+MqL4XgJVjMHkCTNQV/pmB0Wv7l74LUJizSM/SiPz6r9uw==\",\"signatures\":[{\"keyid\":\"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA\",\"sig\":\"MEQCIAkrijLTtL7uiw0fQf5GL/y7bJ+3J8Z0zrrzNLC5fTXlAiBd4Nr/EJ2nWfBGWv/9OkrAONoboG5C8t8plIt5LVeGQA==\"}]},\"_from\":\"./\",\"_npmVersion\":\"1.4.3\",\"_npmUser\":{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"},\"maintainers\":[{\"name\":\"mzabriskie\",\"email\":\"mzabriskie@gmail.com\"}],\"directories\":{},\"deprecated\":\"Critical security vulnerability fixed in v0.21.1. For more information, see https://github.com/@TestScope/test/@TestScope/test/pull/3410\"}},\"readme\":\"@TestScope/test\",\"maintainers\":[],\"time\":{\"modified\":\"2022-12-29T06:38:42.456Z\",\"created\":\"2014-08-29T23:08:36.810Z\",\"0.1.0\":\"2014-08-29T23:08:36.810Z\",\"0.2.0\":\"2014-09-12T20:06:33.167Z\"},\"homepage\":\"https://@TestScope/test-http.com\",\"keywords\":[],\"repository\":{\"type\":\"git\",\"url\":\"git+https://github.com/@TestScope/test/@TestScope/test.git\"},\"author\":{\"name\":\"Matt Zabriskie\"},\"bugs\":{\"url\":\"https://github.com/@TestScope/test/@TestScope/test/issues\"},\"license\":\"MIT\",\"readmeFilename\":\"README.md\",\"users\":{},\"contributors\":[]}\n";
@@ -503,67 +533,112 @@ mod tests {
         assert_eq!(roots, expected_results);
     }
 
-    #[tokio::test]
-    async fn test_docker_image_exists() {
-        let tmp_dir = TempDir::new().expect("cannot create tmp directory");
-        let htpasswd_path = tmp_dir.path().join("htpasswd");
-        let mut f = File::create(htpasswd_path).expect("Could not create htpasswd file");
-        f.write_all(DOCKER_HTPASSWD.as_bytes()).expect("Could not write htpasswd file");
-        let image = GenericImage::new("docker.io/library/registry", "2")
-            .with_env_var("REGISTRY_AUTH", "htpasswd")
-            .with_env_var("REGISTRY_AUTH_HTPASSWD_REALM", "Registry Realm")
-            .with_env_var("REGISTRY_AUTH_HTPASSWD_PATH", "/config/htpasswd")
-            .with_exposed_port(5000)
-            .with_volume(tmp_dir.path().to_str().expect("cannot convert auth_dir to string"), "/config")
-            .with_wait_for(WaitFor::message_on_stderr("listening on "));
-
+    async fn docker_test(docker_image: String, auth_file: bool, docker_username: Option<String>, docker_password: Option<String>, mock: bool, expected_result: bool, expected_error: bool) {
+        let registry_tmp_dir = TempDir::new().expect("cannot create tmp directory");
+        let docker_tmp_dir = TempDir::new().expect("cannot create tmp directory");
+        let mut image: Reference = docker_image.parse().unwrap();
+        let mut protocol: Option<ClientProtocol> = None;
+        let mut username = docker_username.clone();
+        let mut password = docker_password.clone();
+        // Main scope
         let docker = clients::Cli::default();
-        let registry = docker.run(image);
-        let port = registry.get_host_port_ipv4(5000);
-        let registry_proctocol = ClientProtocol::HttpsExcept(vec![format!("127.0.0.1:{}", port)]);
-        let image: Reference = format!("127.0.0.1:{}/my_image:latest", port).parse().unwrap();
-        let image_exists = check_docker_image_exists(
+        let registry_container: Container<GenericImage>;
+        let init_docker_config = env::var("DOCKER_CONFIG");
+        if mock {
+            let htpasswd_path = registry_tmp_dir.path().join("htpasswd");
+            let mut f = File::create(htpasswd_path).expect("Could not create htpasswd file");
+            f.write_all(DOCKER_HTPASSWD.as_bytes()).expect("Could not write htpasswd file");
+            let registry_image = GenericImage::new("docker.io/library/registry", "2")
+                .with_env_var("REGISTRY_AUTH", "htpasswd")
+                .with_env_var("REGISTRY_AUTH_HTPASSWD_REALM", "Registry Realm")
+                .with_env_var("REGISTRY_AUTH_HTPASSWD_PATH", "/auth/htpasswd")
+                .with_env_var("REGISTRY_PROXY_REMOTEURL", "https://registry-1.docker.io")
+                .with_exposed_port(5000)
+                .with_volume(registry_tmp_dir.path().to_str().expect("cannot convert auth_dir to string"), "/auth")
+                .with_wait_for(WaitFor::message_on_stderr("listening on "));
+
+            registry_container = docker.run(registry_image);
+
+            let port = registry_container.get_host_port_ipv4(5000);
+            protocol = Some(ClientProtocol::HttpsExcept(vec![format!("127.0.0.1:{}", port)]));
+            image = format!("127.0.0.1:{}/{}", port, docker_image).parse().unwrap();
+            if auth_file {
+                let config_path = docker_tmp_dir.path().join("config.json");
+                let mut f = File::create(config_path.clone()).expect("Could not create docker config file");
+                let docker_config = formatdoc!(r#"
+                {{
+                    "auths": {{
+                        "{registry}": {{
+                            "auth": "{auth}"
+                        }}
+                    }}
+                }}"#,
+                    registry = format!("127.0.0.1:{}", port),
+                    auth = DOCKER_HTPASSWD_AUTH
+                );
+                f.write_all(docker_config.as_bytes()).expect("Could not write to docker config file");
+                env::set_var("DOCKER_CONFIG", docker_tmp_dir.path());
+                username = None;
+                password = None;
+            }
+        }
+        let result = check_docker_image_exists(
             &image,
-            Some(DOCKER_HTPASSWD_USERNAME.to_string()),
-            Some(DOCKER_HTPASSWD_PASSWORD.to_string()),
-            Some(registry_proctocol.clone()),
-        ).await.expect("Could not get docker image exists");
-        // Image should not exist
-        assert_eq!(image_exists, false);
-        // Let's push a dummy image
-        let auth =
-            RegistryAuth::Basic(DOCKER_HTPASSWD_USERNAME.to_string(), DOCKER_HTPASSWD_PASSWORD.to_string());
-        let mut client = Client::new(ClientConfig {
-            protocol: registry_proctocol.clone(),
-            accept_invalid_certificates: true,
+            username,
+            password,
+            protocol,
+        ).await;
+        match init_docker_config {
+            Ok(c) => env::set_var("DOCKER_CONFIG", c),
+            Err(_) => env::set_var("DOCKER_CONFIG", ""),
+        }
+        match result {
+            Ok(exists) => {
+                assert!(!expected_error);
+                assert_eq!(expected_result, exists);
+            }
+            Err(e) => {
+                println!("Got error: {}", e);
+                assert!(expected_error);
+            }
+        }
+    }
 
-            ..Default::default()
-        });
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_existing_image() {
+        docker_test("alpine:latest".to_string(), false, None, None, false, true, false).await;
+    }
 
-        let pull_image: Reference = DOCKER_HELLO_IMAGE_TAG_AND_DIGEST.parse().unwrap();
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_existing_image_non_existing_version() {
+        docker_test("alpine:NONEXISTENTTAG".to_string(), false, None, None, false, false, false).await;
+    }
 
-        let (manifest, _digest) = client
-            .pull_image_manifest(&pull_image, &RegistryAuth::Anonymous)
-            .await
-            .expect("failed to pull manifest");
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_private_reg_existing_image() {
+        docker_test("library/alpine:latest".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
+    }
 
-        let image_data = client
-            .pull(&pull_image, &auth, vec![manifest::WASM_LAYER_MEDIA_TYPE])
-            .await
-            .expect("failed to pull image");
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_private_reg_existing_image_non_existing_version() {
+        docker_test("library/alpine:NONEXISTANT".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
+    }
 
-        client.push(&image, &image_data.layers, image_data.config.clone(), &auth, Some(manifest.clone())).await.expect("Failed to push image");
 
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_private_reg_auth_file_existing_image() {
+        docker_test("library/alpine:latest".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
+    }
 
-        // Image should exist
-        let image_exists = check_docker_image_exists(
-            &image,
-            Some(DOCKER_HTPASSWD_USERNAME.to_string()),
-            Some(DOCKER_HTPASSWD_PASSWORD.to_string()),
-            Some(registry_proctocol),
-        ).await.expect("Could not get docker image exists");
-        // Image should not exist
-        assert_eq!(image_exists, true);
+    #[tokio::test]
+    #[serial(docker)]
+    async fn docker_private_reg_auth_file_existing_image_non_existing_version() {
+        docker_test("library/alpine:NONEXISTANT".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
     }
 
     async fn npm_test(package_name: String, package_version: String, registry_token: Option<String>, npmrc: bool, expected_result: bool, expected_error: bool, mocked_body: Option<String>, mocked_token: Option<String>, mocked_status: Option<u16>) {
@@ -601,8 +676,7 @@ mod tests {
                 assert!(!expected_error);
                 assert_eq!(expected_result, exists);
             }
-            Err(e) => {
-                println!("Got error: {}", e);
+            Err(_) => {
                 assert!(expected_error);
             }
         }
