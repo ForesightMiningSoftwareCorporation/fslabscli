@@ -22,8 +22,17 @@ pub struct PackageMetadataFslabsCiPublishNpmNapi {
 }
 
 impl PackageMetadataFslabsCiPublishNpmNapi {
-    pub async fn check(&mut self, npm: &Npm, package: String, version: String) -> anyhow::Result<()> {
-        self.publish = !npm.check_npm_package_exists(package, version).await?;
+    pub async fn check(&mut self, package: String, version: String, npm: &Npm) -> anyhow::Result<()> {
+        if !self.publish {
+            return Ok(());
+        }
+        let npm_package_prefix = match self.scope.clone() {
+            Some(s) => format!("@{}/", s),
+            None => "".to_string(),
+        };
+        let package_name = format!("{}{}", npm_package_prefix, package.clone());
+        log::debug!("NPM: checking if version {} of {} already exists", version, package_name);
+        self.publish = !npm.check_npm_package_exists(package_name, version).await?;
         Ok(())
     }
 }

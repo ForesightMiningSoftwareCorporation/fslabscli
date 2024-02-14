@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
@@ -5,11 +6,14 @@ use log4rs::append::console::ConsoleAppender;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
+use serde::Serialize;
 
+use crate::commands::dependencies::{dependencies, Options as DependenciesOptions};
 use crate::commands::publishable;
 use crate::commands::publishable::publishable;
 
 mod commands;
+mod utils;
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(
@@ -36,6 +40,7 @@ struct Cli {
 enum Commands {
     /// Check which crates needs to be published
     Publishable(publishable::Options),
+    Dependencies(DependenciesOptions),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -60,22 +65,25 @@ pub fn setup_logging(verbosity: u8) {
         .map_err(|e| format!("Could not setup logging: {}", e)).unwrap();
 }
 
+fn display_or_json<T: Serialize + Display>(json: bool, results: T) -> String {
+    if json {
+        serde_json::to_string(&results).unwrap()
+    } else {
+        format!("{}", results)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
     let result = match cli.command {
-        Commands::Publishable(options) => publishable(options, cli.working_directory).await,
+        Commands::Publishable(options) => publishable(options, cli.working_directory).await.map(|r| display_or_json(cli.json, r)),
+        Commands::Dependencies(options) => dependencies(options, cli.working_directory).await.map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {
-            match cli.json {
-                true => {
-                    let s = serde_json::to_string(&r).unwrap();
-                    println!("{}", s);
-                }
-                false => println!("{}", r),
-            }
+            println!("{}", r);
             std::process::exit(exitcode::OK);
         }
         Err(e) => {

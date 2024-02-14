@@ -14,12 +14,25 @@ pub struct PackageMetadataFslabsCiPublishDocker {
 impl PackageMetadataFslabsCiPublishDocker {
     pub async fn check(
         &mut self,
-        image: &Reference,
+        name: String, version: String,
+        docker_registry: Option<String>,
         docker_registry_username: Option<String>,
         docker_registry_password: Option<String>,
-        docker_registry_protcol: Option<ClientProtocol>,
+        docker_registry_protocol: Option<ClientProtocol>,
     ) -> anyhow::Result<()> {
-        let protocol = docker_registry_protcol.unwrap_or(ClientProtocol::Https);
+        if !self.publish {
+            return Ok(());
+        }
+        log::debug!("Docker: checking if version {} of {} already exists", version, name);
+        let docker_registry = match docker_registry.clone() {
+            Some(r) => r,
+            None => match self.repository.clone() {
+                Some(r) => r,
+                None => anyhow::bail!("Tried to check docker image without setting the registry"),
+            }
+        };
+        let image: Reference = format!("{}/{}:{}", docker_registry, name.clone(), version.clone()).parse()?;
+        let protocol = docker_registry_protocol.unwrap_or(ClientProtocol::Https);
         let mut docker_client = Client::new(ClientConfig {
             protocol: protocol.clone(),
             ..Default::default()
@@ -50,7 +63,7 @@ impl PackageMetadataFslabsCiPublishDocker {
             }
         };
         match docker_client.fetch_manifest_digest(
-            image,
+            &image,
             &auth,
         ).await {
             Ok(_) => {
@@ -100,10 +113,10 @@ mod tests {
     const DOCKER_HTPASSWD_PASSWORD: &str = "testpassword";
     const DOCKER_HTPASSWD_AUTH: &str = "dGVzdHVzZXI6dGVzdHBhc3N3b3Jk";
 
-    async fn docker_test(docker_image: String, auth_file: bool, docker_username: Option<String>, docker_password: Option<String>, mock: bool, expected_result: bool, expected_error: bool) {
+    async fn docker_test(docker_image: String, docker_tag: String, auth_file: bool, docker_username: Option<String>, docker_password: Option<String>, mock: bool, expected_result: bool, expected_error: bool) {
         let registry_tmp_dir = TempDir::new().expect("cannot create tmp directory");
         let docker_tmp_dir = TempDir::new().expect("cannot create tmp directory");
-        let mut image: Reference = docker_image.parse().unwrap();
+        let mut registry: Option<String> = None;
         let mut protocol: Option<ClientProtocol> = None;
         let mut username = docker_username.clone();
         let mut password = docker_password.clone();
@@ -128,7 +141,7 @@ mod tests {
 
             let port = registry_container.get_host_port_ipv4(5000);
             protocol = Some(ClientProtocol::HttpsExcept(vec![format!("127.0.0.1:{}", port)]));
-            image = format!("127.0.0.1:{}/{}", port, docker_image).parse().unwrap();
+            registry = Some(format!("127.0.0.1:{}", port));
             if auth_file {
                 let config_path = docker_tmp_dir.path().join("config.json");
                 let mut f = File::create(config_path.clone()).expect("Could not create docker config file");
@@ -154,7 +167,9 @@ mod tests {
             ..Default::default()
         };
         let error = publish.check(
-            &image,
+            docker_image,
+            docker_tag,
+            registry,
             username,
             password,
             protocol,
@@ -165,52 +180,42 @@ mod tests {
         }
         assert_eq!(error.is_err(), expected_error);
         assert_eq!(publish.publish, expected_result);
-        match result {
-            Ok(exists) => {
-                assert!(!expected_error);
-                assert_eq!(expected_result, exists);
-            }
-            Err(e) => {
-                println!("Got error: {}", e);
-                assert!(expected_error);
-            }
-        }
     }
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_existing_image() {
-        docker_test("alpine:latest".to_string(), false, None, None, false, true, false).await;
+        docker_test("alpine".to_string(), "latest".to_string(), false, None, None, false, true, false).await;
     }
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_existing_image_non_existing_version() {
-        docker_test("alpine:NONEXISTENTTAG".to_string(), false, None, None, false, false, false).await;
+        docker_test("alpine".to_string(), "NONEXISTENTTAG".to_string(), false, None, None, false, false, false).await;
     }
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_private_reg_existing_image() {
-        docker_test("library/alpine:latest".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
+        docker_test("library/alpine".to_string(), "latest".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
     }
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_private_reg_existing_image_non_existing_version() {
-        docker_test("library/alpine:NONEXISTANT".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
+        docker_test("library/alpine".to_string(), "NONEXISTANT".to_string(), false, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
     }
 
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_private_reg_auth_file_existing_image() {
-        docker_test("library/alpine:latest".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
+        docker_test("library/alpine".to_string(), "latest".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, true, false).await;
     }
 
     #[tokio::test]
     #[serial(docker)]
     async fn docker_private_reg_auth_file_existing_image_non_existing_version() {
-        docker_test("library/alpine:NONEXISTANT".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
+        docker_test("library/alpine".to_string(), "NONEXISTANT".to_string(), true, Some(DOCKER_HTPASSWD_USERNAME.to_string()), Some(DOCKER_HTPASSWD_PASSWORD.to_string()), true, false, false).await;
     }
 }
