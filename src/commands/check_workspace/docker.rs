@@ -104,7 +104,7 @@ mod tests {
     use testcontainers::{clients, Container, GenericImage};
     use testcontainers::core::WaitFor;
 
-    use crate::commands::publishable::docker::PackageMetadataFslabsCiPublishDocker;
+    use crate::commands::check_workspace::docker::PackageMetadataFslabsCiPublishDocker;
 
     use super::*;
 

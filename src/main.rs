@@ -8,8 +8,8 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Serialize;
 
-use crate::commands::publishable;
-use crate::commands::publishable::publishable;
+use crate::commands::check_workspace;
+use crate::commands::check_workspace::check_workspace;
 
 mod commands;
 mod utils;
@@ -38,7 +38,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Check which crates needs to be published
-    Publishable(publishable::Options),
+    CheckWorkspace(check_workspace::Options),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -77,7 +77,7 @@ async fn main() {
     setup_logging(cli.verbose);
     let working_directory = cli.working_directory.canonicalize().expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::Publishable(options) => publishable(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
+        Commands::CheckWorkspace(options) => check_workspace(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {

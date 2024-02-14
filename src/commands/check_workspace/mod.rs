@@ -166,7 +166,7 @@ impl Display for Results {
     }
 }
 
-pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow::Result<Results> {
+pub async fn check_workspace(options: Options, working_directory: PathBuf) -> anyhow::Result<Results> {
     log::info!("Check directory for crates that need publishing");
     let started = Instant::now();
     let path = match working_directory.is_absolute() {
