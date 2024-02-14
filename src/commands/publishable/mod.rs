@@ -7,6 +7,7 @@ use anyhow::Context;
 use cargo_metadata::{MetadataCommand, Package};
 use clap::Parser;
 use console::{Emoji, style};
+use git2::{DiffDelta, DiffOptions, Repository};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use serde_json::from_value;
@@ -52,6 +53,12 @@ pub struct Options {
     #[arg(long, default_value_t = false)]
     check_publish: bool,
     #[arg(long, default_value_t = false)]
+    check_changed: bool,
+    #[arg(long, default_value = "HEAD")]
+    changed_head_ref: String,
+    #[arg(long, default_value = "HEAD~")]
+    changed_base_ref: String,
+    #[arg(long, default_value_t = false)]
     fail_unit_error: bool,
 }
 
@@ -71,6 +78,7 @@ pub struct Result {
     pub publish: PackageMetadataFslabsCiPublish,
     pub dependencies: Vec<ResultDependency>,
     pub dependant: Vec<ResultDependency>,
+    pub changed: bool,
 }
 
 fn default_false() -> bool { false }
@@ -171,7 +179,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/5]").bold().dim(),
+            style("[1/6]").bold().dim(),
             LOOKING_GLASS
         );
     }
@@ -181,7 +189,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/5]").bold().dim(),
+            style("[2/6]").bold().dim(),
             TRUCK
         );
     }
@@ -213,7 +221,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[3/5]").bold().dim(),
+            style("[3/6]").bold().dim(),
             PAPER
         );
     }
@@ -258,7 +266,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Filtering packages dependencies...",
-            style("[4/5]").bold().dim(),
+            style("[4/6]").bold().dim(),
             TRUCK
         );
     }
@@ -282,7 +290,7 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Feeding packages dependant...",
-            style("[5/5]").bold().dim(),
+            style("[5/6]").bold().dim(),
             TRUCK
         );
     }
@@ -307,6 +315,75 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
                         package: package.package.clone(),
                         version: package.version.clone(),
                     });
+                }
+            }
+        }
+    }
+
+    if options.progress {
+        println!(
+            "{} {}Checking if packages changed...",
+            style("[6/6]").bold().dim(),
+            TRUCK
+        );
+    }
+    if options.check_changed {
+        let repository = Repository::open(working_directory.clone())?;
+        // Get the commits objects based on the head ref and base ref
+        let head_commit = repository.revparse_single(&options.changed_head_ref)?;
+        let base_commit = repository.revparse_single(&options.changed_base_ref)?;
+        // Get the tree for the commits
+        let head_tree = head_commit.peel_to_tree()?;
+        let base_tree = base_commit.peel_to_tree()?;
+        if options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+        }
+
+        for package_key in package_keys.clone() {
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            // Loop through all the dependencies, if we don't know of it, skip it
+            if let Some(package) = packages.get_mut(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.set_message(format!("{} : {}", package.workspace, package.package));
+                }
+                // let Ok(folder_entry) = head_tree.get_path(package_folder) else {
+                //     continue;
+                // };
+                let Ok(package_folder) = package.path.strip_prefix(working_directory.as_path()) else {
+                    continue;
+                };
+                let mut diff_options = DiffOptions::new();
+                diff_options.include_unmodified(true);
+                let Ok(diff) = repository.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut diff_options)) else {
+                    continue;
+                };
+                let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
+                    let check_old_file = match delta.old_file().path() {
+                        Some(p) => {
+                            package_folder.to_string_lossy().is_empty() || p.starts_with(package_folder)
+                        }
+                        None => false
+                    };
+                    let check_new_file = match delta.new_file().path() {
+                        Some(p) => {
+                            package_folder.to_string_lossy().is_empty() || p.starts_with(package_folder)
+                        }
+                        None => false
+                    };
+                    if check_old_file || check_new_file {
+                        let old_oid = delta.old_file().id();
+                        let new_oid = delta.new_file().id();
+                        if old_oid != new_oid {
+                            package.changed = true;
+                            return false;
+                        }
+                    }
+                    true
+                };
+                if diff.foreach(&mut file_cb, None, None, None).is_err() {
+                    continue;
                 }
             }
         }

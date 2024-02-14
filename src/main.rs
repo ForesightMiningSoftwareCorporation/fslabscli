@@ -75,8 +75,9 @@ fn display_or_json<T: Serialize + Display>(json: bool, results: T) -> String {
 async fn main() {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
+    let working_directory = cli.working_directory.canonicalize().expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::Publishable(options) => publishable(options, cli.working_directory).await.map(|r| display_or_json(cli.json, r)),
+        Commands::Publishable(options) => publishable(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {
