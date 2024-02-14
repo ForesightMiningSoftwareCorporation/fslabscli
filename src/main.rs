@@ -8,7 +8,6 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Serialize;
 
-use crate::commands::dependencies::{dependencies, Options as DependenciesOptions};
 use crate::commands::publishable;
 use crate::commands::publishable::publishable;
 
@@ -40,7 +39,6 @@ struct Cli {
 enum Commands {
     /// Check which crates needs to be published
     Publishable(publishable::Options),
-    Dependencies(DependenciesOptions),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -79,7 +77,6 @@ async fn main() {
     setup_logging(cli.verbose);
     let result = match cli.command {
         Commands::Publishable(options) => publishable(options, cli.working_directory).await.map(|r| display_or_json(cli.json, r)),
-        Commands::Dependencies(options) => dependencies(options, cli.working_directory).await.map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {

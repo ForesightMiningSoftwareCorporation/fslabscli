@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -46,21 +47,30 @@ pub struct Options {
     cargo_registry_url: Option<String>,
     #[arg(long)]
     cargo_registry_user_agent: Option<String>,
-    #[arg(long, default_value_t = true)]
-    hide_unpublishable: bool,
     #[arg(long, default_value_t = false)]
     progress: bool,
+    #[arg(long, default_value_t = false)]
+    check_publish: bool,
     #[arg(long, default_value_t = false)]
     fail_unit_error: bool,
 }
 
-#[derive(Serialize, Clone)]
+
+#[derive(Serialize, Clone, Default, Debug)]
+pub struct ResultDependency {
+    pub package: String,
+    pub version: String,
+}
+
+#[derive(Serialize, Clone, Default, Debug)]
 pub struct Result {
     pub workspace: String,
     pub package: String,
     pub version: String,
     pub path: PathBuf,
     pub publish: PackageMetadataFslabsCiPublish,
+    pub dependencies: Vec<ResultDependency>,
+    pub dependant: Vec<ResultDependency>,
 }
 
 fn default_false() -> bool { false }
@@ -94,16 +104,22 @@ impl Result {
         let mut publish = metadata.fslabs.publish;
         // Let's parse cargo publishing from main metadata
         publish.cargo.registry = package.publish;
+        let dependencies = package.dependencies.into_iter().map(|d| ResultDependency {
+            package: d.name,
+            version: d.req.to_string(),
+        }).collect();
         Ok(Self {
             workspace,
             package: package.name,
             version: package.version.to_string(),
             path,
             publish,
+            dependencies,
+            ..Default::default()
         })
     }
 
-    pub async fn check_publishable(mut self, options: &Options, npm: &Npm, cargo: &Cargo) -> anyhow::Result<Self> {
+    pub async fn check_publishable(&mut self, options: &Options, npm: &Npm, cargo: &Cargo) -> anyhow::Result<()> {
         self.publish.docker.check(
             self.package.clone(),
             self.version.clone(),
@@ -114,7 +130,7 @@ impl Result {
         ).await?;
         self.publish.npm_napi.check(self.package.clone(), self.version.clone(), npm).await?;
         self.publish.cargo.check(self.package.clone(), self.version.clone(), cargo).await?;
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -155,22 +171,21 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/4]").bold().dim(),
+            style("[1/5]").bold().dim(),
             LOOKING_GLASS
         );
     }
     let roots = utils::get_cargo_roots(path).with_context(|| format!("Failed to get roots from {:?}", working_directory))?;
-    let mut packages = vec![];
+    let mut packages: HashMap<String, Result> = HashMap::new();
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/4]").bold().dim(),
+            style("[2/5]").bold().dim(),
             TRUCK
         );
     }
     for root in roots {
-        log::debug!("Checking publishing for: {:?}", root);
         if let Some(workspace_name) = root.file_name() {
             let workspace_metadata = MetadataCommand::new()
                 .current_dir(root.clone())
@@ -179,7 +194,9 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
                 .unwrap();
             for package in workspace_metadata.packages {
                 match Result::new(workspace_name.to_string_lossy().to_string(), package.clone()) {
-                    Ok(r) => packages.push(r),
+                    Ok(r) => {
+                        packages.insert(r.package.clone(), r);
+                    }
                     Err(e) => {
                         let error_msg = format!("Could not check package {}: {}", package.name, e);
                         if options.fail_unit_error {
@@ -196,43 +213,100 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[3/3]").bold().dim(),
+            style("[3/5]").bold().dim(),
             PAPER
         );
     }
-    // TODO: switch to an ASYNC_ONCE or something
-    let npm = Npm::new(options.npm_registry_url.clone(), options.npm_registry_token.clone(), options.npm_registry_npmrc_path.clone(), true)?;
-    let mut cargo = Cargo::new(None)?;
-    if let (Some(private_registry), Some(private_registry_url)) = (options.cargo_registry.clone(), options.cargo_registry_url.clone()) {
-        cargo.add_registry(private_registry, private_registry_url, options.cargo_registry_user_agent.clone())?;
+
+    let package_keys: Vec<String> = packages.keys().cloned().collect();
+
+    if options.check_publish {
+        // TODO: switch to an ASYNC_ONCE or something
+        let npm = Npm::new(options.npm_registry_url.clone(), options.npm_registry_token.clone(), options.npm_registry_npmrc_path.clone(), true)?;
+        let mut cargo = Cargo::new(None)?;
+        if let (Some(private_registry), Some(private_registry_url)) = (options.cargo_registry.clone(), options.cargo_registry_url.clone()) {
+            cargo.add_registry(private_registry, private_registry_url, options.cargo_registry_user_agent.clone())?;
+        }
+        let mut pb: Option<ProgressBar> = None;
+        if options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+        }
+        for package_key in package_keys.clone() {
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            if let Some(package) = packages.get_mut(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.set_message(format!("{} : {}", package.workspace, package.package));
+                }
+                match package.check_publishable(&options, &npm, &cargo).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let error_msg = format!("Could not check package {} -- {}: {}", package.workspace.clone(), package.package.clone(), e);
+                        if options.fail_unit_error {
+                            anyhow::bail!(error_msg)
+                        } else {
+                            log::warn!("{}", error_msg);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if options.progress {
+        println!(
+            "{} {}Filtering packages dependencies...",
+            style("[4/5]").bold().dim(),
+            TRUCK
+        );
     }
     let mut pb: Option<ProgressBar> = None;
     if options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
     }
-    let mut results: Vec<Result> = vec![];
-    for package in packages {
+    for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
-            pb.set_message(format!("{} : {}", package.workspace, package.package));
             pb.inc(1);
         }
-        match package.clone().check_publishable(&options, &npm, &cargo).await {
-            Ok(result) => {
-                let should_add = match options.hide_unpublishable {
-                    true => vec![result.publish.docker.publish, result.publish.binary, result.publish.npm_napi.publish, result.publish.cargo.publish].into_iter().any(|x| x),
-                    false => false,
-                };
-                if should_add {
-                    results.push(result);
-                }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get_mut(&package_key) {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            Err(e) => {
-                let error_msg = format!("Could not check package {} -- {}: {}", package.workspace.clone(), package.package.clone(), e);
-                if options.fail_unit_error {
-                    anyhow::bail!(error_msg)
-                } else {
-                    log::warn!("{}", error_msg);
-                    continue;
+            package.dependencies.retain(|d| package_keys.contains(&d.package));
+        }
+    }
+    // 4 Feed Dependent
+    if options.progress {
+        println!(
+            "{} {}Feeding packages dependant...",
+            style("[5/5]").bold().dim(),
+            TRUCK
+        );
+    }
+
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+    }
+    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get(&package_key).map(|c| c.clone()) {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            // for each dependency we need to edit it and add ourself as a dependeant
+            for dependency in package.dependencies.clone() {
+                if let Some(dependant) = packages.get_mut(&dependency.package) {
+                    dependant.dependant.push(ResultDependency {
+                        package: package.package.clone(),
+                        version: package.version.clone(),
+                    });
                 }
             }
         }
@@ -240,5 +314,6 @@ pub async fn publishable(options: Options, working_directory: PathBuf) -> anyhow
     if options.progress {
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
-    Ok(Results(results))
+
+    Ok(Results(packages.values().map(|d| d.clone()).collect()))
 }
