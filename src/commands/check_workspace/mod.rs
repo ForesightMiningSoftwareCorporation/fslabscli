@@ -11,6 +11,7 @@ use git2::{DiffDelta, DiffOptions, Repository};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use serde_json::from_value;
+use serde_yaml::Value;
 
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
@@ -27,7 +28,7 @@ static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 static PAPER: Emoji<'_, '_> = Emoji("📃  ", "");
 static SPARKLE: Emoji<'_, '_> = Emoji("✨ ", ":-)");
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Default)]
 #[command(about = "Check directory for crates that need to be published.")]
 pub struct Options {
     #[arg(long)]
@@ -51,9 +52,9 @@ pub struct Options {
     #[arg(long, default_value_t = false)]
     progress: bool,
     #[arg(long, default_value_t = false)]
-    check_publish: bool,
+    pub(crate) check_publish: bool,
     #[arg(long, default_value_t = false)]
-    check_changed: bool,
+    pub(crate) check_changed: bool,
     #[arg(long, default_value = "HEAD")]
     changed_head_ref: String,
     #[arg(long, default_value = "HEAD~")]
@@ -62,6 +63,11 @@ pub struct Options {
     fail_unit_error: bool,
 }
 
+impl Options {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 #[derive(Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
@@ -75,7 +81,8 @@ pub struct Result {
     pub package: String,
     pub version: String,
     pub path: PathBuf,
-    pub publish: PackageMetadataFslabsCiPublish,
+    pub publish_detail: PackageMetadataFslabsCiPublish,
+    pub publish: bool,
     pub dependencies: Vec<ResultDependency>,
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
@@ -93,6 +100,7 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "default_false")]
     pub binary: bool,
+    pub args: Option<HashMap<String, Value>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -106,7 +114,7 @@ struct PackageMetadata {
 }
 
 impl Result {
-    pub fn new(workspace: String, package: Package) -> anyhow::Result<Self> {
+    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
         let path = package.manifest_path.canonicalize()?.parent().unwrap().to_path_buf();
         let metadata: PackageMetadata = from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.fslabs.publish;
@@ -120,15 +128,15 @@ impl Result {
             workspace,
             package: package.name,
             version: package.version.to_string(),
-            path,
-            publish,
+            path: path.strip_prefix(root_dir)?.to_path_buf(),
+            publish_detail: publish,
             dependencies,
             ..Default::default()
         })
     }
 
     pub async fn check_publishable(&mut self, options: &Options, npm: &Npm, cargo: &Cargo) -> anyhow::Result<()> {
-        self.publish.docker.check(
+        self.publish_detail.docker.check(
             self.package.clone(),
             self.version.clone(),
             options.docker_registry.clone(),
@@ -136,8 +144,8 @@ impl Result {
             options.docker_registry_password.clone(),
             None,
         ).await?;
-        self.publish.npm_napi.check(self.package.clone(), self.version.clone(), npm).await?;
-        self.publish.cargo.check(self.package.clone(), self.version.clone(), cargo).await?;
+        self.publish_detail.npm_napi.check(self.package.clone(), self.version.clone(), npm).await?;
+        self.publish_detail.cargo.check(self.package.clone(), self.version.clone(), cargo).await?;
         Ok(())
     }
 }
@@ -147,20 +155,20 @@ impl Display for Result {
         write!(f,
                "{} -- {} -- {}: docker: {}, cargo: {}, npm_napi: {}, binary: {}",
                self.workspace, self.package, self.version,
-               self.publish.docker.publish,
-               self.publish.cargo.publish,
-               self.publish.npm_napi.publish,
-               self.publish.binary)
+               self.publish_detail.docker.publish,
+               self.publish_detail.cargo.publish,
+               self.publish_detail.npm_napi.publish,
+               self.publish_detail.binary)
     }
 }
 
 #[derive(Serialize)]
-pub struct Results(Vec<Result>);
+pub struct Results(pub(crate) HashMap<String, Result>);
 
 impl Display for Results {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for v in &self.0 {
-            writeln!(f, "{}", v)?;
+        for (k, v) in &self.0 {
+            writeln!(f, "{}: {}", k, v)?;
         }
         Ok(())
     }
@@ -201,7 +209,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                 .exec()
                 .unwrap();
             for package in workspace_metadata.packages {
-                match Result::new(workspace_name.to_string_lossy().to_string(), package.clone()) {
+                match Result::new(workspace_name.to_string_lossy().to_string(), package.clone(), working_directory.clone()) {
                     Ok(r) => {
                         packages.insert(r.package.clone(), r);
                     }
@@ -259,6 +267,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                         }
                     }
                 }
+                package.publish = vec![package.publish_detail.docker.publish, package.publish_detail.cargo.publish, package.publish_detail.npm_napi.publish, package.publish_detail.binary].into_iter().any(|x| x);
             }
         }
     }
@@ -392,5 +401,5 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
 
-    Ok(Results(packages.values().map(|d| d.clone()).collect()))
+    Ok(Results(packages))
 }
