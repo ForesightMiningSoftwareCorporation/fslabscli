@@ -8,8 +8,8 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Serialize;
 
-use crate::commands::check_workspace;
-use crate::commands::check_workspace::check_workspace;
+use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
+use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 
 mod commands;
 mod utils;
@@ -38,7 +38,8 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Check which crates needs to be published
-    CheckWorkspace(check_workspace::Options),
+    CheckWorkspace(CheckWorkspaceOptions),
+    GenerateReleaseWorkflow(GenerateWorkflowOptions),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -78,6 +79,7 @@ async fn main() {
     let working_directory = cli.working_directory.canonicalize().expect("Could not get full path from working_directory");
     let result = match cli.command {
         Commands::CheckWorkspace(options) => check_workspace(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
+        Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {

@@ -1,0 +1,1069 @@
+name: CI-CD - Tests and Publishing
+on:
+  push:
+    branches:
+    - main
+  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Trigger with publish
+        required: false
+        type: boolean
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: 'true'
+jobs:
+  compute-prisma-hash-key:
+    runs-on:
+    - ubuntu-latest
+    outputs:
+      hash_key: ${{ steps.hash.outputs.hash_key }}
+      rust-channel: ${{ steps.rust-channel.outputs.value }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: |
+          ./orica_server/prisma
+          ./orica_server/prisma_cli/Cargo.toml
+          ./orica_server/prisma_cli/package-lock.jso
+          rust-toolchain.toml
+    - id: rust-channel
+      name: Get rust channel
+      shell: bash
+      run: |
+        echo "value=$(yq -p toml '.toolchain.channel' < rust-toolchain.toml || echo '${{ inputs.toolchain }}')" >> $GITHUB_OUTPUT
+    - id: hash
+      name: Output HashKey
+      run: |
+        echo "hash_key=$HASH_KEY" >> $GITHUB_OUTPUT
+      env:
+        HASH_KEY: prisma-0-${{ hashFiles('./prisma/*', './prisma_cli/Cargo.toml', './prisma_cli/package-lock.json') }}
+  build-prisma-cache:
+    needs:
+    - compute-prisma-hash-key
+    if: |
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on:
+    - self-hosted
+    - gpu
+    - ${{ needs.compute-prisma-hash-key.outputs.rust-channel }}
+    - ${{ github.run_id }}__prisma__${{ github.run_attempt }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - id: additional-cache
+      uses: tespkg/actions-cache@v1
+      with:
+        endpoint: ${{ vars.CI_CACHE_ENDPOINT }}
+        accessKey: ${{ secrets.CI_CACHE_ACCESS_KEY }}
+        secretKey: ${{ secrets.CI_CACHE_SECRET_KEY }}
+        bucket: ${{ vars.CI_CACHE_BUCKET }}
+        use-fallback: 'false'
+        path: ./orica_server/orica_prisma_bindings/src/prisma*.rs
+        key: ${{ needs.compute-prisma-hash-key.outputs.hash_key }}-${{ github.ref_name }}
+        restore-keys: |
+          ${{ needs.compute-prisma-hash-key.outputs.hash_key }}-${{ github.base_ref }}
+          ${{ needs.compute-prisma-hash-key.outputs.hash_key }}
+    - if: steps.additional-cache.outputs.cache-hit != 'true'
+      uses: ForesightMiningSoftwareCorporation/github/.github/actions/login-private-registry@v1
+      with:
+        private_key: ${{ secrets.CARGO_PRIVATE_REGISTRY_SSH_PRIVATE_KEY }}
+        host: ${{ secrets.CARGO_PRIVATE_REGISTRY_HOST }}
+        name: ${{ secrets.CARGO_PRIVATE_REGISTRY_NAME }}
+        token: ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}
+    - if: steps.additional-cache.outputs.cache-hit != 'true'
+      name: Additional Cache Miss Command
+      shell: bash
+      run: npm --prefix orica_server/prisma_cli i && npm --prefix orica_server/prisma_cli run generate
+  check_changed_and_publish: {}
+  hub_geostats:
+    name: 'Test and Publish hub_geostats: hub_geostats'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fse_dag_model_impl
+    - fsl_geostats
+    - fsl_polyline
+    - hub_app
+    - orica_api
+    - orica_api_models
+    - orica_blasthole
+    - orica_dxf
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_geostats.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_geostats.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_geostats
+    secrets: inherit
+  launcher:
+    name: 'Test and Publish hub_launcher: launcher'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).launcher.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.launcher.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_launcher/launcher
+    secrets: inherit
+  hub_auth:
+    name: 'Test and Publish hub_launcher: hub_auth'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_auth
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_auth.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_auth.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_launcher/crates/hub_auth
+    secrets: inherit
+  hub_photo:
+    name: 'Test and Publish hub_photo: hub_photo'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    - orica_api
+    - orica_api_log_sender
+    - orica_api_models
+    - orica_auth
+    - orica_blasthole
+    - orica_photo_ui
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_photo.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_photo.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo
+    secrets: inherit
+  orica_api_models:
+    name: 'Test and Publish orica_backend: orica_api_models'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_api_models.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_api_models.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_api_models
+    secrets: inherit
+  prisma_cli:
+    name: 'Test and Publish orica_server: prisma_cli'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).prisma_cli.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.prisma_cli.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/prisma_cli
+    secrets: inherit
+  orica_prisma_bindings:
+    name: 'Test and Publish orica_server: orica_prisma_bindings'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_prisma_bindings.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_prisma_bindings.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/orica_prisma_bindings
+    secrets: inherit
+  whirlpool:
+    name: 'Test and Publish whirlpool: whirlpool'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types
+    - orica_api
+    - orica_api_log_sender
+    - orica_auth
+    - orica_blast_volumetrics
+    - orica_blasthole
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_dxf
+    - orica_licensing
+    - orica_loading
+    - orica_loading_types
+    - orica_rings
+    - orica_style
+    - whirlpool
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).whirlpool.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.whirlpool.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: whirlpool
+    secrets: inherit
+  orica_licensing:
+    name: 'Test and Publish orica_backend: orica_licensing'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_api
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_licensing.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_licensing.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_licensing
+    secrets: inherit
+  orica_photo_api_log:
+    name: 'Test and Publish hub_photo: orica_photo_api_log'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_api_log.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_api_log.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_api_log
+    secrets: inherit
+  orica_density_functions:
+    name: 'Test and Publish orica_backend: orica_density_functions'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_density_functions.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_density_functions.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_density_functions
+    secrets: inherit
+  orica_photo_util:
+    name: 'Test and Publish hub_photo: orica_photo_util'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_util.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_util.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_util
+    secrets: inherit
+  orica_photo_api_gen:
+    name: 'Test and Publish hub_photo: orica_photo_api_gen'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_photo_api_log
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_api_gen.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_api_gen.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_api_gen
+    secrets: inherit
+  orica_server_storage:
+    name: 'Test and Publish orica_backend: orica_server_storage'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_server_storage.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_server_storage.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_server_storage
+    secrets: inherit
+  orica_loading_types:
+    name: 'Test and Publish orica_backend: orica_loading_types'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_api_models
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_loading_types.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_loading_types.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_loading_types
+    secrets: inherit
+  hub_server_types_prisma:
+    name: 'Test and Publish orica_server: hub_server_types_prisma'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_prisma_bindings
+    - orica_server_storage
+    - orica_server_storage
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_server_types_prisma.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_server_types_prisma.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/hub_server_types_prisma
+    secrets: inherit
+  orica_blast_physics:
+    name: 'Test and Publish orica_blast_physics: orica_blast_physics'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types
+    - orica_auth
+    - orica_predict_geometry
+    - orica_predict_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blast_physics.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blast_physics.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_blast_physics
+    secrets: inherit
+  orica_blast_layout:
+    name: 'Test and Publish hub_opencut: orica_blast_layout'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fsl_polyline
+    - hub_app
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blast_layout.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blast_layout.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/orica_blast_layout
+    secrets: inherit
+  orica_photo_api:
+    name: 'Test and Publish hub_photo: orica_photo_api'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    - hub_server_types
+    - orica_photo_api_gen
+    - orica_photo_api_log
+    - orica_photo_server_shared
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_api.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_api.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_api
+    secrets: inherit
+  fse_dag_model_impl:
+    name: 'Test and Publish hub_opencut: fse_dag_model_impl'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).fse_dag_model_impl.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.fse_dag_model_impl.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/fse_dag_model_impl
+    secrets: inherit
+  orica_photo_server:
+    name: 'Test and Publish hub_photo: orica_photo_server'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_photo_server_shared
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_server.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_server.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_server
+    secrets: inherit
+  hub_server_types:
+    name: 'Test and Publish orica_server: hub_server_types'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_prisma_types_shim
+    - orica_server_storage
+    - orica_server_storage
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_server_types.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_server_types.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/hub_server_types
+    secrets: inherit
+  orica_photo_ui:
+    name: 'Test and Publish hub_photo: orica_photo_ui'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    - orica_api
+    - orica_api_models
+    - orica_auth
+    - orica_photo_api
+    - orica_photo_api_gen
+    - orica_photo_fetch_heightmap
+    - orica_photo_geospatial
+    - orica_photo_header
+    - orica_photo_util
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_ui.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_ui.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_ui
+    secrets: inherit
+  hub_ui:
+    name: 'Test and Publish hub_launcher: hub_ui'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_auth
+    - hub_client
+    - hub_project_types
+    - hub_server_types
+    - hub_taskrunner_client
+    - orica_auth
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_ui.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_ui.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_launcher/crates/hub_ui
+    secrets: inherit
+  orica_blasthole_types:
+    name: 'Test and Publish orica_backend: orica_blasthole_types'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_api_models
+    - orica_density_functions
+    - orica_loading_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blasthole_types.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blasthole_types.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_blasthole_types
+    secrets: inherit
+  orica_op3_bindings:
+    name: 'Test and Publish orica_op3: orica_op3_bindings'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_op3_backend
+    - orica_predict_geometry
+    - orica_predict_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_op3_bindings.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_op3_bindings.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_op3/crates/orica_op3_bindings
+      publish_npm_napi: 'true'
+    secrets: inherit
+  orica_timings:
+    name: 'Test and Publish hub_opencut: orica_timings'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fsl_polyline
+    - hub_app
+    - orica_blast_layout
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_loading_types
+    - orica_style
+    - orica_blasthole_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_timings.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_timings.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/orica_timings
+    secrets: inherit
+  orica_op3_backend:
+    name: 'Test and Publish orica_op3: orica_op3_backend'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_op3_backend.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_op3_backend.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_op3/crates/orica_op3_backend
+    secrets: inherit
+  hub_taskrunner_client:
+    name: 'Test and Publish hub_app: hub_taskrunner_client'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_client
+    - hub_server_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_taskrunner_client.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_taskrunner_client.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_app/crates/hub_taskrunner_client
+    secrets: inherit
+  orica_blasthole_rendering:
+    name: 'Test and Publish orica_backend: orica_blasthole_rendering'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_api_models
+    - orica_blasthole_types
+    - orica_loading_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blasthole_rendering.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blasthole_rendering.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_blasthole_rendering
+    secrets: inherit
+  orica_backend:
+    name: 'Test and Publish orica_backend: orica_backend'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_backend.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_backend.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend
+    secrets: inherit
+  orica_photo_header:
+    name: 'Test and Publish hub_photo: orica_photo_header'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_photo_util
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_header.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_header.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_header
+    secrets: inherit
+  utils:
+    name: 'Test and Publish hub_app: utils'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_auth
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).utils.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.utils.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_app/crates/utils
+    secrets: inherit
+  fsl_geostats:
+    name: 'Test and Publish hub_geostats: fsl_geostats'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).fsl_geostats.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.fsl_geostats.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_geostats/crates/fsl_geostats
+    secrets: inherit
+  orica_photo_proj:
+    name: 'Test and Publish hub_photo: orica_photo_proj'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_proj.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_proj.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_proj
+    secrets: inherit
+  orica_api_log_sender:
+    name: 'Test and Publish orica_backend: orica_api_log_sender'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_api_log_sender.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_api_log_sender.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_api_log_sender
+    secrets: inherit
+  orica_op3:
+    name: 'Test and Publish orica_op3: orica_op3'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_op3.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_op3.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_op3
+    secrets: inherit
+  orica_predict_types:
+    name: 'Test and Publish orica_server: orica_predict_types'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types
+    - orica_auth
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_predict_types.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_predict_types.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/orica_predict_types
+    secrets: inherit
+  hub_opencut:
+    name: 'Test and Publish hub_opencut: hub_opencut'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fse_dag_model_impl
+    - fsl_polyline
+    - hub_app
+    - orica_api
+    - orica_api_models
+    - orica_blast_layout
+    - orica_blasthole
+    - orica_blasthole_rendering
+    - orica_dxf
+    - orica_loading
+    - orica_loading_types
+    - orica_predict
+    - orica_style
+    - orica_timings
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_opencut.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_opencut.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut
+    secrets: inherit
+  oreprohub:
+    name: 'Test and Publish hub_launcher: oreprohub'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_auth
+    - hub_client
+    - hub_project_types
+    - hub_server_types
+    - hub_taskrunner_client
+    - hub_ui
+    - orica_auth
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).oreprohub.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.oreprohub.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_launcher
+    secrets: inherit
+  fse_line_tool:
+    name: 'Test and Publish hub_opencut: fse_line_tool'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).fse_line_tool.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.fse_line_tool.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/fse_line_tool
+    secrets: inherit
+  orica_dxf:
+    name: 'Test and Publish orica_backend: orica_dxf'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_blasthole
+    - orica_blasthole_types
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_dxf.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_dxf.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_dxf
+    secrets: inherit
+  fsl_polyline:
+    name: 'Test and Publish hub_opencut: fsl_polyline'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fse_line_tool
+    - hub_app
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).fsl_polyline.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.fsl_polyline.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/fsl_polyline
+    secrets: inherit
+  orica_physics_replay:
+    name: 'Test and Publish orica_physics: orica_physics_replay'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_physics_replay.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_physics_replay.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_physics/crates/orica_physics_replay
+    secrets: inherit
+  orica_ui:
+    name: 'Test and Publish orica_ui: orica_ui'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_ui.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_ui.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_ui
+    secrets: inherit
+  orica_photo_fetch_heightmap:
+    name: 'Test and Publish hub_photo: orica_photo_fetch_heightmap'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_fetch_heightmap.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_fetch_heightmap.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_fetch_heightmap
+    secrets: inherit
+  hub_app:
+    name: 'Test and Publish hub_app: hub_app'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fse_line_tool
+    - hub_app_args
+    - hub_project_types
+    - hub_taskrunner_client
+    - orica_auth
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_app.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_app.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_app
+    secrets: inherit
+  orica_blasthole:
+    name: 'Test and Publish orica_backend: orica_blasthole'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_api
+    - orica_api_models
+    - orica_auth
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_density_functions
+    - orica_loading_types
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blasthole.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blasthole.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_blasthole
+    secrets: inherit
+  hub_project_types:
+    name: 'Test and Publish hub_app: hub_project_types'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_project_types.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_project_types.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_app/crates/hub_project_types
+    secrets: inherit
+  orica_style:
+    name: 'Test and Publish orica_ui: orica_style'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_style.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_style.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_ui/crates/orica_style
+    secrets: inherit
+  hub_client:
+    name: 'Test and Publish orica_server: hub_client'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_client.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_client.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/hub_client
+    secrets: inherit
+  whirlpool_launcher:
+    name: 'Test and Publish whirlpool: whirlpool_launcher'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).whirlpool_launcher.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.whirlpool_launcher.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: whirlpool/launcher
+    secrets: inherit
+  orica_api:
+    name: 'Test and Publish orica_backend: orica_api'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types
+    - orica_api_log_sender
+    - orica_api_models
+    - orica_auth
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_api.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_api.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_api
+    secrets: inherit
+  orica_photo_server_shared:
+    name: 'Test and Publish hub_photo: orica_photo_server_shared'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_server_shared.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_server_shared.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_server_shared
+    secrets: inherit
+  orica_loading:
+    name: 'Test and Publish orica_backend: orica_loading'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_density_functions
+    - orica_loading_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_loading.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_loading.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_loading
+    secrets: inherit
+  orica_predict:
+    name: 'Test and Publish hub_opencut: orica_predict'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - fse_line_tool
+    - fsl_polyline
+    - hub_app
+    - hub_server_types
+    - orica_api
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_loading_types
+    - orica_predict_geometry
+    - orica_predict_types
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_predict.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_predict.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_opencut/crates/orica_predict
+    secrets: inherit
+  orica_rings:
+    name: 'Test and Publish orica_backend: orica_rings'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_rings.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_rings.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_rings
+    secrets: inherit
+  orica_prisma_types_shim:
+    name: 'Test and Publish orica_server: orica_prisma_types_shim'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_prisma_types_shim.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_prisma_types_shim.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/orica_prisma_types_shim
+    secrets: inherit
+  orica_predict_types_prisma:
+    name: 'Test and Publish orica_server: orica_predict_types_prisma'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types_prisma
+    - orica_auth
+    - orica_server_storage
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_predict_types_prisma.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_predict_types_prisma.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server/orica_predict_types_prisma
+    secrets: inherit
+  orica_db:
+    name: 'Test and Publish orica_backend: orica_db'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_db.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_db.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_db
+    secrets: inherit
+  orica_physics:
+    name: 'Test and Publish orica_physics: orica_physics'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_physics.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_physics.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_physics
+    secrets: inherit
+  orica_photo_geospatial:
+    name: 'Test and Publish hub_photo: orica_photo_geospatial'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_app
+    - orica_photo_fetch_heightmap
+    - orica_photo_header
+    - orica_photo_util
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_photo_geospatial.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_photo_geospatial.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_photo/crates/orica_photo_geospatial
+    secrets: inherit
+  orica_auth:
+    name: 'Test and Publish orica_backend: orica_auth'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_auth.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_auth.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_auth
+    secrets: inherit
+  orica_blast_volumetrics:
+    name: 'Test and Publish orica_backend: orica_blast_volumetrics'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_blasthole_rendering
+    - orica_blasthole_types
+    - orica_style
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_blast_volumetrics.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_blast_volumetrics.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_backend/crates/orica_blast_volumetrics
+    secrets: inherit
+  orica_predict_geometry:
+    name: 'Test and Publish orica_physics: orica_predict_geometry'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - orica_predict_types
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_predict_geometry.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_predict_geometry.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_physics/crates/orica_predict_geometry
+    secrets: inherit
+  hub_app_args:
+    name: 'Test and Publish hub_app: hub_app_args'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).hub_app_args.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.hub_app_args.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: hub_app/crates/hub_app_args
+    secrets: inherit
+  orica_server:
+    name: 'Test and Publish orica_server: orica_server'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    needs:
+    - compute-prisma-hash-key
+    - build-prisma-cache
+    - check_changed_and_publish
+    - hub_server_types_prisma
+    - orica_auth
+    - orica_predict_types_prisma
+    - orica_prisma_bindings
+    - orica_server_storage
+    - hub_client
+    - orica_server_storage
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && ((fromJSON(needs.check_changed_and_publish.outputs.output).orica_server.changed) || (fromJSON(needs.check_changed_and_publish.outputs.output.orica_server.publish && github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))))
+    with:
+      publish: ${ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) })
+      working_directory: orica_server
+      publish_docker: 'true'
+    secrets: inherit
