@@ -741,7 +741,6 @@ pub async fn generate_workflow(
                 ..Default::default()
             },
         );
-        ///
         // steps:
         // - name: Install fslabscli
         // uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
