@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::Context;
 use cargo_metadata::{MetadataCommand, Package};
 use clap::Parser;
-use console::{Emoji, style};
+use console::{style, Emoji};
 use git2::{DiffDelta, DiffOptions, Repository};
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
@@ -20,9 +20,9 @@ use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
 use crate::utils;
 
+mod cargo;
 mod docker;
 mod npm;
-mod cargo;
 
 static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
@@ -91,7 +91,9 @@ pub struct Result {
     pub ci_args: Option<IndexMap<String, Value>>,
 }
 
-fn default_false() -> bool { false }
+fn default_false() -> bool {
+    false
+}
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiPublish {
@@ -118,15 +120,25 @@ struct PackageMetadata {
 
 impl Result {
     pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
-        let path = package.manifest_path.canonicalize()?.parent().unwrap().to_path_buf();
-        let metadata: PackageMetadata = from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
+        let path = package
+            .manifest_path
+            .canonicalize()?
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let metadata: PackageMetadata =
+            from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.fslabs.publish;
         // Let's parse cargo publishing from main metadata
         publish.cargo.registry = package.publish;
-        let dependencies = package.dependencies.into_iter().map(|d| ResultDependency {
-            package: d.name,
-            version: d.req.to_string(),
-        }).collect();
+        let dependencies = package
+            .dependencies
+            .into_iter()
+            .map(|d| ResultDependency {
+                package: d.name,
+                version: d.req.to_string(),
+            })
+            .collect();
         Ok(Self {
             workspace,
             package: package.name,
@@ -139,30 +151,48 @@ impl Result {
         })
     }
 
-    pub async fn check_publishable(&mut self, options: &Options, npm: &Npm, cargo: &Cargo) -> anyhow::Result<()> {
-        self.publish_detail.docker.check(
-            self.package.clone(),
-            self.version.clone(),
-            options.docker_registry.clone(),
-            options.docker_registry_username.clone(),
-            options.docker_registry_password.clone(),
-            None,
-        ).await?;
-        self.publish_detail.npm_napi.check(self.package.clone(), self.version.clone(), npm).await?;
-        self.publish_detail.cargo.check(self.package.clone(), self.version.clone(), cargo).await?;
+    pub async fn check_publishable(
+        &mut self,
+        options: &Options,
+        npm: &Npm,
+        cargo: &Cargo,
+    ) -> anyhow::Result<()> {
+        self.publish_detail
+            .docker
+            .check(
+                self.package.clone(),
+                self.version.clone(),
+                options.docker_registry.clone(),
+                options.docker_registry_username.clone(),
+                options.docker_registry_password.clone(),
+                None,
+            )
+            .await?;
+        self.publish_detail
+            .npm_napi
+            .check(self.package.clone(), self.version.clone(), npm)
+            .await?;
+        self.publish_detail
+            .cargo
+            .check(self.package.clone(), self.version.clone(), cargo)
+            .await?;
         Ok(())
     }
 }
 
 impl Display for Result {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,
-               "{} -- {} -- {}: docker: {}, cargo: {}, npm_napi: {}, binary: {}",
-               self.workspace, self.package, self.version,
-               self.publish_detail.docker.publish,
-               self.publish_detail.cargo.publish,
-               self.publish_detail.npm_napi.publish,
-               self.publish_detail.binary)
+        write!(
+            f,
+            "{} -- {} -- {}: docker: {}, cargo: {}, npm_napi: {}, binary: {}",
+            self.workspace,
+            self.package,
+            self.version,
+            self.publish_detail.docker.publish,
+            self.publish_detail.cargo.publish,
+            self.publish_detail.npm_napi.publish,
+            self.publish_detail.binary
+        )
     }
 }
 
@@ -178,12 +208,17 @@ impl Display for Results {
     }
 }
 
-pub async fn check_workspace(options: Options, working_directory: PathBuf) -> anyhow::Result<Results> {
+pub async fn check_workspace(
+    options: Box<Options>,
+    working_directory: PathBuf,
+) -> anyhow::Result<Results> {
     log::info!("Check directory for crates that need publishing");
     let started = Instant::now();
     let path = match working_directory.is_absolute() {
         true => working_directory.clone(),
-        false => working_directory.canonicalize().with_context(|| format!("Failed to get absolute path from {:?}", working_directory))?,
+        false => working_directory
+            .canonicalize()
+            .with_context(|| format!("Failed to get absolute path from {:?}", working_directory))?,
     };
 
     log::debug!("Base directory: {:?}", path);
@@ -195,7 +230,8 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
             LOOKING_GLASS
         );
     }
-    let roots = utils::get_cargo_roots(path).with_context(|| format!("Failed to get roots from {:?}", working_directory))?;
+    let roots = utils::get_cargo_roots(path)
+        .with_context(|| format!("Failed to get roots from {:?}", working_directory))?;
     let mut packages: HashMap<String, Result> = HashMap::new();
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
@@ -213,7 +249,11 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                 .exec()
                 .unwrap();
             for package in workspace_metadata.packages {
-                match Result::new(workspace_name.to_string_lossy().to_string(), package.clone(), working_directory.clone()) {
+                match Result::new(
+                    workspace_name.to_string_lossy().to_string(),
+                    package.clone(),
+                    working_directory.clone(),
+                ) {
                     Ok(r) => {
                         packages.insert(r.package.clone(), r);
                     }
@@ -242,14 +282,28 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
 
     if options.check_publish {
         // TODO: switch to an ASYNC_ONCE or something
-        let npm = Npm::new(options.npm_registry_url.clone(), options.npm_registry_token.clone(), options.npm_registry_npmrc_path.clone(), true)?;
+        let npm = Npm::new(
+            options.npm_registry_url.clone(),
+            options.npm_registry_token.clone(),
+            options.npm_registry_npmrc_path.clone(),
+            true,
+        )?;
         let mut cargo = Cargo::new(None)?;
-        if let (Some(private_registry), Some(private_registry_url)) = (options.cargo_registry.clone(), options.cargo_registry_url.clone()) {
-            cargo.add_registry(private_registry, private_registry_url, options.cargo_registry_user_agent.clone())?;
+        if let (Some(private_registry), Some(private_registry_url)) = (
+            options.cargo_registry.clone(),
+            options.cargo_registry_url.clone(),
+        ) {
+            cargo.add_registry(
+                private_registry,
+                private_registry_url,
+                options.cargo_registry_user_agent.clone(),
+            )?;
         }
         let mut pb: Option<ProgressBar> = None;
         if options.progress {
-            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
         }
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
@@ -262,7 +316,12 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                 match package.check_publishable(&options, &npm, &cargo).await {
                     Ok(_) => {}
                     Err(e) => {
-                        let error_msg = format!("Could not check package {} -- {}: {}", package.workspace.clone(), package.package.clone(), e);
+                        let error_msg = format!(
+                            "Could not check package {} -- {}: {}",
+                            package.workspace.clone(),
+                            package.package.clone(),
+                            e
+                        );
                         if options.fail_unit_error {
                             anyhow::bail!(error_msg)
                         } else {
@@ -271,7 +330,14 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                         }
                     }
                 }
-                package.publish = vec![package.publish_detail.docker.publish, package.publish_detail.cargo.publish, package.publish_detail.npm_napi.publish, package.publish_detail.binary].into_iter().any(|x| x);
+                package.publish = vec![
+                    package.publish_detail.docker.publish,
+                    package.publish_detail.cargo.publish,
+                    package.publish_detail.npm_napi.publish,
+                    package.publish_detail.binary,
+                ]
+                .into_iter()
+                .any(|x| x);
             }
         }
     }
@@ -285,7 +351,9 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     }
     let mut pb: Option<ProgressBar> = None;
     if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
     }
     for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
@@ -296,7 +364,9 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            package.dependencies.retain(|d| package_keys.contains(&d.package));
+            package
+                .dependencies
+                .retain(|d| package_keys.contains(&d.package));
         }
     }
     // 4 Feed Dependent
@@ -309,7 +379,9 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     }
 
     if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
     }
     let package_keys: Vec<String> = packages.keys().cloned().collect();
     for package_key in package_keys.clone() {
@@ -317,7 +389,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
             pb.inc(1);
         }
         // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get(&package_key).map(|c| c.clone()) {
+        if let Some(package) = packages.get(&package_key).cloned() {
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
@@ -349,7 +421,9 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
         let head_tree = head_commit.peel_to_tree()?;
         let base_tree = base_commit.peel_to_tree()?;
         if options.progress {
-            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
         }
 
         // Check changed from a git pov
@@ -364,26 +438,33 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                 // let Ok(folder_entry) = head_tree.get_path(package_folder) else {
                 //     continue;
                 // };
-                let Ok(package_folder) = package.path.strip_prefix(working_directory.as_path()) else {
+                let Ok(package_folder) = package.path.strip_prefix(working_directory.as_path())
+                else {
                     continue;
                 };
                 let mut diff_options = DiffOptions::new();
                 diff_options.include_unmodified(true);
-                let Ok(diff) = repository.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut diff_options)) else {
+                let Ok(diff) = repository.diff_tree_to_tree(
+                    Some(&base_tree),
+                    Some(&head_tree),
+                    Some(&mut diff_options),
+                ) else {
                     continue;
                 };
                 let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
                     let check_old_file = match delta.old_file().path() {
                         Some(p) => {
-                            package_folder.to_string_lossy().is_empty() || p.starts_with(package_folder)
+                            package_folder.to_string_lossy().is_empty()
+                                || p.starts_with(package_folder)
                         }
-                        None => false
+                        None => false,
                     };
                     let check_new_file = match delta.new_file().path() {
                         Some(p) => {
-                            package_folder.to_string_lossy().is_empty() || p.starts_with(package_folder)
+                            package_folder.to_string_lossy().is_empty()
+                                || p.starts_with(package_folder)
                         }
-                        None => false
+                        None => false,
                     };
                     if check_old_file || check_new_file {
                         let old_oid = delta.old_file().id();
@@ -412,7 +493,9 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     }
     if options.check_changed {
         if options.progress {
-            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
         }
 
         // Check changed from a git pov
@@ -431,7 +514,11 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                     // We already treated it's tree
                     continue;
                 }
-                let dependant: Vec<String> = package.dependant.iter().map(|p| p.package.clone()).collect();
+                let dependant: Vec<String> = package
+                    .dependant
+                    .iter()
+                    .map(|p| p.package.clone())
+                    .collect();
                 mark_dependants_as_changed(&mut packages, &dependant);
             }
         }
@@ -451,7 +538,11 @@ fn mark_dependants_as_changed(all_packages: &mut HashMap<String, Result>, change
                 continue;
             }
             package.dependencies_changed = true;
-            let dependant: Vec<String> = package.dependant.iter().map(|p| p.package.clone()).collect();
+            let dependant: Vec<String> = package
+                .dependant
+                .iter()
+                .map(|p| p.package.clone())
+                .collect();
             mark_dependants_as_changed(all_packages, &dependant);
         }
     }
