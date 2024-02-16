@@ -444,10 +444,11 @@ pub async fn check_workspace(
                 // let Ok(folder_entry) = head_tree.get_path(package_folder) else {
                 //     continue;
                 // };
-                let Ok(package_folder) = package.path.strip_prefix(working_directory.as_path())
-                    else {
-                        continue;
-                    };
+
+                let package_folder = match &package.path.to_string_lossy().to_string() == "." {
+                    true => "".to_string(),
+                    false => package.path.clone().to_string_lossy().to_string(),
+                };
                 let mut diff_options = DiffOptions::new();
                 diff_options.include_unmodified(true);
                 let Ok(diff) = repository.diff_tree_to_tree(
@@ -460,15 +461,15 @@ pub async fn check_workspace(
                 let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
                     let check_old_file = match delta.old_file().path() {
                         Some(p) => {
-                            package_folder.to_string_lossy().is_empty()
-                                || p.starts_with(package_folder)
+                            package_folder.is_empty()
+                                || p.starts_with(&package_folder)
                         }
                         None => false,
                     };
                     let check_new_file = match delta.new_file().path() {
                         Some(p) => {
-                            package_folder.to_string_lossy().is_empty()
-                                || p.starts_with(package_folder)
+                            package_folder.is_empty()
+                                || p.starts_with(&package_folder)
                         }
                         None => false,
                     };
