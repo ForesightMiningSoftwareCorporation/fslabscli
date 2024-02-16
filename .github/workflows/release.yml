@@ -1,0 +1,22 @@
+name: Release FSLABScli
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish:
+        type: boolean
+        required: false
+        description: Trigger with publish
+
+jobs:
+  publish:
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1
+    with:
+      publish: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'true' || 'false' }}
+      publish_binary: true
+      skip-test: ${{ github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    secrets: inherit
