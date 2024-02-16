@@ -14,29 +14,46 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  check_changed_and_publish:
+    name: 'Check which workspace member changes and needs publishing'
+    runs-on: ubuntu-latest
+    outputs:
+      workspace: steps.check_workspace.outputs.workspace
+    steps:
+      - name: Install fslabscli
+        uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
+      - name: Checkout workspace
+        uses: actions/checkout@v4
+      - name: Check Workspace
+        id: check_workspace
+        working-directory: .
+        shell: bash
+        run: |
+          echo workspace=$(fslabscli check-workspace --json) >> $GITHUB_OUTPUT
   test_fslabscli:
     name: 'Test fslabscli: fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
-    needs: [ ]
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    needs:
+      - check_changed_and_publish
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.changed)
     with:
       publish: 'false'
-      working_directory: '.'
-      skip_test: 'true'
+      working_directory: .
     secrets: inherit
   publish_fslabscli:
     name: 'Publish fslabscli: fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
     needs:
+      - check_changed_and_publish
       - test_fslabscli
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.publish)
     with:
       skip_test: 'true'
-      publish: 'true'
+      publish: 'false'
       publish_private_registry: 'false'
       publish_public_registry: 'false'
       publish_docker: 'false'
       publish_binary: 'true'
       publish_npm_napi: 'false'
-      working_directory: '.'
+      working_directory: .
     secrets: inherit
