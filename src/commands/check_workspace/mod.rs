@@ -8,6 +8,7 @@ use cargo_metadata::{MetadataCommand, Package};
 use clap::Parser;
 use console::{Emoji, style};
 use git2::{DiffDelta, DiffOptions, Repository};
+use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use serde_json::from_value;
@@ -86,6 +87,8 @@ pub struct Result {
     pub dependencies: Vec<ResultDependency>,
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
+    pub dependencies_changed: bool,
+    pub ci_args: Option<IndexMap<String, Value>>,
 }
 
 fn default_false() -> bool { false }
@@ -100,12 +103,12 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "default_false")]
     pub binary: bool,
-    pub args: Option<HashMap<String, Value>>,
 }
 
 #[derive(Deserialize, Default)]
 struct PackageMetadataFslabsCi {
     pub publish: PackageMetadataFslabsCiPublish,
+    pub args: Option<IndexMap<String, Value>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -130,6 +133,7 @@ impl Result {
             version: package.version.to_string(),
             path: path.strip_prefix(root_dir)?.to_path_buf(),
             publish_detail: publish,
+            ci_args: metadata.fslabs.args,
             dependencies,
             ..Default::default()
         })
@@ -187,7 +191,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/6]").bold().dim(),
+            style("[1/7]").bold().dim(),
             LOOKING_GLASS
         );
     }
@@ -197,7 +201,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/6]").bold().dim(),
+            style("[2/7]").bold().dim(),
             TRUCK
         );
     }
@@ -229,7 +233,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[3/6]").bold().dim(),
+            style("[3/7]").bold().dim(),
             PAPER
         );
     }
@@ -275,7 +279,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Filtering packages dependencies...",
-            style("[4/6]").bold().dim(),
+            style("[4/7]").bold().dim(),
             TRUCK
         );
     }
@@ -299,7 +303,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Feeding packages dependant...",
-            style("[5/6]").bold().dim(),
+            style("[5/7]").bold().dim(),
             TRUCK
         );
     }
@@ -332,7 +336,7 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
     if options.progress {
         println!(
             "{} {}Checking if packages changed...",
-            style("[6/6]").bold().dim(),
+            style("[6/7]").bold().dim(),
             TRUCK
         );
     }
@@ -348,11 +352,11 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
             pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
         }
 
+        // Check changed from a git pov
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
                 pb.inc(1);
             }
-            // Loop through all the dependencies, if we don't know of it, skip it
             if let Some(package) = packages.get_mut(&package_key) {
                 if let Some(ref pb) = pb {
                     pb.set_message(format!("{} : {}", package.workspace, package.package));
@@ -396,10 +400,59 @@ pub async fn check_workspace(options: Options, working_directory: PathBuf) -> an
                 }
             }
         }
+        // Now that git changes has been checked, we should loop through all package, if it has changed, we should mark
+        // all it's dependant recursively as changed
+    }
+    if options.progress {
+        println!(
+            "{} {}Marking packages dependency as changed...",
+            style("[7/7]").bold().dim(),
+            TRUCK
+        );
+    }
+    if options.check_changed {
+        if options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?));
+        }
+
+        // Check changed from a git pov
+        for package_key in package_keys.clone() {
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            if let Some(package) = packages.get(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.set_message(format!("{} : {}", package.workspace, package.package));
+                }
+                if !package.changed {
+                    continue;
+                }
+                if package.dependencies_changed {
+                    // We already treated it's tree
+                    continue;
+                }
+                let dependant: Vec<String> = package.dependant.iter().map(|p| p.package.clone()).collect();
+                mark_dependants_as_changed(&mut packages, &dependant);
+            }
+        }
     }
     if options.progress {
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
 
     Ok(Results(packages))
+}
+
+fn mark_dependants_as_changed(all_packages: &mut HashMap<String, Result>, changed: &Vec<String>) {
+    for package_key in changed {
+        if let Some(package) = all_packages.get_mut(package_key) {
+            if package.dependencies_changed {
+                // already treated
+                continue;
+            }
+            package.dependencies_changed = true;
+            let dependant: Vec<String> = package.dependant.iter().map(|p| p.package.clone()).collect();
+            mark_dependants_as_changed(all_packages, &dependant);
+        }
+    }
 }
