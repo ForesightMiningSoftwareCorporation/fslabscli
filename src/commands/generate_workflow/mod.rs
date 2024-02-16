@@ -735,10 +735,25 @@ pub async fn generate_workflow(
         workflow_template.jobs.insert(
             check_job_key.clone(),
             GithubWorkflowJob {
+                name: Some("Check which workspace member changed and / or needs publishing".to_string()),
+                runs_on: Some(vec!["ubuntu-latest".to_string()]),
+                outputs: Some(IndexMap::from([("workspace".to_string(), "${{ steps.check_workspace.outputs.workspace }}".to_string())])),
                 ..Default::default()
             },
         );
-        initial_jobs.push(check_job_key.clone());
+        ///
+        // steps:
+        // - name: Install fslabscli
+        // uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
+        //     - name: Checkout workspace
+        // uses: actions/checkout@v4
+        //     - name: Check Workspace
+        // id: check_workspace
+        // working-directory: .
+        // shell: bash
+        // run: |
+        // echo workspace=$(fslabscli check-workspace --json) >> $GITHUB_OUTPUT
+        // initial_jobs.push(check_job_key.clone());
     }
     // Get Directory information
     let members =
@@ -767,11 +782,11 @@ pub async fn generate_workflow(
         let mut test_if = base_if.clone();
         if !options.no_check_changed_and_publish {
             publish_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.publish)",
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.publish == 'true')",
                 publish_if, &check_job_key, member_key
             );
             test_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed)",
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed == 'true')",
                 test_if, &check_job_key, member_key
             );
         }

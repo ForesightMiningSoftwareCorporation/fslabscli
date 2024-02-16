@@ -284,39 +284,39 @@ pub async fn check_workspace(
 
     let package_keys: Vec<String> = packages.keys().cloned().collect();
 
-    if options.check_publish {
-        // TODO: switch to an ASYNC_ONCE or something
-        let npm = Npm::new(
-            options.npm_registry_url.clone(),
-            options.npm_registry_token.clone(),
-            options.npm_registry_npmrc_path.clone(),
-            true,
+    // TODO: switch to an ASYNC_ONCE or something
+    let npm = Npm::new(
+        options.npm_registry_url.clone(),
+        options.npm_registry_token.clone(),
+        options.npm_registry_npmrc_path.clone(),
+        true,
+    )?;
+    let mut cargo = Cargo::new(None)?;
+    if let (Some(private_registry), Some(private_registry_url)) = (
+        options.cargo_registry.clone(),
+        options.cargo_registry_url.clone(),
+    ) {
+        cargo.add_registry(
+            private_registry,
+            private_registry_url,
+            options.cargo_registry_user_agent.clone(),
         )?;
-        let mut cargo = Cargo::new(None)?;
-        if let (Some(private_registry), Some(private_registry_url)) = (
-            options.cargo_registry.clone(),
-            options.cargo_registry_url.clone(),
-        ) {
-            cargo.add_registry(
-                private_registry,
-                private_registry_url,
-                options.cargo_registry_user_agent.clone(),
-            )?;
+    }
+    let mut pb: Option<ProgressBar> = None;
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
         }
-        let mut pb: Option<ProgressBar> = None;
-        if options.progress {
-            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-            ));
-        }
-        for package_key in package_keys.clone() {
+        if let Some(package) = packages.get_mut(&package_key) {
             if let Some(ref pb) = pb {
-                pb.inc(1);
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            if let Some(package) = packages.get_mut(&package_key) {
-                if let Some(ref pb) = pb {
-                    pb.set_message(format!("{} : {}", package.workspace, package.package));
-                }
+            if options.check_publish {
                 match package.check_publishable(&options, &npm, &cargo).await {
                     Ok(_) => {}
                     Err(e) => {
@@ -334,15 +334,17 @@ pub async fn check_workspace(
                         }
                     }
                 }
-                package.publish = vec![
-                    package.publish_detail.docker.publish,
-                    package.publish_detail.cargo.publish,
-                    package.publish_detail.npm_napi.publish,
-                    package.publish_detail.binary,
-                ]
-                    .into_iter()
-                    .any(|x| x);
             }
+
+
+            package.publish = vec![
+                package.publish_detail.docker.publish,
+                package.publish_detail.cargo.publish,
+                package.publish_detail.npm_napi.publish,
+                package.publish_detail.binary,
+            ]
+                .into_iter()
+                .any(|x| x);
         }
     }
 
