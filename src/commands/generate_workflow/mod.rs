@@ -741,18 +741,6 @@ pub async fn generate_workflow(
                 ..Default::default()
             },
         );
-        // steps:
-        // - name: Install fslabscli
-        // uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
-        //     - name: Checkout workspace
-        // uses: actions/checkout@v4
-        //     - name: Check Workspace
-        // id: check_workspace
-        // working-directory: .
-        // shell: bash
-        // run: |
-        // echo workspace=$(fslabscli check-workspace --json) >> $GITHUB_OUTPUT
-        // initial_jobs.push(check_job_key.clone());
     }
     // Get Directory information
     let members =
