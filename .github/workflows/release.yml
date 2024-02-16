@@ -1,22 +1,42 @@
-name: Release FSLABScli
-
+name: CI-CD - Tests and Publishing
 on:
-  pull_request:
   push:
     branches:
       - main
+  pull_request: { }
   workflow_dispatch:
     inputs:
       publish:
-        type: boolean
-        required: false
         description: Trigger with publish
-
+        required: false
+        type: boolean
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
-  publish:
+  test_fslabscli:
+    name: 'Test fslabscli: fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
+    needs: [ ]
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     with:
-      publish: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'true' || 'false' }}
-      publish_binary: true
-      skip-test: ${{ github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+      publish: 'false'
+      working_directory: '.'
+      skip_test: 'true'
+    secrets: inherit
+  publish_fslabscli:
+    name: 'Publish fslabscli: fslabscli'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
+    needs:
+      - test_fslabscli
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    with:
+      skip_test: 'true'
+      publish: 'true'
+      publish_private_registry: 'false'
+      publish_public_registry: 'false'
+      publish_docker: 'false'
+      publish_binary: 'true'
+      publish_npm_napi: 'false'
+      working_directory: '.'
     secrets: inherit

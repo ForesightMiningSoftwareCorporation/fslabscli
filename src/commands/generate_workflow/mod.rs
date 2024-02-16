@@ -48,10 +48,12 @@ pub struct Options {
     output: PathBuf,
     #[arg(long)]
     template: Option<PathBuf>,
-    #[arg(long, default_value_t = true)]
-    depends_on_template_jobs: bool,
-    #[arg(long, default_value_t = true)]
-    inject_check_changed_and_publish: bool,
+    #[arg(long, default_value_t = false)]
+    no_depends_on_template_jobs: bool,
+    #[arg(long, default_value_t = false)]
+    no_check_changed_and_publish: bool,
+    #[arg(long, default_value = "v2")]
+    build_workflow_version: String,
 }
 
 #[derive(Serialize)]
@@ -111,8 +113,8 @@ pub struct GithubWorkflowJobSecret {
 
 impl Serialize for GithubWorkflowJobSecret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         if self.inherit {
             serializer.serialize_str("inherit")
@@ -204,9 +206,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Vec<String>>,
     #[serde(
-        default,
-        deserialize_with = "deserialize_opt_string_or_struct",
-        skip_serializing_if = "Option::is_none"
+    default,
+    deserialize_with = "deserialize_opt_string_or_struct",
+    skip_serializing_if = "Option::is_none"
     )]
     pub environment: Option<GithubWorkflowJobEnvironment>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,9 +218,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with: Option<IndexMap<String, Value>>,
     #[serde(
-        default,
-        deserialize_with = "deserialize_opt_string_or_map",
-        skip_serializing_if = "Option::is_none"
+    default,
+    deserialize_with = "deserialize_opt_string_or_map",
+    skip_serializing_if = "Option::is_none"
     )]
     pub secrets: Option<GithubWorkflowJobSecret>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -264,7 +266,7 @@ struct GithubWorkflow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub concurrency: Option<IndexMap<String, String>>,
+    pub concurrency: Option<IndexMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permissions: Option<IndexMap<String, String>>,
     pub jobs: IndexMap<String, GithubWorkflowJob>,
@@ -294,8 +296,8 @@ impl FromStr for GithubWorkflowJobEnvironment {
 
 impl FromMap for GithubWorkflowJobSecret {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         Ok(Self {
             inherit: false,
@@ -682,7 +684,10 @@ struct StringBool(bool);
 
 impl From<StringBool> for Value {
     fn from(val: StringBool) -> Value {
-        Value::Bool(val.0)
+        Value::String(match val.0 {
+            true => "true".to_string(),
+            false => "false".to_string(),
+        })
     }
 }
 
@@ -694,8 +699,8 @@ impl From<Value> for StringBool {
 
 impl Serialize for StringBool {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         match self.0 {
             true => serializer.serialize_str("true"),
@@ -717,16 +722,16 @@ pub async fn generate_workflow(
         }
         None => serde_yaml::from_str(EMPTY_WORKFLOW),
     }
-    .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
-        e
-    })
-    .with_context(|| "Could not parse workflow template")?;
+        .map_err(|e| {
+            log::error!("Unparseable template: {}", e);
+            e
+        })
+        .with_context(|| "Could not parse workflow template")?;
     // Get Template jobs, we'll make the generated jobs depends on it
     let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
-    if options.inject_check_changed_and_publish {
+    if !options.no_check_changed_and_publish {
         workflow_template.jobs.insert(
             check_job_key.clone(),
             GithubWorkflowJob {
@@ -741,16 +746,16 @@ pub async fn generate_workflow(
     for (member_key, member) in members.0 {
         let test_job_key = format!("test_{}", member.package);
         let publish_job_key = format!("publish_{}", member.package);
-        let mut test_needs = match options.depends_on_template_jobs {
-            true => initial_jobs.clone(),
-            false => vec![],
+        let mut test_needs = match options.no_depends_on_template_jobs {
+            false => initial_jobs.clone(),
+            true => vec![],
         };
         for dependency in &member.dependencies {
             test_needs.push(format!("test_{}", dependency.package))
         }
-        let mut publish_needs = match options.depends_on_template_jobs {
-            true => initial_jobs.clone(),
-            false => vec![],
+        let mut publish_needs = match options.no_depends_on_template_jobs {
+            false => initial_jobs.clone(),
+            true => vec![],
         };
         for dependency in &member.dependencies {
             publish_needs.push(format!("publish_{}", dependency.package))
@@ -760,7 +765,7 @@ pub async fn generate_workflow(
         let base_if = "always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
         let mut publish_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let mut test_if = base_if.clone();
-        if options.inject_check_changed_and_publish {
+        if !options.no_check_changed_and_publish {
             publish_if = format!(
                 "{} && (fromJSON(needs.{}.outputs.output.{}.publish))",
                 publish_if, &check_job_key, member_key
@@ -782,30 +787,30 @@ pub async fn generate_workflow(
             publish_private_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && !(member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                    && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_public_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && (member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                    && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
             publish_binary: Some(StringBool(member.publish_detail.binary)),
             ..Default::default()
         }
-        .merge(cargo_options.clone());
+            .merge(cargo_options.clone());
         let test_with: PublishJobOptions = PublishJobOptions {
             working_directory: Some(job_working_directory),
             publish: Some(StringBool(false)),
             ..Default::default()
         }
-        .merge(cargo_options.clone());
+            .merge(cargo_options.clone());
 
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
             uses: Some(
-                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2"
+                format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version)
                     .to_string(),
             ),
             needs: Some(test_needs),
@@ -820,7 +825,7 @@ pub async fn generate_workflow(
         let publish_job = GithubWorkflowJob {
             name: Some(format!("Publish {}: {}", member.workspace, member.package)),
             uses: Some(
-                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1"
+                format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version)
                     .to_string(),
             ),
             needs: Some(publish_needs),

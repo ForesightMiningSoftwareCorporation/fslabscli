@@ -16,12 +16,12 @@ mod utils;
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(
-    author,
-    version,
-    about,
-    bin_name("fslabsci"),
-    subcommand_required(true),
-    propagate_version(true)
+author,
+version,
+about,
+bin_name("fslabsci"),
+subcommand_required(true),
+propagate_version(true)
 )]
 struct Cli {
     /// Enables verbose logging
@@ -30,11 +30,12 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     #[arg(
-        short,
-        long,
-        global = true,
-        default_missing_value = ".",
-        required = false
+    short,
+    long,
+    global = true,
+    default_value = ".",
+    required = false
+
     )]
     working_directory: PathBuf,
     #[command(subcommand)]

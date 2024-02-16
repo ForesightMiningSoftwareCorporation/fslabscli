@@ -304,7 +304,8 @@ mod tests {
                 assert!(!expected_error);
                 assert_eq!(expected_result, exists);
             }
-            Err(_) => {
+            Err(e) => {
+                println!("Got error: {}", e);
                 assert!(expected_error);
             }
         }
@@ -323,7 +324,7 @@ mod tests {
             None::<String>,
             None::<u16>,
         )
-        .await;
+            .await;
     }
 
     #[tokio::test]
@@ -339,7 +340,7 @@ mod tests {
             None::<String>,
             None::<u16>,
         )
-        .await;
+            .await;
     }
 
     #[tokio::test]
@@ -355,7 +356,7 @@ mod tests {
             Some("my_token".to_string()),
             Some(200),
         )
-        .await;
+            .await;
     }
 
     #[tokio::test]
@@ -371,7 +372,7 @@ mod tests {
             Some("my_token".to_string()),
             Some(200),
         )
-        .await;
+            .await;
     }
 
     #[tokio::test]
@@ -387,7 +388,7 @@ mod tests {
             Some("my_token".to_string()),
             Some(200),
         )
-        .await;
+            .await;
     }
 
     #[tokio::test]
@@ -403,6 +404,6 @@ mod tests {
             Some("my_token".to_string()),
             Some(200),
         )
-        .await;
+            .await;
     }
 }
