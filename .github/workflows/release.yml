@@ -18,24 +18,27 @@ jobs:
     name: 'Check which workspace member changes and needs publishing'
     runs-on: ubuntu-latest
     outputs:
-      workspace: steps.check_workspace.outputs.workspace
+      workspace: "${{ steps.check_workspace.outputs.workspace }}"
     steps:
       - name: Install fslabscli
         uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
       - name: Checkout workspace
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
       - name: Check Workspace
         id: check_workspace
         working-directory: .
         shell: bash
         run: |
-          echo workspace=$(fslabscli check-workspace --json) >> $GITHUB_OUTPUT
+          git fetch origin ${{ github.base_ref }} --depth 1
+          echo workspace=$(fslabscli check-workspace --json --check-changed --check-publish --changed-base-ref  origin/${{ github.base_ref }} --changed-head-ref  ${{ github.head_ref }}) >> $GITHUB_OUTPUT
   test_fslabscli:
     name: 'Test fslabscli: fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
     needs:
       - check_changed_and_publish
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.changed)
+    if: "${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.changed == 'true' ) }}"
     with:
       publish: 'false'
       working_directory: .
@@ -46,7 +49,7 @@ jobs:
     needs:
       - check_changed_and_publish
       - test_fslabscli
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.publish)
+    if: "${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.publish == 'true') }}"
     with:
       skip_test: 'true'
       publish: 'false'
