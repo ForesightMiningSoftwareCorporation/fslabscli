@@ -9,9 +9,9 @@ use std::str::FromStr;
 use anyhow::Context;
 use clap::Parser;
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeMap;
-use serde_with::{formats::PreferOne, OneOrMany, serde_as};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_with::{formats::PreferOne, serde_as, OneOrMany};
 use serde_yaml::Value;
 use void::Void;
 
@@ -110,7 +110,10 @@ pub struct GithubWorkflowJobSecret {
 }
 
 impl Serialize for GithubWorkflowJobSecret {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         if self.inherit {
             serializer.serialize_str("inherit")
         } else {
@@ -122,7 +125,7 @@ impl Serialize for GithubWorkflowJobSecret {
                     }
                     map.end()
                 }
-                None => serializer.serialize_none()
+                None => serializer.serialize_none(),
             }
         }
     }
@@ -183,7 +186,6 @@ struct GithubWorkflowJobContainer {
     pub options: Option<String>,
 }
 
-
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -201,7 +203,11 @@ struct GithubWorkflowJob {
     #[serde_as(deserialize_as = "Option<OneOrMany<_, PreferOne>>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_opt_string_or_struct", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_opt_string_or_struct",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub environment: Option<GithubWorkflowJobEnvironment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<IndexMap<String, String>>,
@@ -209,7 +215,11 @@ struct GithubWorkflowJob {
     pub defaults: Option<GithubWorkflowDefaults>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with: Option<IndexMap<String, Value>>,
-    #[serde(default, deserialize_with = "deserialize_opt_string_or_map", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_opt_string_or_map",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub secrets: Option<GithubWorkflowJobSecret>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<IndexMap<String, String>>,
@@ -228,7 +238,6 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services: Option<IndexMap<String, GithubWorkflowJobContainer>>,
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -284,7 +293,10 @@ impl FromStr for GithubWorkflowJobEnvironment {
 }
 
 impl FromMap for GithubWorkflowJobSecret {
-    fn from_map(map: IndexMap<String, String>) -> Result<Self, Void> where Self: Sized {
+    fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
+    where
+        Self: Sized,
+    {
         Ok(Self {
             inherit: false,
             secrets: Some(map),
@@ -367,8 +379,12 @@ impl PublishJobOptions {
             skip_tests_no_changes: self.skip_tests_no_changes.or(other.skip_tests_no_changes),
             skip_miri_test: self.skip_miri_test.or(other.skip_miri_test),
             publish: self.publish.or(other.publish),
-            publish_private_registry: self.publish_private_registry.or(other.publish_private_registry),
-            publish_public_registry: self.publish_public_registry.or(other.publish_public_registry),
+            publish_private_registry: self
+                .publish_private_registry
+                .or(other.publish_private_registry),
+            publish_public_registry: self
+                .publish_public_registry
+                .or(other.publish_public_registry),
             publish_docker: self.publish_docker.or(other.publish_docker),
             publish_binary: self.publish_binary.or(other.publish_binary),
             publish_npm_napi: self.publish_npm_napi.or(other.publish_npm_napi),
@@ -389,105 +405,136 @@ impl PublishJobOptions {
             docker_image: self.docker_image.or(other.docker_image),
             docker_registry: self.docker_registry.or(other.docker_registry),
             matrix_file: self.matrix_file.or(other.matrix_file),
-            post_build_additional_script: self.post_build_additional_script.or(other.post_build_additional_script),
-            force_nonrequired_publish_test: self.force_nonrequired_publish_test.or(other.force_nonrequired_publish_test),
+            post_build_additional_script: self
+                .post_build_additional_script
+                .or(other.post_build_additional_script),
+            force_nonrequired_publish_test: self
+                .force_nonrequired_publish_test
+                .or(other.force_nonrequired_publish_test),
             binary_sign_build: self.binary_sign_build.or(other.binary_sign_build),
             report_release: self.report_release.or(other.report_release),
         }
     }
 }
 
-impl Into<IndexMap<String, Value>> for PublishJobOptions {
-    fn into(self) -> IndexMap<String, Value> {
+impl From<PublishJobOptions> for IndexMap<String, Value> {
+    fn from(val: PublishJobOptions) -> Self {
         let mut map: IndexMap<String, Value> = IndexMap::new();
-        if let Some(skip_test) = self.skip_test {
+        if let Some(skip_test) = val.skip_test {
             map.insert("skip_test".to_string(), skip_test.into());
         }
-        if let Some(skip_tests_no_changes) = self.skip_tests_no_changes {
-            map.insert("skip_tests_no_changes".to_string(), skip_tests_no_changes.into());
+        if let Some(skip_tests_no_changes) = val.skip_tests_no_changes {
+            map.insert(
+                "skip_tests_no_changes".to_string(),
+                skip_tests_no_changes.into(),
+            );
         }
-        if let Some(skip_miri_test) = self.skip_miri_test {
+        if let Some(skip_miri_test) = val.skip_miri_test {
             map.insert("skip_miri_test".to_string(), skip_miri_test.into());
         }
-        if let Some(publish) = self.publish {
+        if let Some(publish) = val.publish {
             map.insert("publish".to_string(), publish.into());
         }
-        if let Some(publish_private_registry) = self.publish_private_registry {
-            map.insert("publish_private_registry".to_string(), publish_private_registry.into());
+        if let Some(publish_private_registry) = val.publish_private_registry {
+            map.insert(
+                "publish_private_registry".to_string(),
+                publish_private_registry.into(),
+            );
         }
-        if let Some(publish_public_registry) = self.publish_public_registry {
-            map.insert("publish_public_registry".to_string(), publish_public_registry.into());
+        if let Some(publish_public_registry) = val.publish_public_registry {
+            map.insert(
+                "publish_public_registry".to_string(),
+                publish_public_registry.into(),
+            );
         }
-        if let Some(publish_docker) = self.publish_docker {
+        if let Some(publish_docker) = val.publish_docker {
             map.insert("publish_docker".to_string(), publish_docker.into());
         }
-        if let Some(publish_binary) = self.publish_binary {
+        if let Some(publish_binary) = val.publish_binary {
             map.insert("publish_binary".to_string(), publish_binary.into());
         }
-        if let Some(publish_npm_napi) = self.publish_npm_napi {
+        if let Some(publish_npm_napi) = val.publish_npm_napi {
             map.insert("publish_npm_napi".to_string(), publish_npm_napi.into());
         }
-        if let Some(toolchain) = self.toolchain {
+        if let Some(toolchain) = val.toolchain {
             map.insert("toolchain".to_string(), toolchain.into());
         }
-        if let Some(miri_toolchain) = self.miri_toolchain {
+        if let Some(miri_toolchain) = val.miri_toolchain {
             map.insert("miri_toolchain".to_string(), miri_toolchain.into());
         }
-        if let Some(release_channel) = self.release_channel {
+        if let Some(release_channel) = val.release_channel {
             map.insert("release_channel".to_string(), release_channel.into());
         }
-        if let Some(additional_cache_path) = self.additional_cache_path {
-            map.insert("additional_cache_path".to_string(), additional_cache_path.into());
+        if let Some(additional_cache_path) = val.additional_cache_path {
+            map.insert(
+                "additional_cache_path".to_string(),
+                additional_cache_path.into(),
+            );
         }
-        if let Some(additional_cache_key) = self.additional_cache_key {
-            map.insert("additional_cache_key".to_string(), additional_cache_key.into());
+        if let Some(additional_cache_key) = val.additional_cache_key {
+            map.insert(
+                "additional_cache_key".to_string(),
+                additional_cache_key.into(),
+            );
         }
-        if let Some(additional_cache_miss) = self.additional_cache_miss {
-            map.insert("additional_cache_miss".to_string(), additional_cache_miss.into());
+        if let Some(additional_cache_miss) = val.additional_cache_miss {
+            map.insert(
+                "additional_cache_miss".to_string(),
+                additional_cache_miss.into(),
+            );
         }
-        if let Some(additional_script) = self.additional_script {
+        if let Some(additional_script) = val.additional_script {
             map.insert("additional_script".to_string(), additional_script.into());
         }
-        if let Some(required_packages) = self.required_packages {
+        if let Some(required_packages) = val.required_packages {
             map.insert("required_packages".to_string(), required_packages.into());
         }
-        if let Some(workspaces) = self.workspaces {
+        if let Some(workspaces) = val.workspaces {
             map.insert("workspaces".to_string(), workspaces.into());
         }
-        if let Some(working_directory) = self.working_directory {
+        if let Some(working_directory) = val.working_directory {
             map.insert("working_directory".to_string(), working_directory.into());
         }
-        if let Some(additional_args) = self.additional_args {
+        if let Some(additional_args) = val.additional_args {
             map.insert("additional_args".to_string(), additional_args.into());
         }
-        if let Some(custom_cargo_commands) = self.custom_cargo_commands {
-            map.insert("custom_cargo_commands".to_string(), custom_cargo_commands.into());
+        if let Some(custom_cargo_commands) = val.custom_cargo_commands {
+            map.insert(
+                "custom_cargo_commands".to_string(),
+                custom_cargo_commands.into(),
+            );
         }
-        if let Some(docker_context) = self.docker_context {
+        if let Some(docker_context) = val.docker_context {
             map.insert("docker_context".to_string(), docker_context.into());
         }
-        if let Some(dockerfile) = self.dockerfile {
+        if let Some(dockerfile) = val.dockerfile {
             map.insert("dockerfile".to_string(), dockerfile.into());
         }
-        if let Some(docker_image) = self.docker_image {
+        if let Some(docker_image) = val.docker_image {
             map.insert("docker_image".to_string(), docker_image.into());
         }
-        if let Some(docker_registry) = self.docker_registry {
+        if let Some(docker_registry) = val.docker_registry {
             map.insert("docker_registry".to_string(), docker_registry.into());
         }
-        if let Some(matrix_file) = self.matrix_file {
+        if let Some(matrix_file) = val.matrix_file {
             map.insert("matrix_file".to_string(), matrix_file.into());
         }
-        if let Some(post_build_additional_script) = self.post_build_additional_script {
-            map.insert("post_build_additional_script".to_string(), post_build_additional_script.into());
+        if let Some(post_build_additional_script) = val.post_build_additional_script {
+            map.insert(
+                "post_build_additional_script".to_string(),
+                post_build_additional_script.into(),
+            );
         }
-        if let Some(force_nonrequired_publish_test) = self.force_nonrequired_publish_test {
-            map.insert("force_nonrequired_publish_test".to_string(), force_nonrequired_publish_test.into());
+        if let Some(force_nonrequired_publish_test) = val.force_nonrequired_publish_test {
+            map.insert(
+                "force_nonrequired_publish_test".to_string(),
+                force_nonrequired_publish_test.into(),
+            );
         }
-        if let Some(binary_sign_build) = self.binary_sign_build {
+        if let Some(binary_sign_build) = val.binary_sign_build {
             map.insert("binary_sign_build".to_string(), binary_sign_build.into());
         }
-        if let Some(report_release) = self.report_release {
+        if let Some(report_release) = val.report_release {
             map.insert("report_release".to_string(), report_release.into());
         }
         map
@@ -510,79 +557,117 @@ impl From<IndexMap<String, Value>> for PublishJobOptions {
                 "publish_docker" => me.publish_docker = Some(v.into()),
                 "publish_binary" => me.publish_binary = Some(v.into()),
                 "publish_npm_napi" => me.publish_npm_napi = Some(v.into()),
-                "toolchain" => me.toolchain = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "miri_toolchain" => me.miri_toolchain = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "release_channel" => me.release_channel = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "additional_cache_path" => me.additional_cache_path = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "additional_cache_key" => me.additional_cache_key = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "additional_cache_miss" => me.additional_cache_miss = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "additional_script" => me.additional_script = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "required_packages" => me.required_packages = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "workspaces" => me.workspaces = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "working_directory" => me.working_directory = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "additional_args" => me.additional_args = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "custom_cargo_commands" => me.custom_cargo_commands = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "docker_context" => me.docker_context = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "dockerfile" => me.dockerfile = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "docker_image" => me.docker_image = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "docker_registry" => me.docker_registry = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "matrix_file" => me.matrix_file = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "post_build_additional_script" => me.post_build_additional_script = match v {
-                    Value::String(s) => Some(s),
-                    _ => None
-                },
-                "force_nonrequired_publish_test" => me.force_nonrequired_publish_test = Some(v.into()),
+                "toolchain" => {
+                    me.toolchain = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "miri_toolchain" => {
+                    me.miri_toolchain = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "release_channel" => {
+                    me.release_channel = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "additional_cache_path" => {
+                    me.additional_cache_path = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "additional_cache_key" => {
+                    me.additional_cache_key = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "additional_cache_miss" => {
+                    me.additional_cache_miss = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "additional_script" => {
+                    me.additional_script = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "required_packages" => {
+                    me.required_packages = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "workspaces" => {
+                    me.workspaces = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "working_directory" => {
+                    me.working_directory = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "additional_args" => {
+                    me.additional_args = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "custom_cargo_commands" => {
+                    me.custom_cargo_commands = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "docker_context" => {
+                    me.docker_context = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "dockerfile" => {
+                    me.dockerfile = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "docker_image" => {
+                    me.docker_image = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "docker_registry" => {
+                    me.docker_registry = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "matrix_file" => {
+                    me.matrix_file = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "post_build_additional_script" => {
+                    me.post_build_additional_script = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "force_nonrequired_publish_test" => {
+                    me.force_nonrequired_publish_test = Some(v.into())
+                }
                 "binary_sign_build" => me.binary_sign_build = Some(v.into()),
                 "report_release" => me.report_release = Some(v.into()),
                 _ => {}
@@ -592,13 +677,12 @@ impl From<IndexMap<String, Value>> for PublishJobOptions {
     }
 }
 
-
 #[derive(Clone, Default)]
 struct StringBool(bool);
 
-impl Into<Value> for StringBool {
-    fn into(self) -> Value {
-        Value::Bool(self.0)
+impl From<StringBool> for Value {
+    fn from(val: StringBool) -> Value {
+        Value::Bool(val.0)
     }
 }
 
@@ -609,7 +693,10 @@ impl From<Value> for StringBool {
 }
 
 impl Serialize for StringBool {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         match self.0 {
             true => serializer.serialize_str("true"),
             false => serializer.serialize_str("false"),
@@ -617,7 +704,10 @@ impl Serialize for StringBool {
     }
 }
 
-pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> anyhow::Result<GenerateResult> {
+pub async fn generate_workflow(
+    options: Box<Options>,
+    working_directory: PathBuf,
+) -> anyhow::Result<GenerateResult> {
     // Get Base Workflow
     let mut workflow_template: GithubWorkflow = match options.template {
         Some(template) => {
@@ -625,23 +715,29 @@ pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> 
             let reader = BufReader::new(file);
             serde_yaml::from_reader(reader)
         }
-        None => serde_yaml::from_str(EMPTY_WORKFLOW)
-    }.map_err(|e| {
+        None => serde_yaml::from_str(EMPTY_WORKFLOW),
+    }
+    .map_err(|e| {
         log::error!("Unparseable template: {}", e);
         e
-    }).with_context(|| "Could not parse workflow template")?;
+    })
+    .with_context(|| "Could not parse workflow template")?;
     // Get Template jobs, we'll make the generated jobs depends on it
     let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
     if options.inject_check_changed_and_publish {
-        workflow_template.jobs.insert(check_job_key.clone(), GithubWorkflowJob {
-            ..Default::default()
-        });
+        workflow_template.jobs.insert(
+            check_job_key.clone(),
+            GithubWorkflowJob {
+                ..Default::default()
+            },
+        );
         initial_jobs.push(check_job_key.clone());
     }
     // Get Directory information
-    let members = check_workspace(CheckWorkspaceOptions::new(), working_directory).await?;
+    let members =
+        check_workspace(Box::new(CheckWorkspaceOptions::new()), working_directory).await?;
     for (member_key, member) in members.0 {
         let test_job_key = format!("test_{}", member.package);
         let publish_job_key = format!("publish_{}", member.package);
@@ -665,8 +761,14 @@ pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> 
         let mut publish_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let mut test_if = base_if.clone();
         if options.inject_check_changed_and_publish {
-            publish_if = format!("{} && (fromJSON(needs.{}.outputs.output.{}.publish))", publish_if, &check_job_key, member_key);
-            test_if = format!("{} && (fromJSON(needs.{}.outputs.output.{}.changed))", test_if, &check_job_key, member_key);
+            publish_if = format!(
+                "{} && (fromJSON(needs.{}.outputs.output.{}.publish))",
+                publish_if, &check_job_key, member_key
+            );
+            test_if = format!(
+                "{} && (fromJSON(needs.{}.outputs.output.{}.changed))",
+                test_if, &check_job_key, member_key
+            );
         }
         let cargo_options: PublishJobOptions = match member.ci_args {
             Some(a) => a.into(),
@@ -677,22 +779,35 @@ pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> 
             working_directory: Some(job_working_directory.clone()),
             skip_test: Some(StringBool(true)),
             publish: Some(StringBool(member.publish)),
-            publish_private_registry: Some(StringBool(member.publish_detail.cargo.publish && !(member.publish_detail.cargo.allow_public && member.publish_detail.cargo.registry.is_none()))),
-            publish_public_registry: Some(StringBool(member.publish_detail.cargo.publish && (member.publish_detail.cargo.allow_public && member.publish_detail.cargo.registry.is_none()))),
+            publish_private_registry: Some(StringBool(
+                member.publish_detail.cargo.publish
+                    && !(member.publish_detail.cargo.allow_public
+                        && member.publish_detail.cargo.registry.is_none()),
+            )),
+            publish_public_registry: Some(StringBool(
+                member.publish_detail.cargo.publish
+                    && (member.publish_detail.cargo.allow_public
+                        && member.publish_detail.cargo.registry.is_none()),
+            )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
             publish_binary: Some(StringBool(member.publish_detail.binary)),
             ..Default::default()
-        }.merge(cargo_options.clone());
+        }
+        .merge(cargo_options.clone());
         let test_with: PublishJobOptions = PublishJobOptions {
             working_directory: Some(job_working_directory),
             publish: Some(StringBool(false)),
             ..Default::default()
-        }.merge(cargo_options.clone());
+        }
+        .merge(cargo_options.clone());
 
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
-            uses: Some("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2".to_string()),
+            uses: Some(
+                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2"
+                    .to_string(),
+            ),
             needs: Some(test_needs),
             job_if: Some(test_if),
             with: Some(test_with.into()),
@@ -704,7 +819,10 @@ pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> 
         };
         let publish_job = GithubWorkflowJob {
             name: Some(format!("Publish {}: {}", member.workspace, member.package)),
-            uses: Some("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1".to_string()),
+            uses: Some(
+                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v1"
+                    .to_string(),
+            ),
             needs: Some(publish_needs),
             job_if: Some(publish_if),
             with: Some(publish_with.into()),
@@ -714,7 +832,9 @@ pub async fn generate_workflow(options: Options, working_directory: PathBuf) -> 
             }),
             ..Default::default()
         };
-        workflow_template.jobs.insert(test_job_key.clone(), test_job);
+        workflow_template
+            .jobs
+            .insert(test_job_key.clone(), test_job);
         workflow_template.jobs.insert(publish_job_key, publish_job);
     }
     let output_file = File::create(options.output)?;

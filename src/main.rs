@@ -2,10 +2,10 @@ use std::fmt::Display;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
+use log::LevelFilter;
 use log4rs::append::console::ConsoleAppender;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
-use log::LevelFilter;
 use serde::Serialize;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
@@ -16,12 +16,12 @@ mod utils;
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(
-author,
-version,
-about,
-bin_name("fslabsci"),
-subcommand_required(true),
-propagate_version(true),
+    author,
+    version,
+    about,
+    bin_name("fslabsci"),
+    subcommand_required(true),
+    propagate_version(true)
 )]
 struct Cli {
     /// Enables verbose logging
@@ -29,7 +29,13 @@ struct Cli {
     verbose: u8,
     #[arg(long, global = true)]
     json: bool,
-    #[arg(short, long, global = true, default_missing_value = ".", required = false)]
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_missing_value = ".",
+        required = false
+    )]
     working_directory: PathBuf,
     #[command(subcommand)]
     command: Commands,
@@ -38,8 +44,8 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Check which crates needs to be published
-    CheckWorkspace(CheckWorkspaceOptions),
-    GenerateReleaseWorkflow(GenerateWorkflowOptions),
+    CheckWorkspace(Box<CheckWorkspaceOptions>),
+    GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -53,7 +59,9 @@ pub fn setup_logging(verbosity: u8) {
 
     // Encoders
     let stdout: ConsoleAppender = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{h({d(%Y-%m-%d %H:%M:%S)(utc)} - {l}: {m}{n})}")))
+        .encoder(Box::new(PatternEncoder::new(
+            "{h({d(%Y-%m-%d %H:%M:%S)(utc)} - {l}: {m}{n})}",
+        )))
         .build();
 
     let log_config = log4rs::config::Config::builder()
@@ -61,7 +69,8 @@ pub fn setup_logging(verbosity: u8) {
         .build(Root::builder().appender("stderr").build(logging_level))
         .unwrap();
     log4rs::init_config(log_config)
-        .map_err(|e| format!("Could not setup logging: {}", e)).unwrap();
+        .map_err(|e| format!("Could not setup logging: {}", e))
+        .unwrap();
 }
 
 fn display_or_json<T: Serialize + Display>(json: bool, results: T) -> String {
@@ -76,10 +85,17 @@ fn display_or_json<T: Serialize + Display>(json: bool, results: T) -> String {
 async fn main() {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
-    let working_directory = cli.working_directory.canonicalize().expect("Could not get full path from working_directory");
+    let working_directory = cli
+        .working_directory
+        .canonicalize()
+        .expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::CheckWorkspace(options) => check_workspace(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
-        Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory).await.map(|r| display_or_json(cli.json, r)),
+        Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
+            .await
+            .map(|r| display_or_json(cli.json, r)),
+        Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
+            .await
+            .map(|r| display_or_json(cli.json, r)),
     };
     match result {
         Ok(r) => {
