@@ -139,11 +139,15 @@ impl Result {
                 version: d.req.to_string(),
             })
             .collect();
+        let mut path = path.strip_prefix(root_dir)?.to_path_buf();
+        if path.to_string_lossy().is_empty() {
+            path = PathBuf::from(".");
+        }
         Ok(Self {
             workspace,
             package: package.name,
             version: package.version.to_string(),
-            path: path.strip_prefix(root_dir)?.to_path_buf(),
+            path,
             publish_detail: publish,
             ci_args: metadata.fslabs.args,
             dependencies,
@@ -336,8 +340,8 @@ pub async fn check_workspace(
                     package.publish_detail.npm_napi.publish,
                     package.publish_detail.binary,
                 ]
-                .into_iter()
-                .any(|x| x);
+                    .into_iter()
+                    .any(|x| x);
             }
         }
     }
@@ -439,9 +443,9 @@ pub async fn check_workspace(
                 //     continue;
                 // };
                 let Ok(package_folder) = package.path.strip_prefix(working_directory.as_path())
-                else {
-                    continue;
-                };
+                    else {
+                        continue;
+                    };
                 let mut diff_options = DiffOptions::new();
                 diff_options.include_unmodified(true);
                 let Ok(diff) = repository.diff_tree_to_tree(

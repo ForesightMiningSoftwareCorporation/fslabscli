@@ -767,11 +767,11 @@ pub async fn generate_workflow(
         let mut test_if = base_if.clone();
         if !options.no_check_changed_and_publish {
             publish_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.output.{}.publish))",
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.publish)",
                 publish_if, &check_job_key, member_key
             );
             test_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.output.{}.changed))",
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed)",
                 test_if, &check_job_key, member_key
             );
         }
