@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::{DependencyKind, MetadataCommand, Package};
 use clap::Parser;
 use console::{style, Emoji};
 use git2::{DiffDelta, DiffOptions, Repository};
@@ -134,6 +134,7 @@ impl Result {
         let dependencies = package
             .dependencies
             .into_iter()
+            .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
                 package: d.name,
                 version: d.req.to_string(),
@@ -336,15 +337,14 @@ pub async fn check_workspace(
                 }
             }
 
-
             package.publish = vec![
                 package.publish_detail.docker.publish,
                 package.publish_detail.cargo.publish,
                 package.publish_detail.npm_napi.publish,
                 package.publish_detail.binary,
             ]
-                .into_iter()
-                .any(|x| x);
+            .into_iter()
+            .any(|x| x);
         }
     }
 
@@ -460,17 +460,11 @@ pub async fn check_workspace(
                 };
                 let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
                     let check_old_file = match delta.old_file().path() {
-                        Some(p) => {
-                            package_folder.is_empty()
-                                || p.starts_with(&package_folder)
-                        }
+                        Some(p) => package_folder.is_empty() || p.starts_with(&package_folder),
                         None => false,
                     };
                     let check_new_file = match delta.new_file().path() {
-                        Some(p) => {
-                            package_folder.is_empty()
-                                || p.starts_with(&package_folder)
-                        }
+                        Some(p) => package_folder.is_empty() || p.starts_with(&package_folder),
                         None => false,
                     };
                     if check_old_file || check_new_file {

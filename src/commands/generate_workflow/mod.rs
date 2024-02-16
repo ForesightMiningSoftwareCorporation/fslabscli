@@ -41,6 +41,16 @@ concurrency:
 jobs:
 "#;
 
+const CHECK_SCRIPT: &str = r#"BASE_REF=${{ github.base_ref }}
+HEAD_REF=${{ github.head_ref }}
+if [ -z "$HEAD_REF" ]; then
+  CHECK_CHANGED=()
+else
+  CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
+  git fetch origin ${{ github.base_ref }} --depth 1
+fi
+echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}") >> $GITHUB_OUTPUT"#;
+
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
 pub struct Options {
@@ -113,8 +123,8 @@ pub struct GithubWorkflowJobSecret {
 
 impl Serialize for GithubWorkflowJobSecret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
+    where
+        S: Serializer,
     {
         if self.inherit {
             serializer.serialize_str("inherit")
@@ -206,9 +216,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Vec<String>>,
     #[serde(
-    default,
-    deserialize_with = "deserialize_opt_string_or_struct",
-    skip_serializing_if = "Option::is_none"
+        default,
+        deserialize_with = "deserialize_opt_string_or_struct",
+        skip_serializing_if = "Option::is_none"
     )]
     pub environment: Option<GithubWorkflowJobEnvironment>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,9 +228,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with: Option<IndexMap<String, Value>>,
     #[serde(
-    default,
-    deserialize_with = "deserialize_opt_string_or_map",
-    skip_serializing_if = "Option::is_none"
+        default,
+        deserialize_with = "deserialize_opt_string_or_map",
+        skip_serializing_if = "Option::is_none"
     )]
     pub secrets: Option<GithubWorkflowJobSecret>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,8 +306,8 @@ impl FromStr for GithubWorkflowJobEnvironment {
 
 impl FromMap for GithubWorkflowJobSecret {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
-        where
-            Self: Sized,
+    where
+        Self: Sized,
     {
         Ok(Self {
             inherit: false,
@@ -682,7 +692,6 @@ impl From<IndexMap<String, Value>> for PublishJobOptions {
 #[derive(Clone, Default)]
 struct StringBool(bool);
 
-
 impl From<StringBool> for Value {
     fn from(val: StringBool) -> Value {
         Value::String(match val.0 {
@@ -700,8 +709,8 @@ impl From<Value> for StringBool {
 
 impl Serialize for StringBool {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
+    where
+        S: Serializer,
     {
         match self.0 {
             true => serializer.serialize_str("true"),
@@ -723,11 +732,11 @@ pub async fn generate_workflow(
         }
         None => serde_yaml::from_str(EMPTY_WORKFLOW),
     }
-        .map_err(|e| {
-            log::error!("Unparseable template: {}", e);
-            e
-        })
-        .with_context(|| "Could not parse workflow template")?;
+    .map_err(|e| {
+        log::error!("Unparseable template: {}", e);
+        e
+    })
+    .with_context(|| "Could not parse workflow template")?;
     // Get Template jobs, we'll make the generated jobs depends on it
     let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
@@ -737,19 +746,29 @@ pub async fn generate_workflow(
         workflow_template.jobs.insert(
             check_job_key.clone(),
             GithubWorkflowJob {
-                name: Some("Check which workspace member changed and / or needs publishing".to_string()),
+                name: Some(
+                    "Check which workspace member changed and / or needs publishing".to_string(),
+                ),
                 runs_on: Some(vec!["ubuntu-latest".to_string()]),
-                outputs: Some(IndexMap::from([("workspace".to_string(), "${{ steps.check_workspace.outputs.workspace }}".to_string())])),
+                outputs: Some(IndexMap::from([(
+                    "workspace".to_string(),
+                    "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+                )])),
                 steps: Some(vec![
                     GithubWorkflowJobSteps {
                         name: Some("Install FSLABScli".to_string()),
-                        uses: Some("ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string()),
+                        uses: Some(
+                            "ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string(),
+                        ),
                         ..Default::default()
                     },
                     GithubWorkflowJobSteps {
                         name: Some("Checkout repo".to_string()),
                         uses: Some("actions/checkout@v4".to_string()),
-                        with: Some(IndexMap::from([("ref".to_string(), "${{ github.head_ref }}".to_string())])),
+                        with: Some(IndexMap::from([(
+                            "ref".to_string(),
+                            "${{ github.head_ref }}".to_string(),
+                        )])),
                         ..Default::default()
                     },
                     GithubWorkflowJobSteps {
@@ -757,7 +776,7 @@ pub async fn generate_workflow(
                         working_directory: Some(".".to_string()),
                         id: Some("check_workspace".to_string()),
                         shell: Some("bash".to_string()),
-                        run: Some("BASE_REF=${{ github.base_ref }}\nHEAD_REF=${{ github.head_ref }}\nif [ -z \"$HEAD_REF\" ]; then\n  CHECK_CHANGED=()\nelse\n  CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/$BASE_REF' '--changed-head-ref' '$HEAD_REF')\n  git fetch origin $BASE_REF --depth 1\nfi\necho workspace=$(fslabscli check-workspace --json --check-publish \"${CHECK_CHANGED[@]}\") >> $GITHUB_OUTPUT".to_string()),
+                        run: Some(CHECK_SCRIPT.to_string()),
                         ..Default::default()
                     },
                 ]),
@@ -812,31 +831,34 @@ pub async fn generate_workflow(
             publish_private_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && !(member.publish_detail.cargo.allow_public
-                    && member.publish_detail.cargo.registry.is_none()),
+                        && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_public_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && (member.publish_detail.cargo.allow_public
-                    && member.publish_detail.cargo.registry.is_none()),
+                        && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
             publish_binary: Some(StringBool(member.publish_detail.binary)),
             ..Default::default()
         }
-            .merge(cargo_options.clone());
+        .merge(cargo_options.clone());
         let test_with: PublishJobOptions = PublishJobOptions {
             working_directory: Some(job_working_directory),
             publish: Some(StringBool(false)),
             ..Default::default()
         }
-            .merge(cargo_options.clone());
+        .merge(cargo_options.clone());
 
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
             uses: Some(
-                format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version)
-                    .to_string(),
+                format!(
+                    "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}",
+                    options.build_workflow_version
+                )
+                .to_string(),
             ),
             needs: Some(test_needs),
             job_if: Some(format!("${{{{ {} }}}}", test_if)),
@@ -850,8 +872,11 @@ pub async fn generate_workflow(
         let publish_job = GithubWorkflowJob {
             name: Some(format!("Publish {}: {}", member.workspace, member.package)),
             uses: Some(
-                format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version)
-                    .to_string(),
+                format!(
+                    "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}",
+                    options.build_workflow_version
+                )
+                .to_string(),
             ),
             needs: Some(publish_needs),
             job_if: Some(format!("${{{{ {} }}}}", publish_if)),
