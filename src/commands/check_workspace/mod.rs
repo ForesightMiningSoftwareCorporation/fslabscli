@@ -74,6 +74,7 @@ impl Options {
 pub struct ResultDependency {
     pub package: String,
     pub version: String,
+    pub publishable: bool,
 }
 
 #[derive(Serialize, Clone, Default, Debug)]
@@ -88,7 +89,7 @@ pub struct Result {
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
-    pub ci_args: Option<IndexMap<String, Value>>,
+    pub test_detail: PackageMetadataFslabsCiTest,
 }
 
 fn default_false() -> bool {
@@ -105,12 +106,18 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "default_false")]
     pub binary: bool,
+    pub args: Option<IndexMap<String, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+pub struct PackageMetadataFslabsCiTest {
+    pub args: Option<IndexMap<String, Value>>,
 }
 
 #[derive(Deserialize, Default)]
 struct PackageMetadataFslabsCi {
     pub publish: PackageMetadataFslabsCiPublish,
-    pub args: Option<IndexMap<String, Value>>,
+    pub test: PackageMetadataFslabsCiTest,
 }
 
 #[derive(Deserialize, Default)]
@@ -138,6 +145,7 @@ impl Result {
             .map(|d| ResultDependency {
                 package: d.name,
                 version: d.req.to_string(),
+                publishable: false,
             })
             .collect();
         let mut path = path.strip_prefix(root_dir)?.to_path_buf();
@@ -150,7 +158,7 @@ impl Result {
             version: package.version.to_string(),
             path,
             publish_detail: publish,
-            ci_args: metadata.fslabs.args,
+            test_detail: metadata.fslabs.test,
             dependencies,
             ..Default::default()
         })
@@ -361,6 +369,11 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
+    let publish_status: HashMap<String, bool> = packages
+        .clone()
+        .into_iter()
+        .map(|(k, v)| (k, v.publish))
+        .collect();
     for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
             pb.inc(1);
@@ -373,6 +386,11 @@ pub async fn check_workspace(
             package
                 .dependencies
                 .retain(|d| package_keys.contains(&d.package));
+            for dep in &mut package.dependencies {
+                if let Some(dep_p) = publish_status.get(&dep.package) {
+                    dep.publishable = *dep_p;
+                }
+            }
         }
     }
     // 4 Feed Dependent
@@ -405,6 +423,7 @@ pub async fn check_workspace(
                     dependant.dependant.push(ResultDependency {
                         package: package.package.clone(),
                         version: package.version.clone(),
+                        publishable: package.publish,
                     });
                 }
             }
