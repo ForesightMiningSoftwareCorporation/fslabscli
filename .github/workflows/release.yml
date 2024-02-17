@@ -2,8 +2,8 @@ name: CI-CD - Tests and Publishing
 on:
   push:
     branches:
-    - main
-  pull_request: {}
+      - main
+  pull_request: { }
   workflow_dispatch:
     inputs:
       publish:
@@ -17,46 +17,54 @@ jobs:
   check_changed_and_publish:
     name: Check which workspace member changed and / or needs publishing
     runs-on:
-    - ubuntu-latest
+      - ubuntu-latest
     outputs:
       workspace: ${{ steps.check_workspace.outputs.workspace }}
     steps:
-    - name: Install FSLABScli
-      uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
-    - name: Checkout repo
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ github.head_ref }}
-    - id: check_workspace
-      name: Check workspace
-      shell: bash
-      run: |-
-        BASE_REF=${{ github.base_ref }}
-        HEAD_REF=${{ github.head_ref }}
-        if [ -z "$HEAD_REF" ]; then
-          CHECK_CHANGED=()
-        else
-          CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
-          git fetch origin ${{ github.base_ref }} --depth 1
-        fi
-        echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}") >> $GITHUB_OUTPUT
-      working-directory: .
+      - id: generate_token
+        name: Generate token
+        uses: tibdex/github-app-token@v2.1.0
+        with:
+          app_id: ${{ secrets.FMSC_BOT_GITHUB_APP_ID }}
+          private_key: ${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}
+      - name: Install FSLABScli
+        uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - id: check_workspace
+        name: Check workspace
+        shell: bash
+        run: |-
+          BASE_REF=${{ github.base_ref }}
+          HEAD_REF=${{ github.head_ref }}
+          if [ -z "$HEAD_REF" ]; then
+            CHECK_CHANGED=()
+          else
+            CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
+            git fetch origin ${{ github.base_ref }} --depth 1
+          fi
+          echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}") >> $GITHUB_OUTPUT
+        working-directory: .
   test_fslabscli:
     name: 'Test fslabscli: fslabscli'
-    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2
     needs:
-    - check_changed_and_publish
+      - check_changed_and_publish
     if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.changed) }}
     with:
-      publish: 'false'
       working_directory: .
+      test_publish_required: 'false'
     secrets: inherit
   publish_fslabscli:
     name: 'Publish fslabscli: fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
     needs:
-    - check_changed_and_publish
-    - test_fslabscli
+      - check_changed_and_publish
+      - test_fslabscli
     if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.publish) }}
     with:
       skip_test: 'false'

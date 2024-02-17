@@ -389,10 +389,30 @@ pub async fn generate_workflow(
                 )])),
                 steps: Some(vec![
                     GithubWorkflowJobSteps {
+                        name: Some("Generate token".to_string()),
+                        id: Some("generate_token".to_string()),
+                        uses: Some("tibdex/github-app-token@v2.1.0".to_string()),
+                        with: Some(IndexMap::from([
+                            (
+                                "app_id".to_string(),
+                                "${{ secrets.FMSC_BOT_GITHUB_APP_ID }}".to_string(),
+                            ),
+                            (
+                                "private_key".to_string(),
+                                "${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}".to_string(),
+                            ),
+                        ])),
+                        ..Default::default()
+                    },
+                    GithubWorkflowJobSteps {
                         name: Some("Install FSLABScli".to_string()),
                         uses: Some(
                             "ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string(),
                         ),
+                        with: Some(IndexMap::from([(
+                            "token".to_string(),
+                            "${{ steps.generate_token.outputs.token }}".to_string(),
+                        )])),
                         ..Default::default()
                     },
                     GithubWorkflowJobSteps {
