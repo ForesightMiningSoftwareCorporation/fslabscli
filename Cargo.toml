@@ -1,6 +1,6 @@
 [package]
 name = "fslabscli"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -39,3 +39,6 @@ serial_test = "3.0.0"
 
 [package.metadata.fslabs.publish]
 binary = true
+args = { }
+[package.metadata.fslabs.test]
+args = { }

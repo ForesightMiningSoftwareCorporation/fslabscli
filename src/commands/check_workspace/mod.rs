@@ -106,17 +106,20 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "default_false")]
     pub binary: bool,
+    #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiTest {
+    #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
 }
 
 #[derive(Deserialize, Default)]
 struct PackageMetadataFslabsCi {
     pub publish: PackageMetadataFslabsCiPublish,
+    #[serde(default)]
     pub test: PackageMetadataFslabsCiTest,
 }
 
