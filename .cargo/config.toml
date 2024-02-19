@@ -4,3 +4,5 @@ registry-auth = true
 index = "ssh://git@ssh.shipyard.rs/foresight-mining-software-corporation/crate-index.git"
 [net]
 git-fetch-with-cli = true
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
