@@ -131,8 +131,8 @@ pub struct GithubWorkflowJobSecret {
 
 impl Serialize for GithubWorkflowJobSecret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         if self.inherit {
             serializer.serialize_str("inherit")
@@ -224,9 +224,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Vec<String>>,
     #[serde(
-        default,
-        deserialize_with = "deserialize_opt_string_or_struct",
-        skip_serializing_if = "Option::is_none"
+    default,
+    deserialize_with = "deserialize_opt_string_or_struct",
+    skip_serializing_if = "Option::is_none"
     )]
     pub environment: Option<GithubWorkflowJobEnvironment>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,9 +236,9 @@ struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with: Option<IndexMap<String, Value>>,
     #[serde(
-        default,
-        deserialize_with = "deserialize_opt_string_or_map",
-        skip_serializing_if = "Option::is_none"
+    default,
+    deserialize_with = "deserialize_opt_string_or_map",
+    skip_serializing_if = "Option::is_none"
     )]
     pub secrets: Option<GithubWorkflowJobSecret>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,8 +314,8 @@ impl FromStr for GithubWorkflowJobEnvironment {
 
 impl FromMap for GithubWorkflowJobSecret {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         Ok(Self {
             inherit: false,
@@ -344,8 +344,8 @@ impl From<Value> for StringBool {
 
 impl Serialize for StringBool {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
+        where
+            S: Serializer,
     {
         match self.0 {
             true => serializer.serialize_str("true"),
@@ -367,11 +367,11 @@ pub async fn generate_workflow(
         }
         None => serde_yaml::from_str(EMPTY_WORKFLOW),
     }
-    .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
-        e
-    })
-    .with_context(|| "Could not parse workflow template")?;
+        .map_err(|e| {
+            log::error!("Unparseable template: {}", e);
+            e
+        })
+        .with_context(|| "Could not parse workflow template")?;
     // Get Template jobs, we'll make the generated jobs depends on it
     let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
@@ -533,12 +533,12 @@ pub async fn generate_workflow(
             publish_private_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && !(member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                    && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_public_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && (member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                    && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
             docker_image: match member.publish_detail.docker.publish {
@@ -549,15 +549,15 @@ pub async fn generate_workflow(
             publish_binary: Some(StringBool(member.publish_detail.binary)),
             ..Default::default()
         }
-        .merge(cargo_publish_options.clone());
+            .merge(cargo_publish_options.clone());
         let test_with: TestWorkflowArgs = TestWorkflowArgs {
             working_directory: Some(job_working_directory),
             test_publish_required: Some(StringBool(
-                member.publish_detail.docker.publish || member.publish_detail.cargo.publish,
+                member.publish_detail.cargo.publish,
             )),
             ..Default::default()
         }
-        .merge(cargo_test_options.clone());
+            .merge(cargo_test_options.clone());
 
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
@@ -566,7 +566,7 @@ pub async fn generate_workflow(
                     "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@{}",
                     options.build_workflow_version
                 )
-                .to_string(),
+                    .to_string(),
             ),
             needs: Some(test_needs),
             job_if: Some(format!("${{{{ {} }}}}", test_if)),
@@ -584,7 +584,7 @@ pub async fn generate_workflow(
                     "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}",
                     options.build_workflow_version
                 )
-                .to_string(),
+                    .to_string(),
             ),
             needs: Some(publish_needs),
             job_if: Some(format!("${{{{ {} }}}}", publish_if)),
