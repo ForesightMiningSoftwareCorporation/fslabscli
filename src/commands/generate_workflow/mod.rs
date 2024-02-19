@@ -70,6 +70,8 @@ pub struct Options {
     no_check_changed_and_publish: bool,
     #[arg(long, default_value = "v2")]
     build_workflow_version: String,
+    #[arg(long, default_value_t = false)]
+    cargo_default_publish: bool,
 }
 
 #[derive(Serialize)]
@@ -374,72 +376,107 @@ pub async fn generate_workflow(
     let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
+    // Get Directory information
+    let members =
+        check_workspace(Box::new(CheckWorkspaceOptions::new()), working_directory).await?;
     if !options.no_check_changed_and_publish {
+        // We need to login to any docker registry required
+        let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
+            .0
+            .iter()
+            .filter_map(|(_, v)| {
+                if v.publish_detail.docker.publish {
+                    if let Some(repo) = v.publish_detail.docker.repository.clone() {
+                        let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
+                        return Some(GithubWorkflowJobSteps {
+                            name: Some(format!("Login to {}", repo)),
+                            uses: Some("docker/login-action@v3".to_string()),
+                            with: Some(IndexMap::from([
+                                ("registry".to_string(), repo.clone()),
+                                (
+                                    "username".to_string(),
+                                    format!(
+                                        "${{{{ secrets.DOCKER_{}_USERNAME }}}}",
+                                        github_secret_key
+                                    ),
+                                ),
+                                (
+                                    "password".to_string(),
+                                    format!(
+                                        "${{{{ secrets.DOCKER_{}_PASSWORD }}}}",
+                                        github_secret_key
+                                    ),
+                                ),
+                            ])),
+                            ..Default::default()
+                        });
+                    }
+                }
+                None
+            })
+            .collect();
         initial_jobs.push(check_job_key.clone());
+        let steps = vec![
+            GithubWorkflowJobSteps {
+                name: Some("Generate token".to_string()),
+                id: Some("generate_token".to_string()),
+                uses: Some("tibdex/github-app-token@v2.1.0".to_string()),
+                with: Some(IndexMap::from([
+                    (
+                        "app_id".to_string(),
+                        "${{ secrets.FMSC_BOT_GITHUB_APP_ID }}".to_string(),
+                    ),
+                    (
+                        "private_key".to_string(),
+                        "${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}".to_string(),
+                    ),
+                ])),
+                ..Default::default()
+            },
+            GithubWorkflowJobSteps {
+                name: Some("Install FSLABScli".to_string()),
+                uses: Some("ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string()),
+                with: Some(IndexMap::from([(
+                    "token".to_string(),
+                    "${{ steps.generate_token.outputs.token }}".to_string(),
+                )])),
+                ..Default::default()
+            },
+            GithubWorkflowJobSteps {
+                name: Some("Checkout repo".to_string()),
+                uses: Some("actions/checkout@v4".to_string()),
+                with: Some(IndexMap::from([(
+                    "ref".to_string(),
+                    "${{ github.head_ref }}".to_string(),
+                )])),
+                ..Default::default()
+            },
+            GithubWorkflowJobSteps {
+                name: Some("Check workspace".to_string()),
+                working_directory: Some(".".to_string()),
+                id: Some("check_workspace".to_string()),
+                shell: Some("bash".to_string()),
+                run: Some(CHECK_SCRIPT.to_string()),
+                ..Default::default()
+            },
+        ];
+        registries_steps.extend(steps);
         workflow_template.jobs.insert(
             check_job_key.clone(),
             GithubWorkflowJob {
                 name: Some(
                     "Check which workspace member changed and / or needs publishing".to_string(),
                 ),
-                runs_on: Some(vec!["ubuntu-latest".to_string()]),
+                runs_on: Some(vec!["self-hosted".to_string(), "gpu".to_string()]),
                 outputs: Some(IndexMap::from([(
                     "workspace".to_string(),
                     "${{ steps.check_workspace.outputs.workspace }}".to_string(),
                 )])),
-                steps: Some(vec![
-                    GithubWorkflowJobSteps {
-                        name: Some("Generate token".to_string()),
-                        id: Some("generate_token".to_string()),
-                        uses: Some("tibdex/github-app-token@v2.1.0".to_string()),
-                        with: Some(IndexMap::from([
-                            (
-                                "app_id".to_string(),
-                                "${{ secrets.FMSC_BOT_GITHUB_APP_ID }}".to_string(),
-                            ),
-                            (
-                                "private_key".to_string(),
-                                "${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}".to_string(),
-                            ),
-                        ])),
-                        ..Default::default()
-                    },
-                    GithubWorkflowJobSteps {
-                        name: Some("Install FSLABScli".to_string()),
-                        uses: Some(
-                            "ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string(),
-                        ),
-                        with: Some(IndexMap::from([(
-                            "token".to_string(),
-                            "${{ steps.generate_token.outputs.token }}".to_string(),
-                        )])),
-                        ..Default::default()
-                    },
-                    GithubWorkflowJobSteps {
-                        name: Some("Checkout repo".to_string()),
-                        uses: Some("actions/checkout@v4".to_string()),
-                        with: Some(IndexMap::from([(
-                            "ref".to_string(),
-                            "${{ github.head_ref }}".to_string(),
-                        )])),
-                        ..Default::default()
-                    },
-                    GithubWorkflowJobSteps {
-                        name: Some("Check workspace".to_string()),
-                        working_directory: Some(".".to_string()),
-                        id: Some("check_workspace".to_string()),
-                        shell: Some("bash".to_string()),
-                        run: Some(CHECK_SCRIPT.to_string()),
-                        ..Default::default()
-                    },
-                ]),
+                steps: Some(registries_steps),
                 ..Default::default()
             },
         );
     }
-    // Get Directory information
-    let members =
-        check_workspace(Box::new(CheckWorkspaceOptions::new()), working_directory).await?;
     let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
     member_keys.sort();
     for member_key in member_keys {
@@ -504,6 +541,10 @@ pub async fn generate_workflow(
                         && member.publish_detail.cargo.registry.is_none()),
             )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
+            docker_image: match member.publish_detail.docker.publish {
+                true => Some(member.package.clone()),
+                false => None,
+            },
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
             publish_binary: Some(StringBool(member.publish_detail.binary)),
             ..Default::default()

@@ -51,6 +51,8 @@ pub struct Options {
     #[arg(long)]
     cargo_registry_user_agent: Option<String>,
     #[arg(long, default_value_t = false)]
+    cargo_default_publish: bool,
+    #[arg(long, default_value_t = false)]
     progress: bool,
     #[arg(long, default_value_t = false)]
     pub(crate) check_publish: bool,
@@ -129,7 +131,12 @@ struct PackageMetadata {
 }
 
 impl Result {
-    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(
+        workspace: String,
+        package: Package,
+        root_dir: PathBuf,
+        cargo_default_publish: bool,
+    ) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
             .canonicalize()?
@@ -140,7 +147,11 @@ impl Result {
             from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.fslabs.publish;
         // Let's parse cargo publishing from main metadata
-        publish.cargo.registry = package.publish;
+        publish.cargo.registry = package.publish.clone();
+        publish.cargo.publish = match package.publish {
+            Some(r) => !r.is_empty() && cargo_default_publish,
+            None => publish.cargo.allow_public,
+        };
         let dependencies = package
             .dependencies
             .into_iter()
@@ -269,6 +280,7 @@ pub async fn check_workspace(
                     workspace_name.to_string_lossy().to_string(),
                     package.clone(),
                     working_directory.clone(),
+                    options.cargo_default_publish,
                 ) {
                     Ok(r) => {
                         packages.insert(r.package.clone(), r);
