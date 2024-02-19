@@ -160,15 +160,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b25d992356d2eb0ed82172f5248873db5560c4721f564b13cb5193bda5e668e"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
-name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
@@ -225,12 +216,6 @@ name = "bumpalo"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
-
-[[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -572,17 +557,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
-name = "docker_credential"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bce43dd24da2e33c9b9664089bdf94aa8fe7a7c59fc67b6867db7c876925687"
-dependencies = [
- "base64 0.10.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "encode_unicode"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -642,14 +616,14 @@ dependencies = [
 
 [[package]]
 name = "fslabscli"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "assert_fs",
+ "base64 0.21.7",
  "cargo_metadata",
  "clap",
  "console",
- "docker_credential",
  "exitcode",
  "git2",
  "http-body-util",
@@ -670,6 +644,7 @@ dependencies = [
  "serial_test",
  "testcontainers",
  "tokio",
+ "url",
  "void",
  "wiremock",
 ]

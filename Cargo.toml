@@ -1,12 +1,13 @@
 [package]
 name = "fslabscli"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
 description = "Command line interface for helping FSLABS ci"
 
 [dependencies]
+base64 = "0.21"
 clap = { version = "4.5.0", features = ["derive"] }
 anyhow = { version = "1.0.79", features = [] }
 tokio = { version = "1.36.0", features = ["full"] }
@@ -22,7 +23,6 @@ hyper-rustls = { version = "0.26" }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio", "client-legacy"] }
 rustls = { version = "0.22", default-features = false, features = ["tls12"] }
 http-body-util = "0.1"
-docker_credential = "1.0.1"
 console = "0.15.8"
 indicatif = "0.17.8"
 git2 = { version = "0.18.2", default-features = false } # No need to clone so can remove https and ssh support
@@ -30,6 +30,7 @@ serde_yaml = "0.9.31"
 void = "1.0.2"
 indexmap = { version = "2.2", features = ["serde"] }
 serde_with = { version = "3.6", features = ["macros"] }
+url = "2.5.0"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"
