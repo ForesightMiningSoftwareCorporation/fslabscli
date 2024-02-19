@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
 
+use crate::commands::check_workspace::docker::Docker;
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
@@ -180,20 +181,13 @@ impl Result {
 
     pub async fn check_publishable(
         &mut self,
-        options: &Options,
         npm: &Npm,
         cargo: &Cargo,
+        docker: &mut Docker,
     ) -> anyhow::Result<()> {
         self.publish_detail
             .docker
-            .check(
-                self.package.clone(),
-                self.version.clone(),
-                options.docker_registry.clone(),
-                options.docker_registry_username.clone(),
-                options.docker_registry_password.clone(),
-                None,
-            )
+            .check(self.package.clone(), self.version.clone(), docker)
             .await?;
         self.publish_detail
             .npm_napi
@@ -326,6 +320,14 @@ pub async fn check_workspace(
             options.cargo_registry_user_agent.clone(),
         )?;
     }
+    let mut docker = Docker::new(None)?;
+    if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
+        options.docker_registry.clone(),
+        options.docker_registry_username.clone(),
+        options.docker_registry_password.clone(),
+    ) {
+        docker.add_registry_auth(docker_registry, docker_username, docker_password)
+    }
     let mut pb: Option<ProgressBar> = None;
     if options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
@@ -341,7 +343,7 @@ pub async fn check_workspace(
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
             if options.check_publish {
-                match package.check_publishable(&options, &npm, &cargo).await {
+                match package.check_publishable(&npm, &cargo, &mut docker).await {
                     Ok(_) => {}
                     Err(e) => {
                         let error_msg = format!(

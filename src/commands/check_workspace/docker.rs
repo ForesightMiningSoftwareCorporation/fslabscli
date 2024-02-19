@@ -1,82 +1,214 @@
-use docker_credential::{CredentialRetrievalError, DockerCredential};
 use oci_distribution::client::{ClientConfig, ClientProtocol};
 use oci_distribution::errors::{OciDistributionError, OciErrorCode};
 use oci_distribution::secrets::RegistryAuth;
-use oci_distribution::{Client, Reference};
+use oci_distribution::{Client as DockerClient, Reference};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::env;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
+
+use anyhow::Context;
+use base64::prelude::*;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::{Method, Request};
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::rt::TokioExecutor;
+use url::Url;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
-pub struct PackageMetadataFslabsCiPublishDocker {
-    pub publish: bool,
-    pub repository: Option<String>,
+struct DockerTokenResp {
+    access_token: String,
 }
 
-impl PackageMetadataFslabsCiPublishDocker {
-    pub async fn check(
-        &mut self,
-        name: String,
-        version: String,
-        docker_registry: Option<String>,
-        docker_registry_username: Option<String>,
-        docker_registry_password: Option<String>,
-        docker_registry_protocol: Option<ClientProtocol>,
-    ) -> anyhow::Result<()> {
-        if !self.publish {
-            return Ok(());
-        }
-        log::debug!(
-            "Docker: checking if version {} of {} already exists",
-            version,
-            name
-        );
-        let docker_registry = match docker_registry.clone() {
-            Some(r) => r,
-            None => match self.repository.clone() {
-                Some(r) => r,
-                None => anyhow::bail!("Tried to check docker image without setting the registry"),
-            },
+#[derive(Deserialize)]
+struct DockerAuthConfig {
+    auth: Option<String>,
+    identitytoken: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DockerConfig {
+    auths: Option<HashMap<String, DockerAuthConfig>>,
+}
+
+pub struct Docker {
+    hyper_client: HyperClient<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    docker_client: DockerClient,
+    registries_auths: HashMap<String, DockerCredential>,
+}
+
+#[derive(Debug, PartialEq)]
+enum DockerCredential {
+    IdentityToken(String, String),
+    UsernamePassword(String, String),
+}
+
+impl Docker {
+    pub fn new(config_path: Option<String>) -> anyhow::Result<Self> {
+        let mut registries_auths = HashMap::new();
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(
+                rustls::ClientConfig::builder()
+                    .with_native_roots()?
+                    .with_no_client_auth(),
+            )
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let config_path = match config_path {
+            Some(c) => Some(c),
+            None => {
+                let home_config =
+                    || env::var_os("HOME").map(|home| Path::new(&home).join(".docker"));
+                env::var_os("DOCKER_CONFIG")
+                    .map(|dir| Path::new(&dir).to_path_buf())
+                    .or_else(home_config)
+                    .map(|dir| dir.join("config.json").to_string_lossy().to_string())
+            }
         };
-        let image: Reference =
-            format!("{}/{}:{}", docker_registry, name.clone(), version.clone()).parse()?;
-        let protocol = docker_registry_protocol.unwrap_or(ClientProtocol::Https);
-        let mut docker_client = Client::new(ClientConfig {
-            protocol: protocol.clone(),
-            ..Default::default()
-        });
-        let auth = match (docker_registry_username, docker_registry_password) {
-            (Some(username), Some(password)) => RegistryAuth::Basic(username, password),
-            _ => {
-                let server = image
-                    .resolve_registry()
-                    .strip_suffix('/')
-                    .unwrap_or_else(|| image.resolve_registry());
-                match docker_credential::get_credential(server) {
-                    Err(CredentialRetrievalError::ConfigNotFound) => RegistryAuth::Anonymous,
-                    Err(CredentialRetrievalError::NoCredentialConfigured) => {
-                        RegistryAuth::Anonymous
-                    }
-                    Err(_) => RegistryAuth::Anonymous,
-                    Ok(DockerCredential::UsernamePassword(username, password)) => {
-                        RegistryAuth::Basic(username, password)
-                    }
-                    Ok(DockerCredential::IdentityToken(_)) => {
-                        log::warn!("Cannot use contents of docker config, identity token not supported. Using anonymous auth");
-                        RegistryAuth::Anonymous
+
+        if let Some(p) = config_path {
+            if let Ok(file) = File::open(p) {
+                let reader = BufReader::new(file);
+                if let Ok(config) = serde_json::from_reader::<BufReader<File>, DockerConfig>(reader)
+                {
+                    if let Some(registries_auth) = config.auths {
+                        for (k, v) in registries_auth {
+                            let mut username: Option<String> = None;
+                            let mut password: Option<String> = None;
+                            if let Some(encoded_auth) = v.auth {
+                                if let Ok(decoded) = BASE64_STANDARD.decode(encoded_auth) {
+                                    if let Ok(auth) = std::str::from_utf8(&decoded) {
+                                        let parts: Vec<&str> = auth.splitn(2, ':').collect();
+                                        if let Some(u) = parts.first() {
+                                            username = Some(String::from(*u));
+                                        }
+                                        if let Some(p) = parts.get(1) {
+                                            password = Some(String::from(*p));
+                                        }
+                                    }
+                                }
+                            }
+                            if let (Some(username), Some(identity_token)) =
+                                (username.clone(), v.identitytoken)
+                            {
+                                registries_auths.insert(
+                                    k.to_string(),
+                                    DockerCredential::IdentityToken(
+                                        username,
+                                        identity_token.clone(),
+                                    ),
+                                );
+                            } else if let (Some(username), Some(password)) = (username, password) {
+                                registries_auths.insert(
+                                    k.to_string(),
+                                    DockerCredential::UsernamePassword(
+                                        username.clone(),
+                                        password.clone(),
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        Ok(Self {
+            registries_auths,
+            hyper_client: HyperClient::builder(TokioExecutor::new()).build(https),
+            docker_client: DockerClient::new(ClientConfig {
+                protocol: ClientProtocol::Https,
+                ..Default::default()
+            }),
+        })
+    }
+
+    pub fn add_registry_auth(&mut self, name: String, username: String, password: String) {
+        self.registries_auths
+            .insert(name, DockerCredential::UsernamePassword(username, password));
+    }
+
+    pub async fn check_image_exists(
+        &mut self,
+        registry_name: String,
+        name: String,
+        version: String,
+    ) -> anyhow::Result<bool> {
+        log::debug!(
+            "Docker: checking if version {} of {} already exists",
+            version, name
+        );
+
+        let image: Reference =
+            format!("{}/{}:{}", registry_name, name.clone(), version.clone()).parse()?;
+
+        let auth = match self.registries_auths.get(&registry_name) {
+            None => RegistryAuth::Anonymous,
+            Some(docker_credential) => match docker_credential {
+                DockerCredential::UsernamePassword(username, password) => {
+                    RegistryAuth::Basic(username.clone(), password.clone())
+                }
+                DockerCredential::IdentityToken(username, token) => {
+                    // With the Token, we should get a password and also find the username
+                    let oauth2_token_url =
+                        Url::parse(format!("https://{}/oauth2/token", registry_name).as_str())
+                            .unwrap();
+                    let req_builder = Request::builder()
+                        .method(Method::POST)
+                        .uri(oauth2_token_url.to_string())
+                        .header("Content-Type", "application/x-www-form-urlencoded");
+                    let mut enc = ::url::form_urlencoded::Serializer::new("".to_owned());
+
+                    enc.append_pair("grant_type", "refresh_token");
+                    enc.append_pair("service", registry_name.as_str());
+                    enc.append_pair("scope", format!("repository:{}:pull", name).as_str());
+                    enc.append_pair("refresh_token", token.as_str());
+                    let full_body = Full::new(Bytes::from(enc.finish()));
+                    //let full_body = Full::new(Bytes::from(format!("grant_type=refresh_token&service={}&scope=repository:{}:pull&refresh_token={}", registry_name, name, token)));
+
+                    let req = req_builder.body(full_body)?;
+                    let res = self
+                        .hyper_client
+                        .request(req)
+                        .await
+                        .with_context(|| "Could not fetch from the npm registry")?;
+
+                    if res.status().as_u16() >= 400 {
+                        anyhow::bail!("Something went wrong while getting docker registry token");
+                    }
+
+                    let body = res
+                        .into_body()
+                        .collect()
+                        .await
+                        .with_context(|| "Could not get body from the npm registry")?
+                        .to_bytes();
+
+                    let docker_token: DockerTokenResp =
+                        serde_json::from_str(String::from_utf8_lossy(&body).as_ref())?;
+                    RegistryAuth::Basic(username.clone(), docker_token.access_token)
+                }
+            },
         };
-        match docker_client.fetch_manifest_digest(&image, &auth).await {
-            Ok(_) => {
-                self.publish = false;
-                Ok(())
-            }
+        println!("Got auth: {:?}", auth);
+
+        match self
+            .docker_client
+            .fetch_manifest_digest(&image, &auth)
+            .await
+        {
+            Ok(_) => Ok(true),
             Err(e) => match e {
                 OciDistributionError::RegistryError { envelope, .. } => {
                     for error in envelope.errors {
                         if error.code == OciErrorCode::ManifestUnknown {
-                            self.publish = true;
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                     anyhow::bail!("unknowned registry error")
@@ -89,6 +221,33 @@ impl PackageMetadataFslabsCiPublishDocker {
                 }
             },
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+pub struct PackageMetadataFslabsCiPublishDocker {
+    pub publish: bool,
+    pub repository: Option<String>,
+}
+
+impl PackageMetadataFslabsCiPublishDocker {
+    pub async fn check(
+        &mut self,
+        package: String,
+        version: String,
+        docker: &mut Docker,
+    ) -> anyhow::Result<()> {
+        if !self.publish {
+            return Ok(());
+        }
+        let docker_registry = match self.repository.clone() {
+            Some(r) => r,
+            None => anyhow::bail!("Tried to check docker image without setting the registry"),
+        };
+        self.publish = !docker
+            .check_image_exists(docker_registry, package, version)
+            .await?;
+        Ok(())
     }
 }
 
