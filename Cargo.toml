@@ -1,6 +1,6 @@
 [package]
 name = "fslabscli"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -25,7 +25,7 @@ http-body-util = "0.1"
 docker_credential = "1.0.1"
 console = "0.15.8"
 indicatif = "0.17.8"
-git2 = "0.18.2"
+git2 = { version = "0.18.2", default-features = false } # No need to clone so can remove https and ssh support
 serde_yaml = "0.9.31"
 void = "1.0.2"
 indexmap = { version = "2.2", features = ["serde"] }
