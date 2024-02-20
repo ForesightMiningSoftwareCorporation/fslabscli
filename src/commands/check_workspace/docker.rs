@@ -142,7 +142,8 @@ impl Docker {
     ) -> anyhow::Result<bool> {
         log::debug!(
             "Docker: checking if version {} of {} already exists",
-            version, name
+            version,
+            name
         );
 
         let image: Reference =
@@ -196,8 +197,6 @@ impl Docker {
                 }
             },
         };
-        println!("Got auth: {:?}", auth);
-
         match self
             .docker_client
             .fetch_manifest_digest(&image, &auth)
@@ -228,6 +227,7 @@ impl Docker {
 pub struct PackageMetadataFslabsCiPublishDocker {
     pub publish: bool,
     pub repository: Option<String>,
+    pub error: Option<String>,
 }
 
 impl PackageMetadataFslabsCiPublishDocker {

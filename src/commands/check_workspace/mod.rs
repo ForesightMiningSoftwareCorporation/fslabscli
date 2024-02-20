@@ -185,18 +185,34 @@ impl Result {
         cargo: &Cargo,
         docker: &mut Docker,
     ) -> anyhow::Result<()> {
-        self.publish_detail
+        match self
+            .publish_detail
             .docker
             .check(self.package.clone(), self.version.clone(), docker)
-            .await?;
-        self.publish_detail
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => self.publish_detail.docker.error = Some(e.to_string()),
+        };
+        match self
+            .publish_detail
             .npm_napi
             .check(self.package.clone(), self.version.clone(), npm)
-            .await?;
-        self.publish_detail
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => self.publish_detail.npm_napi.error = Some(e.to_string()),
+        };
+        match self
+            .publish_detail
             .cargo
             .check(self.package.clone(), self.version.clone(), cargo)
-            .await?;
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
+        };
+
         Ok(())
     }
 }
