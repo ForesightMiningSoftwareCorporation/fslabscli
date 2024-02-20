@@ -18,6 +18,7 @@ pub struct PackageMetadataFslabsCiPublishCargo {
     pub publish: bool,
     pub registry: Option<Vec<String>>,
     pub allow_public: bool,
+    pub error: Option<String>,
 }
 
 impl PackageMetadataFslabsCiPublishCargo {

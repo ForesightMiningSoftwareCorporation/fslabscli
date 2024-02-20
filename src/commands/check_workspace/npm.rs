@@ -19,6 +19,8 @@ const NPM_DEFAULT_API_URL: &str = "https://registry.npmjs.org/";
 pub struct PackageMetadataFslabsCiPublishNpmNapi {
     pub publish: bool,
     pub scope: Option<String>,
+    #[serde(skip)]
+    pub error: Option<String>,
 }
 
 impl PackageMetadataFslabsCiPublishNpmNapi {
