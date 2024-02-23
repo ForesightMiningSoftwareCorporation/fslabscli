@@ -1,1 +1,343 @@
-{"run_id":"8017778855","label_key":".__miri","run_attempt":"18","nomad_dispatched_job_id":"github-runner-gpu/dispatch-1708711919-9ebae9e5","node_class":"Gpu","rust_version":"Rust1_75","status":"completed","submitted_at":"2024-02-23T18:11:59.217286851Z","pending_at":null,"waiting_for_job_at":null,"running_at":"2024-02-23T18:12:52.345404783Z","completed_at":"2024-02-23T18:13:11.480982864Z","steps":[],"raw":{"id":21919450743,"run_id":8017778855,"workflow_name":"CI-CD - Tests and Publishing","head_branch":"lp/tests","run_url":"https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/actions/runs/8017778855","run_attempt":18,"node_id":"CR_kwDOHV6VVc8AAAAFGoBGdw","head_sha":"32885118987ef4786dac2246fda66d22de39c2a1","url":"https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/actions/jobs/21919450743","html_url":"https://github.com/ForesightMiningSoftwareCorporation/ci_tests/actions/runs/8017778855/job/21919450743","status":"completed","conclusion":"success","created_at":"2024-02-23T18:11:56Z","started_at":"2024-02-23T18:12:50Z","completed_at":"2024-02-23T18:13:08Z","name":"Test ci_tests: ci_tests / Rust miri .","steps":[{"id":null,"name":"Set up job","status":"completed","conclusion":"success","number":1,"started_at":"2024-02-23T18:12:49Z","completed_at":"2024-02-23T18:12:55Z"},{"id":null,"name":"Configure Git to use global ignore file","status":"completed","conclusion":"success","number":2,"started_at":"2024-02-23T18:12:56Z","completed_at":"2024-02-23T18:12:56Z"},{"id":null,"name":"Ensure we don't track the new resources in git","status":"completed","conclusion":"success","number":3,"started_at":"2024-02-23T18:12:56Z","completed_at":"2024-02-23T18:12:56Z"},{"id":null,"name":"Update rustup only if version is different thant toolchain","status":"completed","conclusion":"success","number":4,"started_at":"2024-02-23T18:12:56Z","completed_at":"2024-02-23T18:12:56Z"},{"id":null,"name":"Checkout","status":"completed","conclusion":"success","number":5,"started_at":"2024-02-23T18:12:56Z","completed_at":"2024-02-23T18:12:56Z"},{"id":null,"name":"Run ForesightMiningSoftwareCorporation/github/.github/actions/login-private-registry@v1","status":"completed","conclusion":"success","number":6,"started_at":"2024-02-23T18:12:56Z","completed_at":"2024-02-23T18:12:58Z"},{"id":null,"name":"Additional Cache","status":"completed","conclusion":"skipped","number":7,"started_at":"2024-02-23T18:12:59Z","completed_at":"2024-02-23T18:12:59Z"},{"id":null,"name":"Additional Cache Miss Command","status":"completed","conclusion":"skipped","number":8,"started_at":"2024-02-23T18:12:59Z","completed_at":"2024-02-23T18:12:59Z"},{"id":null,"name":"Additional Script","status":"completed","conclusion":"skipped","number":9,"started_at":"2024-02-23T18:12:59Z","completed_at":"2024-02-23T18:12:59Z"},{"id":null,"name":"Update Packages","status":"completed","conclusion":"skipped","number":10,"started_at":"2024-02-23T18:12:59Z","completed_at":"2024-02-23T18:12:59Z"},{"id":null,"name":"Cache Dependencies","status":"completed","conclusion":"success","number":11,"started_at":"2024-02-23T18:12:59Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"Get crate name","status":"completed","conclusion":"success","number":12,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"Set start time as env variable","status":"completed","conclusion":"success","number":13,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"Run Cargo Custom command","status":"completed","conclusion":"skipped","number":14,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"fmt","status":"completed","conclusion":"skipped","number":15,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"check","status":"completed","conclusion":"skipped","number":16,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"clippy","status":"completed","conclusion":"skipped","number":17,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"doc","status":"completed","conclusion":"skipped","number":18,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"Copy Default deny if not exists","status":"completed","conclusion":"skipped","number":19,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"deny-license","status":"completed","conclusion":"skipped","number":20,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"deny-bans","status":"completed","conclusion":"skipped","number":21,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"deny-advisories","status":"completed","conclusion":"skipped","number":22,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"deny-sources","status":"completed","conclusion":"skipped","number":23,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"dependencies","status":"completed","conclusion":"skipped","number":24,"started_at":"2024-02-23T18:13:00Z","completed_at":"2024-02-23T18:13:00Z"},{"id":null,"name":"publish-dryrun","status":"completed","conclusion":"skipped","number":25,"started_at":"2024-02-23T18:13:01Z","completed_at":"2024-02-23T18:13:01Z"},{"id":null,"name":"tests","status":"completed","conclusion":"skipped","number":26,"started_at":"2024-02-23T18:13:01Z","completed_at":"2024-02-23T18:13:01Z"},{"id":null,"name":"miri","status":"completed","conclusion":"success","number":27,"started_at":"2024-02-23T18:13:01Z","completed_at":"2024-02-23T18:13:01Z"},{"id":null,"name":"Write output to file","status":"completed","conclusion":"success","number":28,"started_at":"2024-02-23T18:13:01Z","completed_at":"2024-02-23T18:13:01Z"},{"id":null,"name":"Run actions/upload-artifact@v4","status":"completed","conclusion":"success","number":29,"started_at":"2024-02-23T18:13:01Z","completed_at":"2024-02-23T18:13:02Z"},{"id":null,"name":"Post Run ForesightMiningSoftwareCorporation/github/.github/actions/login-private-registry@v1","status":"completed","conclusion":"success","number":57,"started_at":"2024-02-23T18:13:02Z","completed_at":"2024-02-23T18:13:02Z"},{"id":null,"name":"Post Checkout","status":"completed","conclusion":"success","number":58,"started_at":"2024-02-23T18:13:03Z","completed_at":"2024-02-23T18:13:03Z"},{"id":null,"name":"Post Cache Dependencies","status":"completed","conclusion":"success","number":61,"started_at":"2024-02-23T18:13:02Z","completed_at":"2024-02-23T18:13:02Z"},{"id":null,"name":"Complete job","status":"completed","conclusion":"success","number":68,"started_at":"2024-02-23T18:13:02Z","completed_at":"2024-02-23T18:13:02Z"}],"check_run_url":"https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/check-runs/21919450743","labels":["self-hosted","gpu","1.75","8017778855__.__miri__18"],"runner_id":51555,"runner_name":"gh-runner-gcjt7DPUdNgPo","runner_group_id":4,"runner_group_name":"rust-test-runners"}}
+{
+  "run_id": "8017778855",
+  "label_key": ".__miri",
+  "run_attempt": "18",
+  "nomad_dispatched_job_id": "github-runner-gpu/dispatch-1708711919-9ebae9e5",
+  "node_class": "Gpu",
+  "rust_version": "Rust1_75",
+  "status": "completed",
+  "submitted_at": "2024-02-23T18:11:59.217286851Z",
+  "pending_at": null,
+  "waiting_for_job_at": null,
+  "running_at": "2024-02-23T18:12:52.345404783Z",
+  "completed_at": "2024-02-23T18:13:11.480982864Z",
+  "steps": [],
+  "raw": {
+    "id": 21919450743,
+    "run_id": 8017778855,
+    "workflow_name": "CI-CD - Tests and Publishing",
+    "head_branch": "lp/tests",
+    "run_url": "https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/actions/runs/8017778855",
+    "run_attempt": 18,
+    "node_id": "CR_kwDOHV6VVc8AAAAFGoBGdw",
+    "head_sha": "32885118987ef4786dac2246fda66d22de39c2a1",
+    "url": "https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/actions/jobs/21919450743",
+    "html_url": "https://github.com/ForesightMiningSoftwareCorporation/ci_tests/actions/runs/8017778855/job/21919450743",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2024-02-23T18:11:56Z",
+    "started_at": "2024-02-23T18:12:50Z",
+    "completed_at": "2024-02-23T18:13:08Z",
+    "name": "Test ci_tests: ci_tests / Rust miri .",
+    "steps": [
+      {
+        "id": null,
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1,
+        "started_at": "2024-02-23T18:12:49Z",
+        "completed_at": "2024-02-23T18:12:55Z"
+      },
+      {
+        "id": null,
+        "name": "Configure Git to use global ignore file",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2,
+        "started_at": "2024-02-23T18:12:56Z",
+        "completed_at": "2024-02-23T18:12:56Z"
+      },
+      {
+        "id": null,
+        "name": "Ensure we don't track the new resources in git",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3,
+        "started_at": "2024-02-23T18:12:56Z",
+        "completed_at": "2024-02-23T18:12:56Z"
+      },
+      {
+        "id": null,
+        "name": "Update rustup only if version is different thant toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4,
+        "started_at": "2024-02-23T18:12:56Z",
+        "completed_at": "2024-02-23T18:12:56Z"
+      },
+      {
+        "id": null,
+        "name": "Checkout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5,
+        "started_at": "2024-02-23T18:12:56Z",
+        "completed_at": "2024-02-23T18:12:56Z"
+      },
+      {
+        "id": null,
+        "name": "Run ForesightMiningSoftwareCorporation/github/.github/actions/login-private-registry@v1",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6,
+        "started_at": "2024-02-23T18:12:56Z",
+        "completed_at": "2024-02-23T18:12:58Z"
+      },
+      {
+        "id": null,
+        "name": "Additional Cache",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 7,
+        "started_at": "2024-02-23T18:12:59Z",
+        "completed_at": "2024-02-23T18:12:59Z"
+      },
+      {
+        "id": null,
+        "name": "Additional Cache Miss Command",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 8,
+        "started_at": "2024-02-23T18:12:59Z",
+        "completed_at": "2024-02-23T18:12:59Z"
+      },
+      {
+        "id": null,
+        "name": "Additional Script",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 9,
+        "started_at": "2024-02-23T18:12:59Z",
+        "completed_at": "2024-02-23T18:12:59Z"
+      },
+      {
+        "id": null,
+        "name": "Update Packages",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 10,
+        "started_at": "2024-02-23T18:12:59Z",
+        "completed_at": "2024-02-23T18:12:59Z"
+      },
+      {
+        "id": null,
+        "name": "Cache Dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11,
+        "started_at": "2024-02-23T18:12:59Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "Get crate name",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "Set start time as env variable",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "Run Cargo Custom command",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 14,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "fmt",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 15,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "check",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 16,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "clippy",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 17,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "doc",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 18,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "Copy Default deny if not exists",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 19,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "deny-license",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 20,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "deny-bans",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 21,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "deny-advisories",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 22,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "deny-sources",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 23,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "dependencies",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 24,
+        "started_at": "2024-02-23T18:13:00Z",
+        "completed_at": "2024-02-23T18:13:00Z"
+      },
+      {
+        "id": null,
+        "name": "publish-dryrun",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 25,
+        "started_at": "2024-02-23T18:13:01Z",
+        "completed_at": "2024-02-23T18:13:01Z"
+      },
+      {
+        "id": null,
+        "name": "tests",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 26,
+        "started_at": "2024-02-23T18:13:01Z",
+        "completed_at": "2024-02-23T18:13:01Z"
+      },
+      {
+        "id": null,
+        "name": "miri",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 27,
+        "started_at": "2024-02-23T18:13:01Z",
+        "completed_at": "2024-02-23T18:13:01Z"
+      },
+      {
+        "id": null,
+        "name": "Write output to file",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28,
+        "started_at": "2024-02-23T18:13:01Z",
+        "completed_at": "2024-02-23T18:13:01Z"
+      },
+      {
+        "id": null,
+        "name": "Run actions/upload-artifact@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29,
+        "started_at": "2024-02-23T18:13:01Z",
+        "completed_at": "2024-02-23T18:13:02Z"
+      },
+      {
+        "id": null,
+        "name": "Post Run ForesightMiningSoftwareCorporation/github/.github/actions/login-private-registry@v1",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 57,
+        "started_at": "2024-02-23T18:13:02Z",
+        "completed_at": "2024-02-23T18:13:02Z"
+      },
+      {
+        "id": null,
+        "name": "Post Checkout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 58,
+        "started_at": "2024-02-23T18:13:03Z",
+        "completed_at": "2024-02-23T18:13:03Z"
+      },
+      {
+        "id": null,
+        "name": "Post Cache Dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 61,
+        "started_at": "2024-02-23T18:13:02Z",
+        "completed_at": "2024-02-23T18:13:02Z"
+      },
+      {
+        "id": null,
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 68,
+        "started_at": "2024-02-23T18:13:02Z",
+        "completed_at": "2024-02-23T18:13:02Z"
+      }
+    ],
+    "check_run_url": "https://api.github.com/repos/ForesightMiningSoftwareCorporation/ci_tests/check-runs/21919450743",
+    "labels": [
+      "self-hosted",
+      "gpu",
+      "1.75",
+      "8017778855__.__miri__18"
+    ],
+    "runner_id": 51555,
+    "runner_name": "gh-runner-gcjt7DPUdNgPo",
+    "runner_group_id": 4,
+    "runner_group_name": "rust-test-runners"
+  }
+}

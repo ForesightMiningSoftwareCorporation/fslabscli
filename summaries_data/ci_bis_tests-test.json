@@ -1,0 +1,19 @@
+{
+  "name": "ci_bis_tests",
+  "start_time": "1708712288000",
+  "end_time": "1708712292000",
+  "working_directory": ".",
+  "type": "test",
+  "server_url": "https://github.com",
+  "repository": "ForesightMiningSoftwareCorporation/ci_tests",
+  "run_id": "8017778855",
+  "run_attempt": "18",
+  "actor": "loispostula",
+  "event_name": "pull_request",
+  "outputs": {
+    "tests": {
+      "outcome": "success",
+      "required": true
+    }
+  }
+}

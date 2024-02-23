@@ -1,24 +1,23 @@
-use clap::Parser;
-use humantime::format_duration;
-use hyper_rustls::ConfigBuilderExt;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
-mod template;
+
+use clap::Parser;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
-use hyper::body::Bytes;
 use hyper::{Method, Request};
+use hyper::body::Bytes;
+use hyper_rustls::ConfigBuilderExt;
 use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use serde::{Deserialize, Serialize};
+
 use template::Summary;
 
-use crate::commands::summaries::template::SummaryTableRow;
+mod template;
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate summary of github run.")]
@@ -55,6 +54,16 @@ enum CheckType {
     Check,
     Test,
     Miri,
+}
+
+impl CheckType {
+    pub fn pretty_print(&self) -> String {
+        match self {
+            Self::Check => "Check".to_string(),
+            Self::Test => "Test".to_string(),
+            Self::Miri => "Miri".to_string(),
+        }
+    }
 }
 
 impl Display for CheckType {
@@ -102,6 +111,8 @@ impl Into<String> for CheckOutcome {
 struct CheckOutput {
     pub outcome: CheckOutcome,
     pub required: bool,
+    pub number: Option<usize>,
+    pub log_url: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -162,13 +173,29 @@ fn get_success_emoji(success: bool) -> String {
     }
 }
 
+fn get_success_color(success: bool) -> String {
+    match success {
+        true => "green".to_string(),
+        false => "red".to_string(),
+    }
+}
+
+fn get_outcome_color(outcome: CheckOutcome) -> String {
+    match outcome {
+        CheckOutcome::Success => "green".to_string(),
+        CheckOutcome::Failure => "red".to_string(),
+        CheckOutcome::Cancelled => "grey".to_string(),
+        CheckOutcome::Skipped => "grey".to_string(),
+    }
+}
+
 // TODO: This is copyied from mining-bot, it should probably be shared between the two
 //
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Step {
     pub name: String,
-    pub number: i64,
+    pub number: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -178,6 +205,7 @@ pub struct WorkflowJobInstanceRaw {
     pub html_url: String,
     pub steps: Vec<Step>,
 }
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[non_exhaustive]
 pub struct WorkflowJobInstance {
@@ -279,17 +307,12 @@ pub async fn checks_summaries(
                 steps = i.raw.steps.iter().cloned().collect();
             }
             let mut check_success = true;
-            let mut rows: Vec<Vec<SummaryTableRow>> = vec![vec![
-                SummaryTableRow::new_header("Required".to_string()),
-                SummaryTableRow::new_header("Step".to_string()),
-                SummaryTableRow::new_header("Result".to_string()),
-                SummaryTableRow::new_header("Details".to_string()),
-            ]];
+
             let sub_checks: Vec<(&str, Option<CheckOutput>)> = vec![
                 ("check", check_summary.outputs.check.clone()),
                 ("clippy", check_summary.outputs.clippy.clone()),
                 ("doc", check_summary.outputs.doc.clone()),
-                ("custom", check_summary.outputs.custom.clone()),
+                // ("custom", check_summary.outputs.custom.clone()),
                 (
                     "deny_advisories",
                     check_summary.outputs.deny_advisories.clone(),
@@ -306,65 +329,41 @@ pub async fn checks_summaries(
                 ),
                 ("tests", check_summary.outputs.tests.clone()),
             ];
+            let mut checked_sub_checks: Vec<(&str, CheckOutput)> = vec![];
             for (subcheck, check) in sub_checks {
                 if let Some(check) = check {
-                    //let log_url = match workflow_info {
-                    //   Ok(_) => "".to_string(),
-                    //    Err(_) => "".to_string(),
-                    //};
                     let step = steps.iter().find(|c| c.name == subcheck.replace("_", "-"));
-                    let log_url = match (base_url.clone(), step) {
-                        (Some(u), Some(c)) => {
-                            summary.link("logs".to_string(), format!("{}#step:{}:1", u, c.number))
+                    let mut new_check = check.clone();
+                    if let Some(step) = step {
+                        new_check.number = Some(step.number);
+                        if let Some(url) = base_url.clone() {
+                            new_check.log_url = Some(format!("{}#step:{}:1", url, step.number));
                         }
-                        _ => "".to_string(),
-                    };
-                    rows.push(vec![
-                        SummaryTableRow::new(get_required_emoji(check.required)),
-                        SummaryTableRow::new(subcheck.to_string()),
-                        SummaryTableRow::new(check.outcome.into()),
-                        SummaryTableRow::new(log_url),
-                    ]);
-                    if check.required {
-                        check_success &= check.outcome.is_passing();
+
+                        checked_sub_checks.push((subcheck, new_check));
+                        if check.required {
+                            check_success &= check.outcome.is_passing();
+                        }
                     }
                 }
             }
-            let duration = match (
-                check_summary.start_time.parse::<i64>(),
-                check_summary.end_time.parse::<i64>(),
-            ) {
-                (Ok(start_time), Ok(end_time)) => {
-                    format_duration(Duration::from_secs((end_time - start_time) as u64) / 1000)
-                        .to_string()
+            // order sub check by number
+            checked_sub_checks.sort_by_key(|(_, o)| o.number.unwrap());
+            let checked_keys = checked_sub_checks.iter().map(|(k, _)| k.to_string()).collect::<Vec<String>>().join("-->");
+            let mut diagram = format!("    subgraph {}\n        direction LR\n            {}\n", check_name.pretty_print(), checked_keys);
+            for (sub_check_name, sub_check) in checked_sub_checks {
+                if let Some(url) = sub_check.log_url {
+                    diagram.push_str(format!("            click {} \"{}\" \"logs\"\n", sub_check_name, url).as_str());
                 }
-                _ => "-".to_string(),
-            };
-            let heading = summary.heading(
-                format!("{} - {}", check_name, get_success_emoji(check_success)),
-                Some(3),
-            );
+                diagram.push_str(format!("            style {} fill:{}\n", sub_check_name, get_outcome_color(sub_check.outcome)).as_str());
+            }
             let run_link = base_url.unwrap_or(format!(
                 "{}/{}/actions/runs/{}",
                 check_summary.server_url, check_summary.repository, check_summary.run_id
             ));
-            let run_link_text = job_id.unwrap_or("".to_string());
-            check_outputs.push(summary.detail(
-                heading,
-                format!(
-                    "{}\n{}\n{}",
-                    summary.table(rows),
-                    summary.p(format!(
-                        "Run: {}",
-                        summary.link(
-                            format!("{}/{}", check_summary.run_id.clone(), run_link_text),
-                            run_link
-                        )
-                    )),
-                    summary.p(format!("Duration: {}", duration)),
-                ),
-                !check_success,
-            ));
+            diagram.push_str("        end\n");
+            diagram.push_str(format!("    style {} stroke:{}\n", check_name.pretty_print(), get_success_color(check_success)).as_str());
+            check_outputs.push(diagram);
             success &= check_success;
         }
         summary.add_content(
@@ -373,7 +372,7 @@ pub async fn checks_summaries(
                     format!("{} - {}", package, get_success_emoji(success)),
                     Some(2),
                 ),
-                check_outputs.join(""),
+                summary.code_block(format!("flowchart LR\n{}", check_outputs.join("\n")), Some("mermaid".to_string())),
                 !success,
             ),
             true,
