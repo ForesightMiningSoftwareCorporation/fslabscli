@@ -117,6 +117,7 @@ pub struct PackageMetadataFslabsCiPublish {
 pub struct PackageMetadataFslabsCiTest {
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
+    pub skip: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -147,12 +148,26 @@ impl Result {
         let metadata: PackageMetadata =
             from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.fslabs.publish;
-        // Let's parse cargo publishing from main metadata
-        publish.cargo.registry = package.publish.clone();
-        publish.cargo.publish = match package.publish {
-            Some(r) => !r.is_empty() && cargo_default_publish,
-            None => publish.cargo.allow_public,
+        publish.cargo.registry = match package.publish.clone() {
+            Some(r) => Some(r.clone()),
+            None => {
+                // Should be public registry, double check this is wanted
+                if publish.cargo.allow_public {
+                    Some(vec!["public".to_string()])
+                } else {
+                    Some(vec![])
+                }
+            }
         };
+
+        publish.cargo.publish = publish
+            .cargo
+            .registry
+            .clone()
+            .map(|r| r.len() == 1)
+            .unwrap_or(false)
+            && cargo_default_publish;
+
         let dependencies = package
             .dependencies
             .into_iter()

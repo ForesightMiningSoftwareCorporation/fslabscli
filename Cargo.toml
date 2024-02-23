@@ -1,6 +1,6 @@
 [package]
 name = "fslabscli"
-version = "0.1.15"
+version = "0.2.0"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -8,7 +8,7 @@ description = "Command line interface for helping FSLABS ci"
 
 [dependencies]
 base64 = "0.21"
-clap = { version = "4.5.0", features = ["derive"] }
+clap = { version = "4.5.0", features = ["derive", "env"] }
 anyhow = { version = "1.0.79", features = [] }
 tokio = { version = "1.36.0", features = ["full"] }
 log = "0.4"
@@ -31,6 +31,8 @@ void = "1.0.2"
 indexmap = { version = "2.2", features = ["serde"] }
 serde_with = { version = "3.6", features = ["macros"] }
 url = "2.5.0"
+itertools = "0.12"
+humantime = "2.1"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"

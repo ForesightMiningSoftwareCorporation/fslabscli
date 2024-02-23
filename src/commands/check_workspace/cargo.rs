@@ -14,9 +14,12 @@ use serde::{Deserialize, Serialize};
 const CARGO_DEFAULT_API_URL: &str = "https://crates.io/api/v1/crates/";
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(rename_all = "snake_case")]
 pub struct PackageMetadataFslabsCiPublishCargo {
+    #[serde(default)]
     pub publish: bool,
     pub registry: Option<Vec<String>>,
+    #[serde(default)]
     pub allow_public: bool,
     pub error: Option<String>,
 }
@@ -28,6 +31,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         version: String,
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
+        log::info!("Got following registries: {:?}", self.registry);
         let registries = match &self.registry {
             Some(r) => r.clone(),
             None => {

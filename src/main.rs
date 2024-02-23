@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
+use crate::commands::summaries::{summaries, Options as SummariesOptions};
 
 mod commands;
 mod utils;
@@ -40,6 +41,7 @@ enum Commands {
     /// Check which crates needs to be published
     CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
+    Summaries(Box<SummariesOptions>),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -88,6 +90,9 @@ async fn main() {
             .await
             .map(|r| display_or_json(cli.json, r)),
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
+            .await
+            .map(|r| display_or_json(cli.json, r)),
+        Commands::Summaries(options) => summaries(options, working_directory)
             .await
             .map(|r| display_or_json(cli.json, r)),
     };
