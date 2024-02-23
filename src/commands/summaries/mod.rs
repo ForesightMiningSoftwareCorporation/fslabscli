@@ -13,9 +13,12 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use num::integer::lcm;
 use serde::{Deserialize, Serialize};
 
 use template::Summary;
+
+use crate::commands::summaries::template::SummaryTableCell;
 
 mod template;
 
@@ -90,6 +93,17 @@ impl CheckOutcome {
         match &self {
             &Self::Failure => false,
             _ => true,
+        }
+    }
+}
+
+impl Display for CheckOutcome {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        match self {
+            CheckOutcome::Success => write!(f, "✅"),
+            CheckOutcome::Failure => write!(f, "❌"),
+            CheckOutcome::Cancelled => write!(f, "⛔"),
+            CheckOutcome::Skipped => write!(f, "⏭"),
         }
     }
 }
@@ -287,7 +301,7 @@ pub async fn checks_summaries(
     for (package, checks) in checks_map {
         let mut success = true;
 
-        let mut check_outputs: Vec<String> = vec![];
+        let mut check_outputs: Vec<(String, Vec<(&str, CheckOutput)>, bool, String)> = vec![];
         for (check_name, check_summary) in checks {
             let mining_bot_url = format!(
                 "{}/workflow?run_id={}&working_directory={}&check_type={}&run_attempt={}",
@@ -297,17 +311,10 @@ pub async fn checks_summaries(
                 check_name,
                 check_summary.run_attempt.clone(),
             );
-            let workflow_info = get_workflow_info(&client, mining_bot_url).await;
-            let mut base_url: Option<String> = None;
-            let mut job_id: Option<String> = None;
-            let mut steps: Vec<Step> = vec![];
-            if let Ok(i) = workflow_info {
-                job_id = Some(format!("{}", i.raw.id));
-                base_url = Some(i.raw.html_url.clone());
-                steps = i.raw.steps.iter().cloned().collect();
-            }
+            let Ok(workflow_info) = get_workflow_info(&client, mining_bot_url).await else { continue; };
+            let base_url = workflow_info.raw.html_url.clone();
+            let steps: Vec<Step> = workflow_info.raw.steps.iter().cloned().collect();
             let mut check_success = true;
-
             let sub_checks: Vec<(&str, Option<CheckOutput>)> = vec![
                 ("check", check_summary.outputs.check.clone()),
                 ("clippy", check_summary.outputs.clippy.clone()),
@@ -336,10 +343,7 @@ pub async fn checks_summaries(
                     let mut new_check = check.clone();
                     if let Some(step) = step {
                         new_check.number = Some(step.number);
-                        if let Some(url) = base_url.clone() {
-                            new_check.log_url = Some(format!("{}#step:{}:1", url, step.number));
-                        }
-
+                        new_check.log_url = Some(format!("{}#step:{}:1", base_url, step.number));
                         checked_sub_checks.push((subcheck, new_check));
                         if check.required {
                             check_success &= check.outcome.is_passing();
@@ -349,30 +353,45 @@ pub async fn checks_summaries(
             }
             // order sub check by number
             checked_sub_checks.sort_by_key(|(_, o)| o.number.unwrap());
-            let checked_keys = checked_sub_checks.iter().map(|(k, _)| k.to_string()).collect::<Vec<String>>().join("-->");
-            let mut diagram = format!("    subgraph {}\n        direction LR\n            {}\n", check_name.pretty_print(), checked_keys);
-            for (sub_check_name, sub_check) in checked_sub_checks {
-                if let Some(url) = sub_check.log_url {
-                    diagram.push_str(format!("            click {} \"{}\" \"logs\"\n", sub_check_name, url).as_str());
-                }
-                diagram.push_str(format!("            style {} fill:{}\n", sub_check_name, get_outcome_color(sub_check.outcome)).as_str());
-            }
-            let run_link = base_url.unwrap_or(format!(
-                "{}/{}/actions/runs/{}",
-                check_summary.server_url, check_summary.repository, check_summary.run_id
-            ));
-            diagram.push_str("        end\n");
-            diagram.push_str(format!("    style {} stroke:{}\n", check_name.pretty_print(), get_success_color(check_success)).as_str());
-            check_outputs.push(diagram);
+            check_outputs.push((check_name.to_string(), checked_sub_checks, check_success, base_url));
             success &= check_success;
         }
+        // #1 Find the lcm between the result to display a nice table
+        let mut lcm_result: usize = 1;
+        for (_, inner_vec, _, _) in check_outputs.iter() {
+            let inner_vec_len = inner_vec.len();
+            lcm_result = lcm(lcm_result, inner_vec_len);
+        }
+        let header_row: Vec<SummaryTableCell> = vec![
+            SummaryTableCell::new_header("Category".to_string(), 1),
+            SummaryTableCell::new_header("Checks".to_string(), lcm_result),
+        ];
+        let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
+        for (check_name, check, check_success, check_url) in check_outputs.iter() {
+            let colspan = lcm_result / (check.len());
+            let check_cell_name = format!("{} {}",
+                                          get_success_emoji(*check_success),
+                                          summary.link(check_name.to_string(), check_url.clone())
+            );
+            let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
+            for (subcheck_name, subcheck) in check {
+                let subcheck_cell = format!("{} {}", subcheck.outcome, match subcheck.log_url.clone() {
+                    Some(u) => summary.link(subcheck_name.to_string(), u),
+                    None => subcheck_name.to_string(),
+                });
+                row.push(SummaryTableCell::new(subcheck_cell, colspan));
+            }
+            rows.push(row);
+        }
+
+
         summary.add_content(
             summary.detail(
                 summary.heading(
                     format!("{} - {}", package, get_success_emoji(success)),
                     Some(2),
                 ),
-                summary.code_block(format!("flowchart LR\n{}", check_outputs.join("\n")), Some("mermaid".to_string())),
+                summary.table(rows),
                 !success,
             ),
             true,

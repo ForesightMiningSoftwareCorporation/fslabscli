@@ -1,27 +1,28 @@
-use std::io::prelude::*;
 use std::{collections::HashMap, fs::File, path::PathBuf};
+use std::hash::Hash;
+use std::io::prelude::*;
 
-pub struct SummaryTableRow {
+pub struct SummaryTableCell {
     pub header: bool,
     pub data: String,
     pub colspan: Option<usize>,
     pub rowspan: Option<usize>,
 }
 
-impl SummaryTableRow {
-    pub fn new(data: String) -> Self {
+impl SummaryTableCell {
+    pub fn new(data: String, colspan: usize) -> Self {
         Self {
             header: false,
             data,
-            colspan: None,
+            colspan: Some(colspan),
             rowspan: None,
         }
     }
-    pub fn new_header(data: String) -> Self {
+    pub fn new_header(data: String, colspan: usize) -> Self {
         Self {
             header: true,
             data,
-            colspan: None,
+            colspan: Some(colspan),
             rowspan: None,
         }
     }
@@ -110,7 +111,7 @@ impl Summary {
         self.wrap(tag, Some(list_items), None, true)
     }
 
-    pub fn table(&self, rows: Vec<Vec<SummaryTableRow>>) -> String {
+    pub fn table(&self, rows: Vec<Vec<SummaryTableCell>>) -> String {
         let table_body = rows
             .iter()
             .map(|row| {
@@ -205,5 +206,9 @@ impl Summary {
 
     pub fn p(&self, text: String) -> String {
         self.wrap("p".to_string(), Some(text), None, false)
+    }
+
+    pub fn div(&self, content: String, attrs: HashMap<String, String>) -> String {
+        self.wrap("div".to_string(), Some(content), Some(attrs), false)
     }
 }

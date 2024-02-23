@@ -33,6 +33,7 @@ serde_with = { version = "3.6", features = ["macros"] }
 url = "2.5.0"
 itertools = "0.12"
 humantime = "2.1"
+num = "0.4.1"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"
