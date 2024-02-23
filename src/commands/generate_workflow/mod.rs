@@ -15,6 +15,7 @@ use serde_with::{formats::PreferOne, serde_as, OneOrMany};
 use serde_yaml::Value;
 use void::Void;
 
+use itertools::Itertools;
 use publish_workflow::PublishWorkflowArgs;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
@@ -72,6 +73,8 @@ pub struct Options {
     build_workflow_version: String,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
+    #[arg(long, default_value = "standard")]
+    nomad_runner_label: String,
 }
 
 #[derive(Serialize)]
@@ -384,33 +387,27 @@ pub async fn generate_workflow(
         let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
             .0
             .iter()
+            .filter(|(_, v)| v.publish_detail.docker.publish)
+            .unique_by(|(_, v)| v.publish_detail.docker.repository.clone())
             .filter_map(|(_, v)| {
-                if v.publish_detail.docker.publish {
-                    if let Some(repo) = v.publish_detail.docker.repository.clone() {
-                        let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
-                        return Some(GithubWorkflowJobSteps {
-                            name: Some(format!("Login to {}", repo)),
-                            uses: Some("docker/login-action@v3".to_string()),
-                            with: Some(IndexMap::from([
-                                ("registry".to_string(), repo.clone()),
-                                (
-                                    "username".to_string(),
-                                    format!(
-                                        "${{{{ secrets.DOCKER_{}_USERNAME }}}}",
-                                        github_secret_key
-                                    ),
-                                ),
-                                (
-                                    "password".to_string(),
-                                    format!(
-                                        "${{{{ secrets.DOCKER_{}_PASSWORD }}}}",
-                                        github_secret_key
-                                    ),
-                                ),
-                            ])),
-                            ..Default::default()
-                        });
-                    }
+                if let Some(repo) = v.publish_detail.docker.repository.clone() {
+                    let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
+                    return Some(GithubWorkflowJobSteps {
+                        name: Some(format!("Login to {}", repo)),
+                        uses: Some("docker/login-action@v3".to_string()),
+                        with: Some(IndexMap::from([
+                            ("registry".to_string(), repo.clone()),
+                            (
+                                "username".to_string(),
+                                format!("${{{{ secrets.DOCKER_{}_USERNAME }}}}", github_secret_key),
+                            ),
+                            (
+                                "password".to_string(),
+                                format!("${{{{ secrets.DOCKER_{}_PASSWORD }}}}", github_secret_key),
+                            ),
+                        ])),
+                        ..Default::default()
+                    });
                 }
                 None
             })
@@ -467,7 +464,11 @@ pub async fn generate_workflow(
                 name: Some(
                     "Check which workspace member changed and / or needs publishing".to_string(),
                 ),
-                runs_on: Some(vec!["self-hosted".to_string(), "gpu".to_string()]),
+                runs_on: Some(vec![
+                    "self-hosted".to_string(),
+                    options.nomad_runner_label,
+                    "${{ github.run_id }}__check_changed__${{ github.run_attempt }}".to_string(),
+                ]),
                 outputs: Some(IndexMap::from([(
                     "workspace".to_string(),
                     "${{ steps.check_workspace.outputs.workspace }}".to_string(),
@@ -503,7 +504,9 @@ pub async fn generate_workflow(
             }
         }
         // add self test to publish needs
-        publish_needs.push(test_job_key.clone());
+        if !member.test_detail.skip.unwrap_or(false) {
+            publish_needs.push(test_job_key.clone());
+        }
         let base_if = "always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
         let mut publish_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let mut test_if = base_if.clone();
@@ -514,7 +517,7 @@ pub async fn generate_workflow(
             );
             test_if = format!(
                 "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed)",
-                test_if, &check_job_key, member_key
+                test_if, &check_job_key, member_key,
             );
         }
         let cargo_publish_options: PublishWorkflowArgs = match member.publish_detail.args.clone() {
@@ -528,21 +531,37 @@ pub async fn generate_workflow(
         let job_working_directory = member.path.to_string_lossy().to_string();
         let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
             working_directory: Some(job_working_directory.clone()),
-            skip_test: Some(StringBool(false)),
+            skip_test: Some(StringBool(member.test_detail.skip.unwrap_or(false))),
             publish: Some(StringBool(member.publish)),
             publish_private_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && !(member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                        && (member
+                            .publish_detail
+                            .cargo
+                            .registry
+                            .clone()
+                            .unwrap_or(vec!["public".to_string()])
+                            == vec!["public"])),
             )),
             publish_public_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
                     && (member.publish_detail.cargo.allow_public
-                        && member.publish_detail.cargo.registry.is_none()),
+                        && (member
+                            .publish_detail
+                            .cargo
+                            .registry
+                            .clone()
+                            .unwrap_or(vec!["public".to_string()])
+                            == vec!["public"])),
             )),
             publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
             docker_image: match member.publish_detail.docker.publish {
                 true => Some(member.package.clone()),
+                false => None,
+            },
+            docker_registry: match member.publish_detail.docker.publish {
+                true => member.publish_detail.docker.repository.clone(),
                 false => None,
             },
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
@@ -593,9 +612,12 @@ pub async fn generate_workflow(
             }),
             ..Default::default()
         };
-        workflow_template
-            .jobs
-            .insert(test_job_key.clone(), test_job);
+
+        if !member.test_detail.skip.unwrap_or(false) {
+            workflow_template
+                .jobs
+                .insert(test_job_key.clone(), test_job);
+        }
         if member.publish {
             workflow_template.jobs.insert(publish_job_key, publish_job);
         }
