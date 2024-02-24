@@ -164,10 +164,11 @@ impl Summary {
         &self,
         src: String,
         alt: String,
+        title: String,
         width: Option<String>,
         height: Option<String>,
     ) -> String {
-        let mut attrs = HashMap::from([("src".to_string(), src), ("alt".to_string(), alt)]);
+        let mut attrs = HashMap::from([("src".to_string(), src), ("alt".to_string(), alt), ("title".to_string(), title)]);
         if let Some(width) = width {
             attrs.insert("width".to_string(), width);
         }

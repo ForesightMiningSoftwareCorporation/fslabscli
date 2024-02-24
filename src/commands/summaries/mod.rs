@@ -198,8 +198,8 @@ fn get_outcome_color(outcome: CheckOutcome) -> String {
     match outcome {
         CheckOutcome::Success => "green".to_string(),
         CheckOutcome::Failure => "red".to_string(),
-        CheckOutcome::Cancelled => "grey".to_string(),
-        CheckOutcome::Skipped => "grey".to_string(),
+        CheckOutcome::Cancelled => "gray".to_string(),
+        CheckOutcome::Skipped => "gray".to_string(),
     }
 }
 
@@ -375,10 +375,17 @@ pub async fn checks_summaries(
             );
             let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
             for (subcheck_name, subcheck) in check {
-                let subcheck_cell = format!("{} {}", subcheck.outcome, match subcheck.log_url.clone() {
-                    Some(u) => summary.link(subcheck_name.to_string(), u),
-                    None => subcheck_name.to_string(),
-                });
+                let subcheck_image = summary.image(
+                    format!("https://raw.githubusercontent.com/ForesightMiningSoftwareCorporation/github/lp/better-results/{}.png", get_outcome_color(subcheck.outcome)),
+                    format!("{}", subcheck.outcome),
+                    subcheck_name.to_string(),
+                    Some("25px".to_string()),
+                    Some("25px".to_string()),
+                );
+                let subcheck_cell = match subcheck.log_url.clone() {
+                    Some(u) => summary.link(subcheck_image, u),
+                    None => subcheck_image,
+                };
                 row.push(SummaryTableCell::new(subcheck_cell, colspan));
             }
             rows.push(row);

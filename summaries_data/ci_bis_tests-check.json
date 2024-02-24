@@ -24,35 +24,35 @@
       "required": true
     },
     "clippy": {
-      "outcome": "success",
+      "outcome": "failure",
       "required": true
     },
     "doc": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "dependencies": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "deny-advisories": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "deny-bans": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "deny-license": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "deny-sources": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     },
     "publish-dryrun": {
-      "outcome": "success",
+      "outcome": "skipped",
       "required": false
     }
   }
