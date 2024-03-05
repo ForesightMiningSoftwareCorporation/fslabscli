@@ -1,13 +1,13 @@
 {
   "name": "ci_tests",
-  "start_time": "1709648904000",
-  "end_time": "1709648905000",
+  "start_time": "1709650617000",
+  "end_time": "1709650617000",
   "working_directory": ".",
   "type": "miri",
   "server_url": "https://github.com",
   "repository": "ForesightMiningSoftwareCorporation/ci_tests",
   "run_id": "8157844148",
-  "run_attempt": "2",
+  "run_attempt": "4",
   "actor": "loispostula",
   "event_name": "pull_request",
   "outputs": {

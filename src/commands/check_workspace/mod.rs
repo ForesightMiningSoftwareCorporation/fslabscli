@@ -147,10 +147,7 @@ impl Result {
             .to_path_buf();
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
-        let mut publish = metadata
-            .fslabs
-            .publish
-            .unwrap_or_else(|| PackageMetadataFslabsCiPublish::default());
+        let mut publish = metadata.fslabs.publish.unwrap_or_default();
         publish.cargo.registry = match package.publish.clone() {
             Some(r) => Some(r.clone()),
             None => {
@@ -191,10 +188,7 @@ impl Result {
             version: package.version.to_string(),
             path,
             publish_detail: publish,
-            test_detail: metadata
-                .fslabs
-                .test
-                .unwrap_or_else(|| PackageMetadataFslabsCiTest::default()),
+            test_detail: metadata.fslabs.test.unwrap_or_default(),
             dependencies,
             ..Default::default()
         })

@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
@@ -14,13 +15,15 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
 use num::integer::lcm;
+use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
-
 use template::Summary;
 
 use crate::commands::summaries::template::SummaryTableCell;
 
 mod template;
+
+static GH_MAX_COMMENT_LENGTH: usize = 65536;
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate summary of github run.")]
@@ -29,8 +32,18 @@ pub struct Options {
     run_type: RunType,
     #[arg(long, env = "GITHUB_STEP_SUMMARY")]
     output: PathBuf,
+    #[arg(long)]
+    github_token: Option<String>,
+    #[arg(long)]
+    github_event_name: Option<String>,
+    #[arg(long)]
+    github_issue_number: Option<u64>,
+    #[arg(long)]
+    github_repo_owner: Option<String>,
+    #[arg(long)]
+    github_repo: Option<String>,
     #[arg(long, default_value_t = false)]
-    compute_links: bool,
+    hide_previous_pr_comment: bool,
     #[arg(long, default_value = "https://gh.ci.fslabs.ca")]
     mining_bot_url: String,
 }
@@ -332,7 +345,6 @@ pub async fn checks_summaries(
                 ),
                 ("tests".to_string(), check_summary.outputs.tests.clone()),
             ];
-            println!("Got subchecks: {:?}", sub_checks.clone());
             let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
             for (subcheck, check) in sub_checks {
                 if let Some(check) = check {
@@ -348,7 +360,9 @@ pub async fn checks_summaries(
                     }
                 }
             }
-            println!("Got subchecks: {:?}", checked_sub_checks.clone());
+            if checked_sub_checks.is_empty() {
+                continue;
+            }
             // order sub check by number
             checked_sub_checks.sort_by_key(|(_, o)| o.number.unwrap());
             check_outputs.push(CheckedOutput {
@@ -371,7 +385,6 @@ pub async fn checks_summaries(
         let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
         check_outputs.sort_by_key(|c| c.check_name.clone());
         for checked in check_outputs.iter() {
-            println!("Checked:{} {:?}", checked.check_name, checked.sub_checks);
             let colspan = lcm_result / (checked.sub_checks.len());
             let check_cell_name = format!(
                 "{} {}",
@@ -443,9 +456,78 @@ pub async fn checks_summaries(
         );
     }
     summary.write(true).await?;
+    if let (
+        Some(github_token),
+        Some(github_event_name),
+        Some(github_issue_number),
+        Some(github_repo_owner),
+        Some(github_repo),
+    ) = (
+        options.github_token,
+        options.github_event_name,
+        options.github_issue_number,
+        options.github_repo_owner,
+        options.github_repo,
+    ) {
+        if github_event_name == "pull_request" || github_event_name == "pull_request_target" {
+            // We have a github token we should try to update the pr
+            let octocrab = Octocrab::builder().personal_token(github_token).build()?;
+            let issues_client = octocrab.issues(github_repo_owner.clone(), github_repo.clone());
+            let output = summary.get_content();
+            if options.hide_previous_pr_comment {
+                // Hide previsous
+                if let Ok(user) = octocrab.current().user().await {
+                    if let Ok(existing_comments) = issues_client
+                        .list_comments(github_issue_number)
+                        .send()
+                        .await
+                    {
+                        for existing_comment in existing_comments {
+                            if existing_comment.user.login != user.login {
+                                continue;
+                            }
+                            // Delete all of our comments? Maybe we nmeed to be more clever
+                            let _ = issues_client.delete_comment(existing_comment.id).await;
+                        }
+                    }
+                }
+            }
+            let comments = split_comments(output);
+            for comment in comments {
+                let _ = issues_client
+                    .create_comment(github_issue_number, comment)
+                    .await;
+            }
+        }
+    }
 
     //    println!("{:?}", checks_map);
     Ok(SummariesResult {})
+}
+
+fn split_comments(comment: String) -> Vec<String> {
+    let sep_start = "Continued from previous comment.\n";
+    let sep_end =
+        "\n**Warning**: Output length greater than max comment size. Continued in next comment.";
+    if comment.len() < GH_MAX_COMMENT_LENGTH {
+        return vec![comment];
+    }
+    let max_with_seps: usize = GH_MAX_COMMENT_LENGTH - sep_start.len() - sep_end.len();
+    let mut comments: Vec<String> = vec![];
+    let num_comments: usize = (comment.len() as f64 / max_with_seps as f64).ceil() as usize;
+    for i in 0..num_comments {
+        let up_to = min(comment.len(), (i + 1) * max_with_seps);
+        let portion = &comment[i * max_with_seps..up_to];
+        let mut portion_with_sep = portion.to_string();
+        if i < num_comments - 1 {
+            portion_with_sep.push_str(sep_end);
+        }
+        if i > 0 {
+            portion_with_sep = format!("{}{}", sep_start, portion_with_sep);
+        }
+        comments.push(portion_with_sep)
+    }
+    comments
 }
 
 pub async fn publishing_summaries(

@@ -71,6 +71,10 @@ impl Summary {
         }
     }
 
+    pub fn get_content(&self) -> String {
+        self.buffer.clone()
+    }
+
     pub async fn write(&self, overwrite: bool) -> anyhow::Result<()> {
         let mut options = OpenOptions::new();
         if overwrite {
