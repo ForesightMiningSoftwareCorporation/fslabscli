@@ -1,59 +1,59 @@
 {
   "name": "ci_tests",
-  "start_time": "1708712288000",
-  "end_time": "1708712297000",
+  "start_time": "1709641211000",
+  "end_time": "1709641238000",
   "working_directory": ".",
   "type": "check",
   "server_url": "https://github.com",
   "repository": "ForesightMiningSoftwareCorporation/ci_tests",
   "run_id": "8017778855",
-  "run_attempt": "18",
+  "run_attempt": "22",
   "actor": "loispostula",
   "event_name": "pull_request",
   "outputs": {
-    "custom": {
-      "outcome": "skipped",
-      "required": false
-    },
-    "fmt": {
-      "outcome": "success",
-      "required": true
-    },
-    "check": {
-      "outcome": "success",
-      "required": true
-    },
-    "clippy": {
-      "outcome": "success",
-      "required": true
-    },
-    "doc": {
-      "outcome": "success",
-      "required": false
-    },
-    "dependencies": {
-      "outcome": "success",
-      "required": false
-    },
-    "deny-advisories": {
-      "outcome": "success",
-      "required": false
-    },
-    "deny-bans": {
-      "outcome": "success",
-      "required": false
-    },
-    "deny-license": {
-      "outcome": "success",
-      "required": false
-    },
-    "deny-sources": {
-      "outcome": "success",
-      "required": false
-    },
-    "publish-dryrun": {
-      "outcome": "success",
-      "required": false
+      "custom": {
+        "outcome": "skipped",
+        "required": false
+      },
+      "fmt": {
+        "outcome": "success",
+        "required": true
+      },
+      "check": {
+        "outcome": "success",
+        "required": true
+      },
+      "clippy": {
+        "outcome": "success",
+        "required": true
+      },
+      "doc": {
+        "outcome": "success",
+        "required": false
+      },
+      "dependencies": {
+        "outcome": "success",
+        "required": false
+      },
+      "deny-advisories": {
+        "outcome": "success",
+        "required": false
+      },
+      "deny-bans": {
+        "outcome": "success",
+        "required": false
+      },
+      "deny-license": {
+        "outcome": "success",
+        "required": false
+      },
+      "deny-sources": {
+        "outcome": "success",
+        "required": false
+      },
+      "publish-dryrun": {
+        "outcome": "success",
+        "required": false
+      }
     }
-  }
 }
