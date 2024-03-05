@@ -3,7 +3,7 @@ use serde_yaml::Value;
 
 use crate::commands::generate_workflow::StringBool;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct TestWorkflowArgs {
     /// Package that needs to be installed before Rust compilation can happens
     pub required_packages: Option<String>,
