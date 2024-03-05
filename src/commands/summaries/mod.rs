@@ -39,8 +39,6 @@ pub struct Options {
     #[arg(long)]
     github_issue_number: Option<u64>,
     #[arg(long)]
-    github_repo_owner: Option<String>,
-    #[arg(long)]
     github_repo: Option<String>,
     #[arg(long, default_value_t = false)]
     hide_previous_pr_comment: bool,
@@ -460,43 +458,60 @@ pub async fn checks_summaries(
         Some(github_token),
         Some(github_event_name),
         Some(github_issue_number),
-        Some(github_repo_owner),
         Some(github_repo),
     ) = (
         options.github_token,
         options.github_event_name,
         options.github_issue_number,
-        options.github_repo_owner,
         options.github_repo,
     ) {
         if github_event_name == "pull_request" || github_event_name == "pull_request_target" {
             // We have a github token we should try to update the pr
             let octocrab = Octocrab::builder().personal_token(github_token).build()?;
-            let issues_client = octocrab.issues(github_repo_owner.clone(), github_repo.clone());
-            let output = summary.get_content();
-            if options.hide_previous_pr_comment {
-                // Hide previsous
-                if let Ok(user) = octocrab.current().user().await {
-                    if let Ok(existing_comments) = issues_client
-                        .list_comments(github_issue_number)
-                        .send()
-                        .await
-                    {
-                        for existing_comment in existing_comments {
-                            if existing_comment.user.login != user.login {
-                                continue;
+            if let Some((owner, repo)) = github_repo.split_once('/') {
+                let issues_client = octocrab.issues(owner, repo);
+                let output = summary.get_content();
+                if options.hide_previous_pr_comment {
+                    // Hide previsous
+                    if let Ok(user) = octocrab.current().user().await.map_err(|e| {
+                        println!("Could not get myself: {:?}", e);
+                        e
+                    }) {
+                        if let Ok(existing_comments) = issues_client
+                            .list_comments(github_issue_number)
+                            .send()
+                            .await
+                            .map_err(|e| {
+                                println!("Could not list comments: {:?}", e);
+                                e
+                            })
+                        {
+                            for existing_comment in existing_comments {
+                                if existing_comment.user.login != user.login {
+                                    continue;
+                                }
+                                // Delete all of our comments? Maybe we nmeed to be more clever
+                                let _ = issues_client
+                                    .delete_comment(existing_comment.id)
+                                    .await
+                                    .map_err(|e| {
+                                        println!("Could not delete comment: {:?}", e);
+                                        e
+                                    });
                             }
-                            // Delete all of our comments? Maybe we nmeed to be more clever
-                            let _ = issues_client.delete_comment(existing_comment.id).await;
                         }
                     }
                 }
-            }
-            let comments = split_comments(output);
-            for comment in comments {
-                let _ = issues_client
-                    .create_comment(github_issue_number, comment)
-                    .await;
+                let comments = split_comments(output);
+                for comment in comments {
+                    let _ = issues_client
+                        .create_comment(github_issue_number, comment)
+                        .await
+                        .map_err(|e| {
+                            println!("Could not create comment: {:?}", e);
+                            e
+                        });
+                }
             }
         }
     }
