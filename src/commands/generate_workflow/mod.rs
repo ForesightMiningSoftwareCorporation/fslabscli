@@ -327,7 +327,7 @@ impl FromMap for GithubWorkflowJobSecret {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct StringBool(bool);
 
 impl From<StringBool> for Value {

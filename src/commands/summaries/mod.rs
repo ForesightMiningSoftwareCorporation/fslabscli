@@ -332,6 +332,7 @@ pub async fn checks_summaries(
                 ),
                 ("tests".to_string(), check_summary.outputs.tests.clone()),
             ];
+            println!("Got subchecks: {:?}", sub_checks.clone());
             let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
             for (subcheck, check) in sub_checks {
                 if let Some(check) = check {
@@ -347,6 +348,7 @@ pub async fn checks_summaries(
                     }
                 }
             }
+            println!("Got subchecks: {:?}", checked_sub_checks.clone());
             // order sub check by number
             checked_sub_checks.sort_by_key(|(_, o)| o.number.unwrap());
             check_outputs.push(CheckedOutput {
@@ -369,6 +371,7 @@ pub async fn checks_summaries(
         let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
         check_outputs.sort_by_key(|c| c.check_name.clone());
         for checked in check_outputs.iter() {
+            println!("Checked:{} {:?}", checked.check_name, checked.sub_checks);
             let colspan = lcm_result / (checked.sub_checks.len());
             let check_cell_name = format!(
                 "{} {}",

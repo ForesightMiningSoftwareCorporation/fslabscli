@@ -120,14 +120,14 @@ pub struct PackageMetadataFslabsCiTest {
     pub skip: Option<bool>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug)]
 struct PackageMetadataFslabsCi {
-    pub publish: PackageMetadataFslabsCiPublish,
+    pub publish: Option<PackageMetadataFslabsCiPublish>,
     #[serde(default)]
-    pub test: PackageMetadataFslabsCiTest,
+    pub test: Option<PackageMetadataFslabsCiTest>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug)]
 struct PackageMetadata {
     pub fslabs: PackageMetadataFslabsCi,
 }
@@ -146,8 +146,11 @@ impl Result {
             .unwrap()
             .to_path_buf();
         let metadata: PackageMetadata =
-            from_value(package.metadata).unwrap_or_else(|_| PackageMetadata::default());
-        let mut publish = metadata.fslabs.publish;
+            from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
+        let mut publish = metadata
+            .fslabs
+            .publish
+            .unwrap_or_else(|| PackageMetadataFslabsCiPublish::default());
         publish.cargo.registry = match package.publish.clone() {
             Some(r) => Some(r.clone()),
             None => {
@@ -188,7 +191,10 @@ impl Result {
             version: package.version.to_string(),
             path,
             publish_detail: publish,
-            test_detail: metadata.fslabs.test,
+            test_detail: metadata
+                .fslabs
+                .test
+                .unwrap_or_else(|| PackageMetadataFslabsCiTest::default()),
             dependencies,
             ..Default::default()
         })
