@@ -1,6 +1,5 @@
-use std::{collections::HashMap, fs::File, path::PathBuf};
-use std::hash::Hash;
 use std::io::prelude::*;
+use std::{collections::HashMap, fs::OpenOptions, path::PathBuf};
 
 pub struct SummaryTableCell {
     pub header: bool,
@@ -33,6 +32,7 @@ pub struct Summary {
     pub file_path: PathBuf,
 }
 
+#[allow(dead_code)]
 impl Summary {
     pub fn new(file_path: PathBuf) -> Self {
         Self {
@@ -48,14 +48,14 @@ impl Summary {
         attrs: Option<HashMap<String, String>>,
         inline: bool,
     ) -> String {
-        let htmlAttrs: String = match attrs {
+        let html_attrs: String = match attrs {
             Some(a) => a
                 .into_iter()
                 .map(|(k, v)| {
                     if v.is_empty() {
                         return format!(" {}", k);
                     }
-                    format!(" {}={}", k, v)
+                    format!(" {}=\"{}\"", k, v)
                 })
                 .collect::<Vec<String>>()
                 .join(""),
@@ -66,13 +66,19 @@ impl Summary {
             false => "\n",
         };
         match content {
-            Some(c) => format!("<{tag}{htmlAttrs}>{new_line}{c}{new_line}</{tag}>"),
-            None => format!("<{tag}{htmlAttrs}>"),
+            Some(c) => format!("<{tag}{html_attrs}>{new_line}{c}{new_line}</{tag}>"),
+            None => format!("<{tag}{html_attrs}>"),
         }
     }
 
     pub async fn write(&self, overwrite: bool) -> anyhow::Result<()> {
-        let mut file = File::create(self.file_path.as_path())?;
+        let mut options = OpenOptions::new();
+        if overwrite {
+            options.write(true).truncate(true);
+        } else {
+            options.append(true);
+        }
+        let mut file = options.open(self.file_path.as_path())?;
         file.write_all(self.buffer.as_bytes())?;
         Ok(())
     }
@@ -82,9 +88,9 @@ impl Summary {
         self.write(true).await
     }
 
-    pub fn add_content(&mut self, content: String, addEOL: bool) {
+    pub fn add_content(&mut self, content: String, add_eol: bool) {
         self.buffer += &content;
-        if addEOL {
+        if add_eol {
             self.buffer += "\n";
         }
     }
@@ -168,7 +174,11 @@ impl Summary {
         width: Option<String>,
         height: Option<String>,
     ) -> String {
-        let mut attrs = HashMap::from([("src".to_string(), src), ("alt".to_string(), alt), ("title".to_string(), title)]);
+        let mut attrs = HashMap::from([
+            ("src".to_string(), src),
+            ("alt".to_string(), alt),
+            ("title".to_string(), title),
+        ]);
         if let Some(width) = width {
             attrs.insert("width".to_string(), width);
         }
