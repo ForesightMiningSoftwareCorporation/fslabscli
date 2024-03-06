@@ -42,7 +42,7 @@ pub struct Options {
     github_repo: Option<String>,
     #[arg(long, default_value_t = false)]
     hide_previous_pr_comment: bool,
-    #[arg(long, default_value = "https://gh.ci.fslabs.ca")]
+    #[arg(long, default_value = "https://ci.fslabs.ca")]
     mining_bot_url: String,
 }
 
@@ -478,7 +478,7 @@ pub async fn checks_summaries(
                         .user()
                         .await
                         .map(|u| u.login)
-                        .unwrap_or_else(|_| "fmsc-bot".to_string());
+                        .unwrap_or_else(|_| "fmsc-bot[bot]".to_string());
                     if let Ok(existing_comments) = issues_client
                         .list_comments(github_issue_number)
                         .send()
