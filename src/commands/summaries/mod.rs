@@ -177,12 +177,15 @@ fn get_success_emoji(success: bool) -> String {
     }
 }
 
-fn get_outcome_color(outcome: CheckOutcome) -> String {
+fn get_outcome_color(outcome: CheckOutcome, required: bool) -> String {
     match outcome {
         CheckOutcome::Success => "%2346B76E".to_string(),
-        CheckOutcome::Failure => "%23D41159".to_string(),
-        CheckOutcome::Cancelled => "%23B5BDA3".to_string(),
-        CheckOutcome::Skipped => "%23B5BDA3".to_string(),
+        CheckOutcome::Failure => match required {
+            true => "%23D41159".to_string(),
+            false => "%23fddf68".to_string(),
+        },
+        CheckOutcome::Cancelled => "%236e7781".to_string(),
+        CheckOutcome::Skipped => "%236e7781".to_string(),
     }
 }
 
@@ -224,13 +227,12 @@ async fn get_workflow_info(
 ) -> anyhow::Result<WorkflowJobInstance> {
     let req = Request::builder()
         .method(Method::GET)
-        .uri(url)
+        .uri(url.clone())
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .body(Empty::default())?;
 
     let res = client.request(req).await?;
-
     if res.status().as_u16() >= 400 {
         anyhow::bail!("Something went wrong while getting npm api data");
     }
@@ -276,7 +278,9 @@ pub async fn checks_summaries(
 
     // For each package we need to check if the checks wer a success, and for each check type, generate a report
     let mut summary = Summary::new(options.output);
+    let mut overall_success = true;
     let mut failed = 0;
+    let mut failed_o = 0;
     let mut skipped = 0;
     let mut cancelled = 0;
     let mut succeeded = 0;
@@ -304,7 +308,13 @@ pub async fn checks_summaries(
                 check_name,
                 check_summary.run_attempt.clone(),
             );
-            let Ok(workflow_info) = get_workflow_info(&client, mining_bot_url).await else {
+            let Ok(workflow_info) = get_workflow_info(&client, mining_bot_url)
+                .await
+                .map_err(|e| {
+                    println!("Could not get workflow: {}", e);
+                    e
+                })
+            else {
                 continue;
             };
             let base_url = workflow_info.raw.html_url.clone();
@@ -394,7 +404,10 @@ pub async fn checks_summaries(
             for (subcheck_name, subcheck) in checked.sub_checks.iter() {
                 match subcheck.outcome {
                     CheckOutcome::Success => succeeded += 1,
-                    CheckOutcome::Failure => failed += 1,
+                    CheckOutcome::Failure => match subcheck.required {
+                        true => failed += 1,
+                        false => failed_o += 1,
+                    },
                     CheckOutcome::Cancelled => cancelled += 1,
                     CheckOutcome::Skipped => skipped += 1,
                 }
@@ -402,7 +415,7 @@ pub async fn checks_summaries(
                     format!(
                         "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
                         options.mining_bot_url,
-                        get_outcome_color(subcheck.outcome),
+                        get_outcome_color(subcheck.outcome, subcheck.required),
                         subcheck_name,
                         colspan,
                     ),
@@ -421,26 +434,6 @@ pub async fn checks_summaries(
             rows.push(row);
         }
 
-        let mut messages: Vec<String> = vec![];
-        if succeeded > 0 {
-            messages.push(format!("{} passed", succeeded))
-        }
-        if failed > 0 {
-            messages.push(format!("{} failed", failed))
-        }
-        if cancelled > 0 {
-            messages.push(format!("{} cancelled", cancelled))
-        }
-        if skipped > 0 {
-            messages.push(format!("{} skipped", skipped))
-        }
-
-        let icon_svg = format!(
-            "{}/svg/tests.svg?passed={}&failed={}&skipped={}&cancelled={}",
-            options.mining_bot_url, succeeded, failed, skipped, cancelled
-        );
-        summary.add_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
-
         summary.add_content(
             summary.detail(
                 summary.heading(
@@ -452,7 +445,31 @@ pub async fn checks_summaries(
             ),
             true,
         );
+        overall_success &= success;
     }
+
+    let mut messages: Vec<String> = vec![];
+    if succeeded > 0 {
+        messages.push(format!("{} passed", succeeded))
+    }
+    if failed > 0 {
+        messages.push(format!("{} failed", failed))
+    }
+    if failed_o > 0 {
+        messages.push(format!("{} failed (non required)", failed_o))
+    }
+    if cancelled > 0 {
+        messages.push(format!("{} cancelled", cancelled))
+    }
+    if skipped > 0 {
+        messages.push(format!("{} skipped", skipped))
+    }
+
+    let icon_svg = format!(
+        "{}/svg/tests.svg?passed={}&failed={}&failed_o={}&skipped={}&cancelled={}",
+        options.mining_bot_url, succeeded, failed, failed_o, skipped, cancelled
+    );
+    summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
     summary.write(true).await?;
     if let (
         Some(github_token),
@@ -517,7 +534,10 @@ pub async fn checks_summaries(
         }
     }
 
-    Ok(SummariesResult {})
+    match overall_success {
+        true => Ok(SummariesResult {}),
+        false => anyhow::bail!("Required test failed"),
+    }
 }
 
 fn split_comments(comment: String) -> Vec<String> {

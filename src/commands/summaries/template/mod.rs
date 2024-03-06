@@ -99,6 +99,14 @@ impl Summary {
         }
     }
 
+    pub fn prepend_content(&mut self, content: String, add_eol: bool) {
+        let mut prepend = content;
+        if add_eol {
+            prepend += "\n";
+        }
+        self.buffer = format!("{}{}", prepend, self.buffer);
+    }
+
     pub fn code_block(&self, code: String, lang: Option<String>) -> String {
         let attrs = lang.map(|l| HashMap::from([("lang".to_string(), l)]));
         self.wrap(
