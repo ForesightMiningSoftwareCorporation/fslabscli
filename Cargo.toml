@@ -1,6 +1,6 @@
 [package]
 name = "fslabscli"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"

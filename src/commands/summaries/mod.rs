@@ -473,32 +473,33 @@ pub async fn checks_summaries(
                 let output = summary.get_content();
                 if options.hide_previous_pr_comment {
                     // Hide previsous
-                    if let Ok(user) = octocrab.current().user().await.map_err(|e| {
-                        println!("Could not get myself: {:?}", e);
-                        e
-                    }) {
-                        if let Ok(existing_comments) = issues_client
-                            .list_comments(github_issue_number)
-                            .send()
-                            .await
-                            .map_err(|e| {
-                                println!("Could not list comments: {:?}", e);
-                                e
-                            })
-                        {
-                            for existing_comment in existing_comments {
-                                if existing_comment.user.login != user.login {
-                                    continue;
-                                }
-                                // Delete all of our comments? Maybe we nmeed to be more clever
-                                let _ = issues_client
-                                    .delete_comment(existing_comment.id)
-                                    .await
-                                    .map_err(|e| {
-                                        println!("Could not delete comment: {:?}", e);
-                                        e
-                                    });
+                    let user = octocrab
+                        .current()
+                        .user()
+                        .await
+                        .map(|u| u.login)
+                        .unwrap_or_else(|_| "fmsc-bot".to_string());
+                    if let Ok(existing_comments) = issues_client
+                        .list_comments(github_issue_number)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            println!("Could not list comments: {:?}", e);
+                            e
+                        })
+                    {
+                        for existing_comment in existing_comments {
+                            if existing_comment.user.login != user {
+                                continue;
                             }
+                            // Delete all of our comments? Maybe we nmeed to be more clever
+                            let _ = issues_client
+                                .delete_comment(existing_comment.id)
+                                .await
+                                .map_err(|e| {
+                                    println!("Could not delete comment: {:?}", e);
+                                    e
+                                });
                         }
                     }
                 }
@@ -516,7 +517,6 @@ pub async fn checks_summaries(
         }
     }
 
-    //    println!("{:?}", checks_map);
     Ok(SummariesResult {})
 }
 

@@ -480,6 +480,7 @@ pub async fn generate_workflow(
     }
     let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
     member_keys.sort();
+    let mut actual_tests: Vec<String> = vec![];
     for member_key in member_keys {
         let Some(member) = members.0.get(&member_key) else {
             continue;
@@ -578,13 +579,10 @@ pub async fn generate_workflow(
 
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
-            uses: Some(
-                format!(
-                    "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@{}",
-                    options.build_workflow_version
-                )
-                .to_string(),
-            ),
+            uses: Some(format!(
+                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@{}",
+                options.build_workflow_version
+            )),
             needs: Some(test_needs),
             job_if: Some(format!("${{{{ {} }}}}", test_if)),
             with: Some(test_with.into()),
@@ -617,11 +615,31 @@ pub async fn generate_workflow(
             workflow_template
                 .jobs
                 .insert(test_job_key.clone(), test_job);
+            actual_tests.push(test_job_key.clone());
         }
         if member.publish {
             workflow_template.jobs.insert(publish_job_key, publish_job);
         }
     }
+    // Add Tests Reporting
+    workflow_template.jobs.insert("test_results".to_string(), GithubWorkflowJob {
+        name: Some("Tests Results".to_string()),
+        job_if: Some("always()".to_string()),
+            uses: Some(
+                format!(
+                    "ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@{}",
+                    options.build_workflow_version
+                )
+            ),
+        with: Some(IndexMap::from([("run_type".to_string(), "checks".into())])),
+        secrets: Some(GithubWorkflowJobSecret {
+            inherit: true,
+            secrets: None,
+        }),
+        needs: Some(actual_tests),
+
+        ..Default::default()
+    });
     let output_file = File::create(options.output)?;
     let mut writer = BufWriter::new(output_file);
     serde_yaml::to_writer(&mut writer, &workflow_template)?;
