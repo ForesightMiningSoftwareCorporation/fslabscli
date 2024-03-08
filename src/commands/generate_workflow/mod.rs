@@ -595,6 +595,7 @@ pub async fn generate_workflow(
                 inherit: true,
                 secrets: None,
             }),
+            env: member.test_detail.env.clone(),
             ..Default::default()
         };
         let publish_job = GithubWorkflowJob {
@@ -609,6 +610,7 @@ pub async fn generate_workflow(
             needs: Some(publish_needs),
             job_if: Some(format!("${{{{ {} }}}}", publish_if)),
             with: Some(publish_with.into()),
+            env: member.publish_detail.env.clone(),
             secrets: Some(GithubWorkflowJobSecret {
                 inherit: true,
                 secrets: None,
