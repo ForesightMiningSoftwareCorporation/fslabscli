@@ -380,8 +380,13 @@ pub async fn generate_workflow(
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
     // Get Directory information
-    let members =
-        check_workspace(Box::new(CheckWorkspaceOptions::new()), working_directory).await?;
+    let members = check_workspace(
+        Box::new(
+            CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish),
+        ),
+        working_directory,
+    )
+    .await?;
     if !options.no_check_changed_and_publish {
         // We need to login to any docker registry required
         let mut registries_steps: Vec<GithubWorkflowJobSteps> = members

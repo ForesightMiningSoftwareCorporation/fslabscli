@@ -71,6 +71,11 @@ impl Options {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn with_cargo_default_publish(mut self, cargo_default_publish: bool) -> Self {
+        self.cargo_default_publish = cargo_default_publish;
+        self
+    }
 }
 
 #[derive(Serialize, Clone, Default, Debug)]
