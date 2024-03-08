@@ -1,6 +1,7 @@
+use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -494,6 +495,15 @@ pub async fn check_workspace(
         );
     }
     if options.check_changed {
+        // Look for a .fslabscliignore file
+        let walker = WalkBuilder::new(working_directory.clone())
+            .add_custom_ignore_filename(".fslabscliignore")
+            .build();
+
+        let non_ignored_paths: Vec<PathBuf> = walker
+            .filter_map(|t| t.ok())
+            .map(|e| e.into_path())
+            .collect();
         let repository = Repository::open(working_directory.clone())?;
         // Get the commits objects based on the head ref and base ref
         let head_commit = repository.revparse_single(&options.changed_head_ref)?;
@@ -533,15 +543,21 @@ pub async fn check_workspace(
                 ) else {
                     continue;
                 };
+                let check_path = |path: Option<&Path>| -> bool {
+                    match path {
+                        Some(p) => {
+                            if package_folder.is_empty() || p.starts_with(&package_folder) {
+                                let fp = working_directory.join(p);
+                                return non_ignored_paths.iter().any(|r| r == &fp);
+                            }
+                            false
+                        }
+                        None => false,
+                    }
+                };
                 let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
-                    let check_old_file = match delta.old_file().path() {
-                        Some(p) => package_folder.is_empty() || p.starts_with(&package_folder),
-                        None => false,
-                    };
-                    let check_new_file = match delta.new_file().path() {
-                        Some(p) => package_folder.is_empty() || p.starts_with(&package_folder),
-                        None => false,
-                    };
+                    let check_old_file = check_path(delta.old_file().path());
+                    let check_new_file = check_path(delta.new_file().path());
                     if check_old_file || check_new_file {
                         let old_oid = delta.old_file().id();
                         let new_oid = delta.new_file().id();
