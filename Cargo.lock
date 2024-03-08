@@ -639,7 +639,6 @@ dependencies = [
  "exitcode",
  "git2",
  "http-body-util",
- "humantime",
  "hyper 1.1.0",
  "hyper-rustls 0.26.0",
  "hyper-util",
