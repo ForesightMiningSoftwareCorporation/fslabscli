@@ -368,7 +368,7 @@ pub async fn checks_summaries(
                 continue;
             }
             // order sub check by number
-            checked_sub_checks.sort_by_key(|(n, o)| (o.number.clone(), n.clone()));
+            checked_sub_checks.sort_by_key(|(n, o)| (o.number, n.clone()));
             check_outputs.push(CheckedOutput {
                 check_name: check_name.to_string(),
                 sub_checks: checked_sub_checks,
