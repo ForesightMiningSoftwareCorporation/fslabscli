@@ -218,7 +218,7 @@ pub struct CheckedOutput {
     pub check_name: String,
     pub sub_checks: Vec<(String, CheckOutput)>,
     pub check_success: bool,
-    pub url: String,
+    pub url: Option<String>,
 }
 
 async fn get_workflow_info(
@@ -308,17 +308,10 @@ pub async fn checks_summaries(
                 check_name,
                 check_summary.run_attempt.clone(),
             );
-            let Ok(workflow_info) = get_workflow_info(&client, mining_bot_url)
-                .await
-                .map_err(|e| {
-                    println!("Could not get workflow: {}", e);
-                    e
-                })
-            else {
-                continue;
-            };
-            let base_url = workflow_info.raw.html_url.clone();
-            let steps: Vec<Step> = workflow_info.raw.steps.to_vec();
+            let workflow_info = get_workflow_info(&client, mining_bot_url).await;
+            let base_url: Option<String> =
+                workflow_info.as_ref().map(|w| w.raw.html_url.clone()).ok();
+            let steps = workflow_info.as_ref().map(|w| w.raw.steps.to_vec()).ok();
             let mut check_success = true;
             let sub_checks: Vec<(String, Option<CheckOutput>)> = vec![
                 ("check".to_string(), check_summary.outputs.check.clone()),
@@ -356,15 +349,18 @@ pub async fn checks_summaries(
             let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
             for (subcheck, check) in sub_checks {
                 if let Some(check) = check {
-                    let step = steps.iter().find(|c| c.name == subcheck.replace('_', "-"));
                     let mut new_check = check.clone();
-                    if let Some(step) = step {
-                        new_check.number = Some(step.number);
-                        new_check.log_url = Some(format!("{}#step:{}:1", base_url, step.number));
-                        checked_sub_checks.push((subcheck, new_check));
-                        if check.required {
-                            check_success &= check.outcome.is_passing();
+                    if let (Some(steps), Some(base_url)) = (steps.clone(), base_url.clone()) {
+                        let step = steps.iter().find(|c| c.name == subcheck.replace('_', "-"));
+                        if let Some(step) = step {
+                            new_check.number = Some(step.number);
+                            new_check.log_url =
+                                Some(format!("{}#step:{}:1", base_url, step.number));
                         }
+                    }
+                    checked_sub_checks.push((subcheck, new_check));
+                    if check.required {
+                        check_success &= check.outcome.is_passing();
                     }
                 }
             }
@@ -372,7 +368,7 @@ pub async fn checks_summaries(
                 continue;
             }
             // order sub check by number
-            checked_sub_checks.sort_by_key(|(_, o)| o.number.unwrap());
+            checked_sub_checks.sort_by_key(|(n, o)| (o.number.clone(), n.clone()));
             check_outputs.push(CheckedOutput {
                 check_name: check_name.to_string(),
                 sub_checks: checked_sub_checks,
@@ -397,7 +393,11 @@ pub async fn checks_summaries(
             let check_cell_name = format!(
                 "{} {}",
                 get_success_emoji(checked.check_success),
-                summary.link(checked.check_name.to_string(), checked.url.clone())
+                if let Some(url) = checked.url.clone() {
+                    summary.link(checked.check_name.to_string(), url)
+                } else {
+                    checked.check_name.to_string()
+                }
             );
             let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
             let mut imgs: Vec<String> = vec![];
