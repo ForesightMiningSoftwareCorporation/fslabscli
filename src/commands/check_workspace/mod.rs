@@ -116,12 +116,15 @@ pub struct PackageMetadataFslabsCiPublish {
     pub binary: bool,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
+    #[serde(default)]
+    pub env: Option<IndexMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiTest {
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
+    pub env: Option<IndexMap<String, String>>,
     pub skip: Option<bool>,
 }
 
