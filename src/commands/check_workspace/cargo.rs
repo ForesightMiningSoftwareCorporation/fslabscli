@@ -55,7 +55,7 @@ impl PackageMetadataFslabsCiPublishCargo {
             name,
             registry_name
         );
-        self.publish = cargo
+        self.publish = !cargo
             .check_crate_exists(registry_name, name, version)
             .await?;
         // We are sure that there is only one
@@ -63,6 +63,7 @@ impl PackageMetadataFslabsCiPublishCargo {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CargoRegistry {
     pub crate_url: String,
     pub token: Option<String>,
