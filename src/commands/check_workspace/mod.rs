@@ -15,13 +15,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
 
+use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
+use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
 use crate::utils;
 
+mod binary;
 mod cargo;
 mod docker;
 mod npm;
@@ -54,6 +57,14 @@ pub struct Options {
     cargo_registry_user_agent: Option<String>,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
+    #[arg(long, env)]
+    binary_store_storage_account: Option<String>,
+    #[arg(long, env)]
+    binary_store_container_name: Option<String>,
+    #[arg(long, env)]
+    binary_store_access_key: Option<String>,
+    #[arg(long, default_value = "nightly")]
+    release_channel: String,
     #[arg(long, default_value_t = false)]
     progress: bool,
     #[arg(long, default_value_t = false)]
@@ -101,10 +112,6 @@ pub struct Result {
     pub test_detail: PackageMetadataFslabsCiTest,
 }
 
-fn default_false() -> bool {
-    false
-}
-
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiPublish {
     #[serde(default = "PackageMetadataFslabsCiPublishDocker::default")]
@@ -113,8 +120,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub cargo: PackageMetadataFslabsCiPublishCargo,
     #[serde(default = "PackageMetadataFslabsCiPublishNpmNapi::default")]
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
-    #[serde(default = "default_false")]
-    pub binary: bool,
+    #[serde(default = "PackageMetadataFslabsCiPublishBinary::default")]
+    pub binary: PackageMetadataFslabsCiPublishBinary,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>,
     #[serde(default)]
@@ -208,6 +215,9 @@ impl Result {
         npm: &Npm,
         cargo: &Cargo,
         docker: &mut Docker,
+        binary_store: &Option<BinaryStore>,
+        release_channel: String,
+        toolchain: String,
     ) -> anyhow::Result<()> {
         match self
             .publish_detail
@@ -236,6 +246,23 @@ impl Result {
             Ok(_) => {}
             Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
         };
+        match self
+            .publish_detail
+            .binary
+            .check(
+                self.package.clone(),
+                self.version.clone(),
+                binary_store,
+                release_channel,
+                toolchain,
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                self.publish_detail.binary.error = Some(e.to_string());
+            }
+        };
 
         Ok(())
     }
@@ -252,7 +279,7 @@ impl Display for Result {
             self.publish_detail.docker.publish,
             self.publish_detail.cargo.publish,
             self.publish_detail.npm_napi.publish,
-            self.publish_detail.binary
+            self.publish_detail.binary.publish,
         )
     }
 }
@@ -368,6 +395,11 @@ pub async fn check_workspace(
     ) {
         docker.add_registry_auth(docker_registry, docker_username, docker_password)
     }
+    let binary_store = BinaryStore::new(
+        options.binary_store_storage_account,
+        options.binary_store_container_name,
+        options.binary_store_access_key,
+    )?;
     let mut pb: Option<ProgressBar> = None;
     if options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
@@ -383,7 +415,17 @@ pub async fn check_workspace(
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
             if options.check_publish {
-                match package.check_publishable(&npm, &cargo, &mut docker).await {
+                match package
+                    .check_publishable(
+                        &npm,
+                        &cargo,
+                        &mut docker,
+                        &binary_store,
+                        options.release_channel.clone(),
+                        "1.74".to_string(), //todo: infer
+                    )
+                    .await
+                {
                     Ok(_) => {}
                     Err(e) => {
                         let error_msg = format!(
@@ -406,7 +448,7 @@ pub async fn check_workspace(
                 package.publish_detail.docker.publish,
                 package.publish_detail.cargo.publish,
                 package.publish_detail.npm_napi.publish,
-                package.publish_detail.binary,
+                package.publish_detail.binary.publish,
             ]
             .into_iter()
             .any(|x| x);

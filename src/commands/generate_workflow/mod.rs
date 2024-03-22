@@ -56,7 +56,7 @@ else
   CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
   git fetch origin ${{ github.base_ref }} --depth 1
 fi
-echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}") >> $GITHUB_OUTPUT"#;
+echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --cargo-default-publish --cargo-registry ${{ vars.CARGO_PRIVATE_REGISTRY_NAME }} --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
@@ -571,7 +571,7 @@ pub async fn generate_workflow(
                 false => None,
             },
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
-            publish_binary: Some(StringBool(member.publish_detail.binary)),
+            publish_binary: Some(StringBool(member.publish_detail.binary.publish)),
             ..Default::default()
         }
         .merge(cargo_publish_options.clone());
