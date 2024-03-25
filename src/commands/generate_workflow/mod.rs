@@ -56,7 +56,7 @@ else
   CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
   git fetch origin ${{ github.base_ref }} --depth 1
 fi
-echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --cargo-default-publish --cargo-registry ${{ vars.CARGO_PRIVATE_REGISTRY_NAME }} --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
+echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
@@ -572,6 +572,18 @@ pub async fn generate_workflow(
             },
             publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
             publish_binary: Some(StringBool(member.publish_detail.binary.publish)),
+            binary_sign_build: match member.publish_detail.binary.publish {
+                true => Some(StringBool(member.publish_detail.binary.sign)),
+                false => None,
+            },
+            binary_application_name: match member.publish_detail.binary.publish {
+                true => Some(member.publish_detail.binary.name.clone()),
+                false => None,
+            },
+            binary_targets: match member.publish_detail.binary.publish {
+                true => Some(member.publish_detail.binary.targets.clone()),
+                false => None,
+            },
             ..Default::default()
         }
         .merge(cargo_publish_options.clone());

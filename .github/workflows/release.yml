@@ -49,7 +49,7 @@ jobs:
           CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
           git fetch origin ${{ github.base_ref }} --depth 1
         fi
-        echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}") >> $GITHUB_OUTPUT
+        echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT
       working-directory: .
   test_fslabscli:
     name: 'Test fslabscli: fslabscli'
@@ -77,6 +77,9 @@ jobs:
       publish_binary: 'true'
       publish_npm_napi: 'false'
       working_directory: .
+      binary_sign_build: 'false'
+      binary_application_name: FSLABS Cli tool
+      binary_targets: '["x86_64-unknown-linux-gnu","x86_64-pc-windows-msvc"]'
     secrets: inherit
   test_results:
     name: Tests Results

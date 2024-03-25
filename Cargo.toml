@@ -1,6 +1,6 @@
 [package]
 name = "fslabscli"
-version = "0.3.12"
+version = "0.4.0"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -43,8 +43,14 @@ wiremock = "0.6"
 indoc = "2.0"
 serial_test = "3.0.0"
 
-[package.metadata.fslabs.publish]
-binary = true
-args = { }
-[package.metadata.fslabs.test]
-args = { }
+[package.metadata.fslabs.publish.binary]
+publish = true
+sign = false
+name = "FSLABS Cli tool"
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[features]
+nightly = []
+alpha = []
+beta = []
+prod = []

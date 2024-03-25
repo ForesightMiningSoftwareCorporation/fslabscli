@@ -67,6 +67,10 @@ pub struct PublishWorkflowArgs {
     pub force_nonrequired_publish_test: Option<StringBool>,
     /// Should the binary bin be signed
     pub binary_sign_build: Option<StringBool>,
+    /// Binaries targets
+    pub binary_targets: Option<Vec<String>>,
+    /// Name of the binary aplication
+    pub binary_application_name: Option<String>,
     /// Should the release be reported
     pub report_release: Option<StringBool>,
 }
@@ -111,6 +115,10 @@ impl PublishWorkflowArgs {
                 .force_nonrequired_publish_test
                 .or(other.force_nonrequired_publish_test),
             binary_sign_build: self.binary_sign_build.or(other.binary_sign_build),
+            binary_targets: self.binary_targets.or(other.binary_targets),
+            binary_application_name: self
+                .binary_application_name
+                .or(other.binary_application_name),
             report_release: self.report_release.or(other.report_release),
         }
     }
@@ -244,6 +252,18 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                     me.force_nonrequired_publish_test = Some(v.into())
                 }
                 "binary_sign_build" => me.binary_sign_build = Some(v.into()),
+                "binary_application_name" => {
+                    me.binary_application_name = match v {
+                        Value::String(s) => Some(s),
+                        _ => None,
+                    }
+                }
+                "binary_targets" => {
+                    me.binary_targets = match v {
+                        Value::String(s) => serde_json::from_str(&s).ok().into(),
+                        _ => None,
+                    }
+                }
                 "report_release" => me.report_release = Some(v.into()),
                 _ => {}
             }
@@ -368,6 +388,18 @@ impl From<PublishWorkflowArgs> for IndexMap<String, Value> {
         }
         if let Some(binary_sign_build) = val.binary_sign_build {
             map.insert("binary_sign_build".to_string(), binary_sign_build.into());
+        }
+        if let Some(binary_application_name) = val.binary_application_name {
+            map.insert(
+                "binary_application_name".to_string(),
+                binary_application_name.into(),
+            );
+        }
+        if let Some(binary_targets) = val.binary_targets {
+            map.insert(
+                "binary_targets".to_string(),
+                format!("[\"{}\"]", binary_targets.join("\",\"")).into(),
+            );
         }
         if let Some(report_release) = val.report_release {
             map.insert("report_release".to_string(), report_release.into());
