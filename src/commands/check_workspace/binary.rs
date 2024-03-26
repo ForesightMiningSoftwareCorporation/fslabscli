@@ -43,6 +43,7 @@ impl Default for PackageMetadataFslabsCiPublishBinaryLauncher {
 pub struct PackageMetadataFslabsCiPublishBinaryInstaller {
     #[serde(default = "default_installer_path")]
     pub path: String,
+    pub publish: bool,
     pub nightly: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
     pub alpha: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
     pub beta: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
@@ -53,6 +54,7 @@ impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
     fn default() -> Self {
         Self {
             path: default_installer_path(),
+            publish: false,
             nightly: Default::default(),
             alpha: Default::default(),
             beta: Default::default(),

@@ -386,7 +386,11 @@ pub async fn generate_workflow(
         ),
         working_directory,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        log::error!("Unparseable template: {}", e);
+        e
+    })?;
     if !options.no_check_changed_and_publish {
         // We need to login to any docker registry required
         let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
@@ -588,7 +592,7 @@ pub async fn generate_workflow(
         }
         .merge(cargo_publish_options.clone());
         let test_with: TestWorkflowArgs = TestWorkflowArgs {
-            working_directory: Some(job_working_directory),
+            working_directory: Some(job_working_directory.clone()),
             test_publish_required: Some(StringBool(member.publish_detail.cargo.publish)),
             ..Default::default()
         }
@@ -637,7 +641,45 @@ pub async fn generate_workflow(
             actual_tests.push(test_job_key.clone());
         }
         if member.publish {
-            workflow_template.jobs.insert(publish_job_key, publish_job);
+            workflow_template
+                .jobs
+                .insert(publish_job_key.clone(), publish_job);
+            if member.publish_detail.binary.installer.publish {
+                // We need to add a new publish job for the installer
+                workflow_template.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
+                    name: Some(format!(
+                        "Publish {}: {} installer",
+                        member.workspace, member.package
+                    )),
+                    uses: Some(
+                        format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version).to_string(),
+                    ),
+                    needs: Some(vec![
+                        publish_job_key.clone(),
+                        format!(
+                            "{}_{}",
+                            publish_job_key, member.publish_detail.binary.launcher.path
+                        ),
+                    ]),
+                    with: Some(
+                        PublishWorkflowArgs {
+                            publish: Some(StringBool(true)),
+                            publish_installer: Some(StringBool(true)),
+                            binary_application_name: Some(member.publish_detail.binary.name.clone()),
+            working_directory: Some(job_working_directory.clone()),
+            skip_test: Some(StringBool(true)),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ),
+                    job_if: Some(format!("${{{{ {} }}}}", publish_if)),
+                    secrets: Some(GithubWorkflowJobSecret {
+                        inherit: true,
+                        secrets: None,
+                    }),
+                    ..Default::default()
+                });
+            };
         }
     }
     // Add Tests Reporting

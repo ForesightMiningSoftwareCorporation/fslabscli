@@ -23,6 +23,8 @@ pub struct PublishWorkflowArgs {
     pub publish_binary: Option<StringBool>,
     /// Should the npm napi package be built and published
     pub publish_npm_napi: Option<StringBool>,
+    /// Should an installer be built and published
+    pub publish_installer: Option<StringBool>,
     /// Rust toolchain to install.
     /// Do not set this to moving targets like "stable".
     /// Instead, leave it empty and regularly bump the default in this file.
@@ -43,8 +45,6 @@ pub struct PublishWorkflowArgs {
     pub additional_script: Option<String>,
     /// Package that needs to be installed before Rust compilation can happens
     pub required_packages: Option<String>,
-    /// JSON array of of Cargo workspaces
-    pub workspaces: Option<String>,
     /// Working directory to run the cargo command
     pub working_directory: Option<String>,
     /// Additional arguments to pass to the cargo command
@@ -59,10 +59,6 @@ pub struct PublishWorkflowArgs {
     pub docker_image: Option<String>,
     /// Docker registry
     pub docker_registry: Option<String>,
-    /// Matrix file to load
-    pub matrix_file: Option<String>,
-    /// Post Build Additional script to run after the additional packages
-    pub post_build_additional_script: Option<String>,
     /// Force the publish test to be marked as non required
     pub force_nonrequired_publish_test: Option<StringBool>,
     /// Should the binary bin be signed
@@ -91,6 +87,7 @@ impl PublishWorkflowArgs {
             publish_docker: self.publish_docker.or(other.publish_docker),
             publish_binary: self.publish_binary.or(other.publish_binary),
             publish_npm_napi: self.publish_npm_napi.or(other.publish_npm_napi),
+            publish_installer: self.publish_installer.or(other.publish_installer),
             toolchain: self.toolchain.or(other.toolchain),
             miri_toolchain: self.miri_toolchain.or(other.miri_toolchain),
             release_channel: self.release_channel.or(other.release_channel),
@@ -99,7 +96,6 @@ impl PublishWorkflowArgs {
             additional_cache_miss: self.additional_cache_miss.or(other.additional_cache_miss),
             additional_script: self.additional_script.or(other.additional_script),
             required_packages: self.required_packages.or(other.required_packages),
-            workspaces: self.workspaces.or(other.workspaces),
             working_directory: self.working_directory.or(other.working_directory),
             additional_args: self.additional_args.or(other.additional_args),
             custom_cargo_commands: self.custom_cargo_commands.or(other.custom_cargo_commands),
@@ -107,10 +103,6 @@ impl PublishWorkflowArgs {
             dockerfile: self.dockerfile.or(other.dockerfile),
             docker_image: self.docker_image.or(other.docker_image),
             docker_registry: self.docker_registry.or(other.docker_registry),
-            matrix_file: self.matrix_file.or(other.matrix_file),
-            post_build_additional_script: self
-                .post_build_additional_script
-                .or(other.post_build_additional_script),
             force_nonrequired_publish_test: self
                 .force_nonrequired_publish_test
                 .or(other.force_nonrequired_publish_test),
@@ -140,6 +132,7 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                 "publish_docker" => me.publish_docker = Some(v.into()),
                 "publish_binary" => me.publish_binary = Some(v.into()),
                 "publish_npm_napi" => me.publish_npm_napi = Some(v.into()),
+                "publish_installer" => me.publish_installer = Some(v.into()),
                 "toolchain" => {
                     me.toolchain = match v {
                         Value::String(s) => Some(s),
@@ -188,12 +181,6 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                         _ => None,
                     }
                 }
-                "workspaces" => {
-                    me.workspaces = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
                 "working_directory" => {
                     me.working_directory = match v {
                         Value::String(s) => Some(s),
@@ -232,18 +219,6 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                 }
                 "docker_registry" => {
                     me.docker_registry = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "matrix_file" => {
-                    me.matrix_file = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "post_build_additional_script" => {
-                    me.post_build_additional_script = match v {
                         Value::String(s) => Some(s),
                         _ => None,
                     }
@@ -311,6 +286,9 @@ impl From<PublishWorkflowArgs> for IndexMap<String, Value> {
         if let Some(publish_npm_napi) = val.publish_npm_napi {
             map.insert("publish_npm_napi".to_string(), publish_npm_napi.into());
         }
+        if let Some(publish_installer) = val.publish_installer {
+            map.insert("publish_installer".to_string(), publish_installer.into());
+        }
         if let Some(toolchain) = val.toolchain {
             map.insert("toolchain".to_string(), toolchain.into());
         }
@@ -344,9 +322,6 @@ impl From<PublishWorkflowArgs> for IndexMap<String, Value> {
         if let Some(required_packages) = val.required_packages {
             map.insert("required_packages".to_string(), required_packages.into());
         }
-        if let Some(workspaces) = val.workspaces {
-            map.insert("workspaces".to_string(), workspaces.into());
-        }
         if let Some(working_directory) = val.working_directory {
             map.insert("working_directory".to_string(), working_directory.into());
         }
@@ -370,15 +345,6 @@ impl From<PublishWorkflowArgs> for IndexMap<String, Value> {
         }
         if let Some(docker_registry) = val.docker_registry {
             map.insert("docker_registry".to_string(), docker_registry.into());
-        }
-        if let Some(matrix_file) = val.matrix_file {
-            map.insert("matrix_file".to_string(), matrix_file.into());
-        }
-        if let Some(post_build_additional_script) = val.post_build_additional_script {
-            map.insert(
-                "post_build_additional_script".to_string(),
-                post_build_additional_script.into(),
-            );
         }
         if let Some(force_nonrequired_publish_test) = val.force_nonrequired_publish_test {
             map.insert(
