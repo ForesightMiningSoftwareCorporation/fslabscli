@@ -75,6 +75,8 @@ pub struct Options {
     cargo_default_publish: bool,
     #[arg(long, default_value = "standard")]
     nomad_runner_label: String,
+    #[arg(long, default_value_t = false)]
+    test_publish_required_disabled: bool,
 }
 
 #[derive(Serialize)]
@@ -593,7 +595,9 @@ pub async fn generate_workflow(
         .merge(cargo_publish_options.clone());
         let test_with: TestWorkflowArgs = TestWorkflowArgs {
             working_directory: Some(job_working_directory.clone()),
-            test_publish_required: Some(StringBool(member.publish_detail.cargo.publish)),
+            test_publish_required: Some(StringBool(
+                member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
+            )),
             ..Default::default()
         }
         .merge(cargo_test_options.clone());
