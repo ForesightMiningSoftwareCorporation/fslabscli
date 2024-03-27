@@ -79,7 +79,7 @@ jobs:
       working_directory: .
       binary_sign_build: 'false'
       binary_application_name: FSLABS Cli tool
-      binary_targets: '["x86_64-unknown-linux-gnu","x86_64-pc-windows-msvc"]'
+      binary_targets: '["x86_64-unknown-linux-gnu"]'
     secrets: inherit
   test_results:
     name: Tests Results
