@@ -181,8 +181,7 @@ impl Result {
             .registry
             .clone()
             .map(|r| r.len() == 1)
-            .unwrap_or(false)
-            || cargo_default_publish;
+            .unwrap_or(false);
 
         let dependencies = package
             .dependencies
