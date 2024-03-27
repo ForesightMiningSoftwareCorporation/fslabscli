@@ -182,7 +182,7 @@ impl Result {
             .clone()
             .map(|r| r.len() == 1)
             .unwrap_or(false)
-            && cargo_default_publish;
+            || cargo_default_publish;
 
         let dependencies = package
             .dependencies

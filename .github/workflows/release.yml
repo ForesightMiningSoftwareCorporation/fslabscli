@@ -51,27 +51,27 @@ jobs:
         fi
         echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT
       working-directory: .
-  test_fslabscli:
-    name: 'Test fslabscli: fslabscli'
+  test_cargo-fslabscli:
+    name: 'Test fslabscli: cargo-fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2
     needs:
     - check_changed_and_publish
-    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.changed) }}
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.changed) }}
     with:
       working_directory: .
-      test_publish_required: 'false'
+      test_publish_required: 'true'
     secrets: inherit
-  publish_fslabscli:
-    name: 'Publish fslabscli: fslabscli'
+  publish_cargo-fslabscli:
+    name: 'Publish fslabscli: cargo-fslabscli'
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
     needs:
     - check_changed_and_publish
-    - test_fslabscli
-    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).fslabscli.publish) }}
+    - test_cargo-fslabscli
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish) }}
     with:
       skip_test: 'false'
       publish: 'true'
-      publish_private_registry: 'false'
+      publish_private_registry: 'true'
       publish_public_registry: 'false'
       publish_docker: 'false'
       publish_binary: 'true'
@@ -85,7 +85,7 @@ jobs:
     name: Tests Results
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@v2
     needs:
-    - test_fslabscli
+    - test_cargo-fslabscli
     if: always()
     with:
       run_type: checks
