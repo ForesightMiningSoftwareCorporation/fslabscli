@@ -32,7 +32,7 @@ struct Cli {
     json: bool,
     #[arg(short, long, global = true, default_value = ".", required = false)]
     working_directory: PathBuf,
-    #[arg(hide = true, required = true)]
+    #[arg(hide = true)]
     cargo_subcommand: CargoSubcommand,
     #[command(subcommand)]
     command: Commands,

@@ -235,7 +235,7 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                 }
                 "binary_targets" => {
                     me.binary_targets = match v {
-                        Value::String(s) => serde_json::from_str(&s).ok().into(),
+                        Value::String(s) => serde_json::from_str(&s).ok(),
                         _ => None,
                     }
                 }
