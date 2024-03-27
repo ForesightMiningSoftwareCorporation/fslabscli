@@ -20,7 +20,7 @@ mod utils;
     author,
     version,
     about,
-    bin_name("fslabsci"),
+    bin_name("fslabscli"),
     subcommand_required(true),
     propagate_version(true)
 )]
@@ -32,8 +32,16 @@ struct Cli {
     json: bool,
     #[arg(short, long, global = true, default_value = ".", required = false)]
     working_directory: PathBuf,
+    #[arg(hide = true, required = true)]
+    cargo_subcommand: CargoSubcommand,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
+enum CargoSubcommand {
+    #[default]
+    Fslabscli,
 }
 
 #[derive(Debug, Subcommand)]

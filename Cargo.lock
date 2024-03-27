@@ -239,6 +239,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-fslabscli"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "assert_fs",
+ "base64 0.21.7",
+ "cargo_metadata",
+ "clap",
+ "console",
+ "exitcode",
+ "git2",
+ "http-body-util",
+ "hyper 1.1.0",
+ "hyper-rustls 0.26.0",
+ "hyper-util",
+ "ignore",
+ "indexmap 2.2.3",
+ "indicatif",
+ "indoc",
+ "itertools",
+ "log",
+ "log4rs",
+ "num",
+ "object_store",
+ "oci-distribution",
+ "octocrab",
+ "rustls 0.22.2",
+ "serde",
+ "serde_json",
+ "serde_with 3.6.1",
+ "serde_yaml",
+ "serial_test",
+ "testcontainers",
+ "tokio",
+ "url",
+ "void",
+ "wiremock",
+]
+
+[[package]]
 name = "cargo-platform"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -624,46 +664,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fslabscli"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "assert_fs",
- "base64 0.21.7",
- "cargo_metadata",
- "clap",
- "console",
- "exitcode",
- "git2",
- "http-body-util",
- "hyper 1.1.0",
- "hyper-rustls 0.26.0",
- "hyper-util",
- "ignore",
- "indexmap 2.2.3",
- "indicatif",
- "indoc",
- "itertools",
- "log",
- "log4rs",
- "num",
- "object_store",
- "oci-distribution",
- "octocrab",
- "rustls 0.22.2",
- "serde",
- "serde_json",
- "serde_with 3.6.1",
- "serde_yaml",
- "serial_test",
- "testcontainers",
- "tokio",
- "url",
- "void",
- "wiremock",
 ]
 
 [[package]]
