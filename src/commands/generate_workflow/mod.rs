@@ -26,21 +26,6 @@ mod publish_workflow;
 mod test_workflow;
 
 const EMPTY_WORKFLOW: &str = r#"
-
-name: CI-CD - Tests and Publishing
-
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      publish:
-        type: boolean
-        required: false
-        description: Trigger with publish
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -63,6 +48,8 @@ echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANG
 pub struct Options {
     #[arg(long)]
     output: PathBuf,
+    #[arg(long)]
+    output_release: Option<PathBuf>,
     #[arg(long)]
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
@@ -88,7 +75,7 @@ impl Display for GenerateResult {
     }
 }
 
-#[derive(Serialize, Debug, Deserialize, PartialEq)]
+#[derive(Serialize, Debug, Deserialize, PartialEq, Clone)]
 pub struct GithubWorkflowInput {
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,14 +86,14 @@ pub struct GithubWorkflowInput {
     pub input_type: String,
 }
 
-#[derive(Serialize, Debug, Deserialize, PartialEq)]
+#[derive(Serialize, Debug, Deserialize, PartialEq, Clone)]
 pub struct GithubWorkflowSecret {
     pub description: String,
     #[serde(default)]
     pub required: bool,
 }
 
-#[derive(Serialize, Debug, Deserialize, PartialEq)]
+#[derive(Serialize, Debug, Deserialize, PartialEq, Clone)]
 pub struct GithubWorkflowTriggerPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<String>>,
@@ -118,7 +105,7 @@ pub struct GithubWorkflowTriggerPayload {
     pub secrets: Option<IndexMap<String, GithubWorkflowSecret>>,
 }
 
-#[derive(Serialize, Debug, Deserialize, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Serialize, Debug, Deserialize, Eq, PartialEq, Hash, Ord, PartialOrd, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum GithubWorkflowTrigger {
     PullRequest,
@@ -127,7 +114,7 @@ pub enum GithubWorkflowTrigger {
     WorkflowDispatch,
 }
 
-#[derive(Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Clone)]
 pub struct GithubWorkflowJobSecret {
     pub inherit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,20 +143,20 @@ impl Serialize for GithubWorkflowJobSecret {
     }
 }
 
-#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq, Clone)]
 pub struct GithubWorkflowJobEnvironment {
     pub name: String,
     pub url: Option<String>,
 }
 
-#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct GithubWorkflowJobStrategy {
     pub matrix: IndexMap<String, Value>,
     pub fail_false: Option<bool>,
 }
 
-#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Serialize, Debug, Default, Deserialize, Eq, PartialEq, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct GithubWorkflowJobSteps {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,7 +183,7 @@ pub struct GithubWorkflowJobSteps {
     timeout_minutes: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 struct GithubWorkflowJobContainer {
     pub image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,7 +199,7 @@ struct GithubWorkflowJobContainer {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "kebab-case")]
 struct GithubWorkflowJob {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -264,19 +251,19 @@ struct GithubWorkflowJob {
     pub services: Option<IndexMap<String, GithubWorkflowJobContainer>>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 struct GithubWorkflowDefaultsRun {
     pub shell: Option<String>,
     pub working_directory: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct GithubWorkflowDefaults {
     pub run: GithubWorkflowDefaultsRun,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct GithubWorkflow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -364,7 +351,7 @@ pub async fn generate_workflow(
     working_directory: PathBuf,
 ) -> anyhow::Result<GenerateResult> {
     // Get Base Workflow
-    let mut workflow_template: GithubWorkflow = match options.template {
+    let workflow_template: GithubWorkflow = match options.template {
         Some(template) => {
             let file = File::open(template)?;
             let reader = BufReader::new(file);
@@ -377,8 +364,66 @@ pub async fn generate_workflow(
         e
     })
     .with_context(|| "Could not parse workflow template")?;
+    let mut publish_workflow = workflow_template.clone();
+    let mut test_workflow = workflow_template;
+    let split_workflows = options.output_release.is_some();
+
+    // Triggers
+    let mut test_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
+        IndexMap::new();
+    let mut publish_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
+        IndexMap::new();
+    // Tests should be done on pr always
+    test_triggers.insert(
+        GithubWorkflowTrigger::PullRequest,
+        GithubWorkflowTriggerPayload {
+            branches: None,
+            paths: None,
+            inputs: None,
+            secrets: None,
+        },
+    );
+    // Publish should be done on push to main
+    publish_triggers.insert(
+        GithubWorkflowTrigger::Push,
+        GithubWorkflowTriggerPayload {
+            branches: Some(vec!["main".to_string()]),
+            paths: None,
+            inputs: None,
+            secrets: None,
+        },
+    );
+    // Publish should be done on manual dispatch
+    publish_triggers.insert(
+        GithubWorkflowTrigger::WorkflowDispatch,
+        GithubWorkflowTriggerPayload {
+            branches: None,
+            paths: None,
+            inputs: Some(IndexMap::from([(
+                "publish".to_string(),
+                GithubWorkflowInput {
+                    description: "Trigger with publish".to_string(),
+                    default: None,
+                    required: false,
+                    input_type: "boolean".to_string(),
+                },
+            )])),
+            secrets: None,
+        },
+    );
+    if split_workflows {
+        test_workflow.name = Some("CI - CD: Tests".to_string());
+        publish_workflow.name = Some("CI - CD: Publishing".to_string());
+    } else {
+        test_workflow.name = Some("CI - CD: Tests and Publishing".to_string());
+        test_triggers.extend(publish_triggers.clone());
+    }
+    test_workflow.triggers = Some(test_triggers);
+    publish_workflow.triggers = Some(publish_triggers);
+
+    //
     // Get Template jobs, we'll make the generated jobs depends on it
-    let mut initial_jobs: Vec<String> = workflow_template.jobs.keys().cloned().collect();
+    let mut initial_jobs: Vec<String> = test_workflow.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
     // Get Directory information
@@ -469,25 +514,28 @@ pub async fn generate_workflow(
             },
         ];
         registries_steps.extend(steps);
-        workflow_template.jobs.insert(
-            check_job_key.clone(),
-            GithubWorkflowJob {
-                name: Some(
-                    "Check which workspace member changed and / or needs publishing".to_string(),
-                ),
-                runs_on: Some(vec![
-                    "self-hosted".to_string(),
-                    options.nomad_runner_label,
-                    "${{ github.run_id }}__check_changed__${{ github.run_attempt }}".to_string(),
-                ]),
-                outputs: Some(IndexMap::from([(
-                    "workspace".to_string(),
-                    "${{ steps.check_workspace.outputs.workspace }}".to_string(),
-                )])),
-                steps: Some(registries_steps),
-                ..Default::default()
-            },
-        );
+        let check_job = GithubWorkflowJob {
+            name: Some(
+                "Check which workspace member changed and / or needs publishing".to_string(),
+            ),
+            runs_on: Some(vec![
+                "self-hosted".to_string(),
+                options.nomad_runner_label,
+                "${{ github.run_id }}__check_changed__${{ github.run_attempt }}".to_string(),
+            ]),
+            outputs: Some(IndexMap::from([(
+                "workspace".to_string(),
+                "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+            )])),
+            steps: Some(registries_steps),
+            ..Default::default()
+        };
+        test_workflow
+            .jobs
+            .insert(check_job_key.clone(), check_job.clone());
+        publish_workflow
+            .jobs
+            .insert(check_job_key.clone(), check_job);
     }
     let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
     member_keys.sort();
@@ -515,8 +563,8 @@ pub async fn generate_workflow(
                 publish_needs.push(format!("publish_{}", dependency.package))
             }
         }
-        // add self test to publish needs
-        if !member.test_detail.skip.unwrap_or(false) {
+        // add self test to publish needs and not split
+        if !member.test_detail.skip.unwrap_or(false) && !split_workflows {
             publish_needs.push(test_job_key.clone());
         }
         let base_if = "always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
@@ -543,7 +591,6 @@ pub async fn generate_workflow(
         let job_working_directory = member.path.to_string_lossy().to_string();
         let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
             working_directory: Some(job_working_directory.clone()),
-            skip_test: Some(StringBool(member.test_detail.skip.unwrap_or(false))),
             publish: Some(StringBool(member.publish)),
             publish_private_registry: Some(StringBool(
                 member.publish_detail.cargo.publish
@@ -639,18 +686,18 @@ pub async fn generate_workflow(
         };
 
         if !member.test_detail.skip.unwrap_or(false) {
-            workflow_template
-                .jobs
-                .insert(test_job_key.clone(), test_job);
+            test_workflow.jobs.insert(test_job_key.clone(), test_job);
             actual_tests.push(test_job_key.clone());
         }
         if member.publish {
-            workflow_template
-                .jobs
-                .insert(publish_job_key.clone(), publish_job);
+            let wf = match split_workflows {
+                true => &mut publish_workflow,
+                false => &mut test_workflow,
+            };
+            wf.jobs.insert(publish_job_key.clone(), publish_job);
             if member.publish_detail.binary.installer.publish {
                 // We need to add a new publish job for the installer
-                workflow_template.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
+                wf.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
                     name: Some(format!(
                         "Publish {}: {} installer",
                         member.workspace, member.package
@@ -687,7 +734,7 @@ pub async fn generate_workflow(
         }
     }
     // Add Tests Reporting
-    workflow_template.jobs.insert("test_results".to_string(), GithubWorkflowJob {
+    test_workflow.jobs.insert("test_results".to_string(), GithubWorkflowJob {
         name: Some("Tests Results".to_string()),
         job_if: Some("always()".to_string()),
             uses: Some(
@@ -705,8 +752,14 @@ pub async fn generate_workflow(
 
         ..Default::default()
     });
+    // If we are splitted then we actually need to create two files
     let output_file = File::create(options.output)?;
     let mut writer = BufWriter::new(output_file);
-    serde_yaml::to_writer(&mut writer, &workflow_template)?;
+    serde_yaml::to_writer(&mut writer, &test_workflow)?;
+    if let Some(output_path) = options.output_release {
+        let output_file = File::create(output_path)?;
+        let mut writer = BufWriter::new(output_file);
+        serde_yaml::to_writer(&mut writer, &publish_workflow)?;
+    }
     Ok(GenerateResult {})
 }

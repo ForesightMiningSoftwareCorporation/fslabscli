@@ -1,0 +1,63 @@
+name: 'CI - CD: Tests'
+on:
+  pull_request: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  check_changed_and_publish:
+    name: Check which workspace member changed and / or needs publishing
+    runs-on:
+    - self-hosted
+    - standard
+    - ${{ github.run_id }}__check_changed__${{ github.run_attempt }}
+    outputs:
+      workspace: ${{ steps.check_workspace.outputs.workspace }}
+    steps:
+    - id: generate_token
+      name: Generate token
+      uses: tibdex/github-app-token@v2.1.0
+      with:
+        app_id: ${{ secrets.FMSC_BOT_GITHUB_APP_ID }}
+        private_key: ${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}
+    - name: Install FSLABScli
+      uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
+      with:
+        token: ${{ steps.generate_token.outputs.token }}
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+    - id: check_workspace
+      name: Check workspace
+      shell: bash
+      run: |-
+        BASE_REF=${{ github.base_ref }}
+        HEAD_REF=${{ github.head_ref }}
+        if [ -z "$HEAD_REF" ]; then
+          CHECK_CHANGED=()
+        else
+          CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
+          git fetch origin ${{ github.base_ref }} --depth 1
+        fi
+        echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT
+      working-directory: .
+  test_cargo-fslabscli:
+    name: 'Test fslabscli: cargo-fslabscli'
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2
+    needs:
+    - check_changed_and_publish
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.changed) }}
+    with:
+      working_directory: .
+      test_publish_required: 'false'
+    secrets: inherit
+  test_results:
+    name: Tests Results
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@v2
+    needs:
+    - test_cargo-fslabscli
+    if: always()
+    with:
+      run_type: checks
+    secrets: inherit
