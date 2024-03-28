@@ -458,7 +458,7 @@ pub async fn generate_workflow(
                 if let Some(repo) = v.publish_detail.docker.repository.clone() {
                     let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
                     return Some(GithubWorkflowJobSteps {
-                        name: Some(format!("Login to {}", repo)),
+                        name: Some(format!("Docker Login to {}", repo)),
                         uses: Some("docker/login-action@v3".to_string()),
                         with: Some(IndexMap::from([
                             ("registry".to_string(), repo.clone()),
@@ -477,6 +477,31 @@ pub async fn generate_workflow(
                 None
             })
             .collect();
+        let npm_steps: Vec<GithubWorkflowJobSteps> = members
+            .0
+            .iter()
+            .filter(|(_, v)| v.publish_detail.npm_napi.publish)
+            .unique_by(|(_, v)| v.publish_detail.npm_napi.scope.clone())
+            .filter_map(|(_, v)| {
+                if let Some(scope) = v.publish_detail.npm_napi.scope.clone() {
+                    let github_secret_key = scope.clone().replace('.', "_").to_ascii_uppercase();
+                    let run = format!(
+                        r#"
+echo "@{scope}:registry = https://npm.pkg.github.com >> .npmrc"
+echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOKEN }}}} >> .npmrc"
+                    "#
+                    );
+                    return Some(GithubWorkflowJobSteps {
+                        name: Some(format!("NPM Login to {}", scope)),
+                        shell: Some("bash".to_string()),
+                        run: Some(run.to_string()),
+                        ..Default::default()
+                    });
+                }
+                None
+            })
+            .collect();
+        registries_steps.extend(npm_steps);
         initial_jobs.push(check_job_key.clone());
         let steps = vec![
             GithubWorkflowJobSteps {
