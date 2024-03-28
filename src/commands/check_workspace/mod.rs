@@ -149,12 +149,7 @@ struct PackageMetadata {
 }
 
 impl Result {
-    pub fn new(
-        workspace: String,
-        package: Package,
-        root_dir: PathBuf,
-        cargo_default_publish: bool,
-    ) -> anyhow::Result<Self> {
+    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
             .canonicalize()?
@@ -340,7 +335,6 @@ pub async fn check_workspace(
                     workspace_name.to_string_lossy().to_string(),
                     package.clone(),
                     working_directory.clone(),
-                    options.cargo_default_publish,
                 ) {
                     Ok(r) => {
                         packages.insert(r.package.clone(), r);
