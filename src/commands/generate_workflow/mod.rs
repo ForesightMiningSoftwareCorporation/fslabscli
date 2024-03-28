@@ -582,14 +582,14 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         let publish_job_key = format!("publish_{}", member.package);
         let mut test_needs = match options.no_depends_on_template_jobs {
             false => initial_jobs.clone(),
-            true => vec![],
+            true => vec![check_job_key.clone()],
         };
         for dependency in &member.dependencies {
             test_needs.push(format!("test_{}", dependency.package))
         }
         let mut publish_needs = match options.no_depends_on_template_jobs {
             false => initial_jobs.clone(),
-            true => vec![],
+            true => vec![check_job_key.clone()],
         };
         for dependency in &member.dependencies {
             if dependency.publishable {
@@ -774,6 +774,15 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             };
             wf.jobs.insert(publish_job_key.clone(), publish_job);
             if member.publish_detail.binary.installer.publish {
+                let mut installer_needs = match options.no_depends_on_template_jobs {
+                    false => initial_jobs.clone(),
+                    true => vec![check_job_key.clone()],
+                };
+                installer_needs.push(publish_job_key.clone());
+                installer_needs.push(format!(
+                    "{}_{}",
+                    publish_job_key, member.publish_detail.binary.launcher.path
+                ));
                 // We need to add a new publish job for the installer
                 wf.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
                     name: Some(format!(
@@ -783,13 +792,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                     uses: Some(
                         format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version).to_string(),
                     ),
-                    needs: Some(vec![
-                        publish_job_key.clone(),
-                        format!(
-                            "{}_{}",
-                            publish_job_key, member.publish_detail.binary.launcher.path
-                        ),
-                    ]),
+                    needs: Some(installer_needs),
                     with: Some(
                         PublishWorkflowArgs {
                             publish: Some(StringBool(true)),
