@@ -14,17 +14,17 @@ pub struct PublishWorkflowArgs {
     /// Should the crate be published
     pub publish: Option<StringBool>,
     /// Should the crate be published to the private registry
-    pub publish_private_registry: Option<StringBool>,
+    pub publish_private_registry: Option<String>,
     /// Should the crate be published to the public registry
-    pub publish_public_registry: Option<StringBool>,
+    pub publish_public_registry: Option<String>,
     /// Should the docker image be built and published
-    pub publish_docker: Option<StringBool>,
+    pub publish_docker: Option<String>,
     /// Should the binary be built and published
-    pub publish_binary: Option<StringBool>,
+    pub publish_binary: Option<String>,
     /// Should the npm napi package be built and published
-    pub publish_npm_napi: Option<StringBool>,
+    pub publish_npm_napi: Option<String>,
     /// Should an installer be built and published
-    pub publish_installer: Option<StringBool>,
+    pub publish_installer: Option<String>,
     /// Rust toolchain to install.
     /// Do not set this to moving targets like "stable".
     /// Instead, leave it empty and regularly bump the default in this file.
@@ -116,6 +116,13 @@ impl PublishWorkflowArgs {
     }
 }
 
+fn parse_string(value: Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s),
+        _ => None,
+    }
+}
+
 impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
     fn from(value: IndexMap<String, Value>) -> Self {
         let mut me = Self {
@@ -127,118 +134,38 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                 "skip_tests_no_changes" => me.skip_tests_no_changes = Some(v.into()),
                 "skip_miri_test" => me.skip_miri_test = Some(v.into()),
                 "publish" => me.publish = Some(v.into()),
-                "publish_private_registry" => me.publish_private_registry = Some(v.into()),
-                "publish_public_registry" => me.publish_public_registry = Some(v.into()),
-                "publish_docker" => me.publish_docker = Some(v.into()),
-                "publish_binary" => me.publish_binary = Some(v.into()),
-                "publish_npm_napi" => me.publish_npm_napi = Some(v.into()),
-                "publish_installer" => me.publish_installer = Some(v.into()),
-                "toolchain" => {
-                    me.toolchain = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "miri_toolchain" => {
-                    me.miri_toolchain = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "release_channel" => {
-                    me.release_channel = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "additional_cache_path" => {
-                    me.additional_cache_path = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "additional_cache_key" => {
-                    me.additional_cache_key = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "additional_cache_miss" => {
-                    me.additional_cache_miss = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "additional_script" => {
-                    me.additional_script = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "required_packages" => {
-                    me.required_packages = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "working_directory" => {
-                    me.working_directory = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "additional_args" => {
-                    me.additional_args = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "custom_cargo_commands" => {
-                    me.custom_cargo_commands = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "docker_context" => {
-                    me.docker_context = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "dockerfile" => {
-                    me.dockerfile = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "docker_image" => {
-                    me.docker_image = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
-                "docker_registry" => {
-                    me.docker_registry = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
+                "publish_private_registry" => me.publish_private_registry = parse_string(v),
+                "publish_public_registry" => me.publish_public_registry = parse_string(v),
+                "publish_docker" => me.publish_docker = parse_string(v),
+                "publish_binary" => me.publish_binary = parse_string(v),
+                "publish_npm_napi" => me.publish_npm_napi = parse_string(v),
+                "publish_installer" => me.publish_installer = parse_string(v),
+                "toolchain" => me.toolchain = parse_string(v),
+                "miri_toolchain" => me.miri_toolchain = parse_string(v),
+                "release_channel" => me.release_channel = parse_string(v),
+                "additional_cache_path" => me.additional_cache_path = parse_string(v),
+                "additional_cache_key" => me.additional_cache_key = parse_string(v),
+                "additional_cache_miss" => me.additional_cache_miss = parse_string(v),
+                "additional_script" => me.additional_script = parse_string(v),
+                "required_packages" => me.required_packages = parse_string(v),
+                "working_directory" => me.working_directory = parse_string(v),
+                "additional_args" => me.additional_args = parse_string(v),
+                "custom_cargo_commands" => me.custom_cargo_commands = parse_string(v),
+                "docker_context" => me.docker_context = parse_string(v),
+                "dockerfile" => me.dockerfile = parse_string(v),
+                "docker_image" => me.docker_image = parse_string(v),
+                "docker_registry" => me.docker_registry = parse_string(v),
                 "force_nonrequired_publish_test" => {
                     me.force_nonrequired_publish_test = Some(v.into())
                 }
                 "binary_sign_build" => me.binary_sign_build = Some(v.into()),
-                "binary_application_name" => {
-                    me.binary_application_name = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
                 "binary_targets" => {
                     me.binary_targets = match v {
                         Value::String(s) => serde_json::from_str(&s).ok(),
                         _ => None,
                     }
                 }
+                "binary_application_name" => me.binary_application_name = parse_string(v),
                 "report_release" => me.report_release = Some(v.into()),
                 _ => {}
             }

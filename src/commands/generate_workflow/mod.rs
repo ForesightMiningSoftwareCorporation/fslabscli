@@ -598,32 +598,78 @@ pub async fn generate_workflow(
             None => Default::default(),
         };
         let job_working_directory = member.path.to_string_lossy().to_string();
+        let publish_private_registry = Some(
+            match member.publish_detail.cargo.publish
+                && !(member.publish_detail.cargo.allow_public
+                    && (member
+                        .publish_detail
+                        .cargo
+                        .registry
+                        .clone()
+                        .unwrap_or(vec!["public".to_string()])
+                        == vec!["public"]))
+            {
+                true => format!(
+                    "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
+                    &check_job_key, member_key
+                ),
+                false => "false".to_string(),
+            },
+        );
+        let publish_public_registry = Some(
+            match member.publish_detail.cargo.publish
+                && (member.publish_detail.cargo.allow_public
+                    && (member
+                        .publish_detail
+                        .cargo
+                        .registry
+                        .clone()
+                        .unwrap_or(vec!["public".to_string()])
+                        == vec!["public"]))
+            {
+                true => format!(
+                    "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
+                    &check_job_key, member_key
+                ),
+                false => "false".to_string(),
+            },
+        );
+        let publish_docker = Some(match member.publish_detail.docker.publish {
+            true => format!(
+                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.docker.publish }}}}",
+                &check_job_key, member_key
+            ),
+            false => "false".to_string(),
+        });
+        let publish_npm_napi = Some(match member.publish_detail.npm_napi.publish {
+            true => format!(
+                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.npm_napi.publish }}}}",
+                &check_job_key, member_key
+            ),
+            false => "false".to_string(),
+        });
+        let publish_binary = Some(match member.publish_detail.binary.publish {
+            true => format!(
+                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
+                &check_job_key, member_key
+            ),
+            false => "false".to_string(),
+        });
+        let publish_installer = Some(match member.publish_detail.binary.installer.publish {
+            true => format!(
+                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
+                &check_job_key, member_key
+            ),
+            false => "false".to_string(),
+        });
         let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
             working_directory: Some(job_working_directory.clone()),
             publish: Some(StringBool(member.publish)),
-            publish_private_registry: Some(StringBool(
-                member.publish_detail.cargo.publish
-                    && !(member.publish_detail.cargo.allow_public
-                        && (member
-                            .publish_detail
-                            .cargo
-                            .registry
-                            .clone()
-                            .unwrap_or(vec!["public".to_string()])
-                            == vec!["public"])),
-            )),
-            publish_public_registry: Some(StringBool(
-                member.publish_detail.cargo.publish
-                    && (member.publish_detail.cargo.allow_public
-                        && (member
-                            .publish_detail
-                            .cargo
-                            .registry
-                            .clone()
-                            .unwrap_or(vec!["public".to_string()])
-                            == vec!["public"])),
-            )),
-            publish_docker: Some(StringBool(member.publish_detail.docker.publish)),
+            publish_private_registry,
+            publish_public_registry,
+            publish_docker,
+            publish_npm_napi,
+            publish_binary,
             docker_image: match member.publish_detail.docker.publish {
                 true => Some(member.package.clone()),
                 false => None,
@@ -632,8 +678,6 @@ pub async fn generate_workflow(
                 true => member.publish_detail.docker.repository.clone(),
                 false => None,
             },
-            publish_npm_napi: Some(StringBool(member.publish_detail.npm_napi.publish)),
-            publish_binary: Some(StringBool(member.publish_detail.binary.publish)),
             binary_sign_build: match member.publish_detail.binary.publish {
                 true => Some(StringBool(member.publish_detail.binary.sign)),
                 false => None,
@@ -724,7 +768,7 @@ pub async fn generate_workflow(
                     with: Some(
                         PublishWorkflowArgs {
                             publish: Some(StringBool(true)),
-                            publish_installer: Some(StringBool(true)),
+                            publish_installer,
                             binary_application_name: Some(member.publish_detail.binary.name.clone()),
             working_directory: Some(job_working_directory.clone()),
             skip_test: Some(StringBool(true)),

@@ -1,6 +1,7 @@
 use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -14,6 +15,7 @@ use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
+use toml::from_str as toml_from_str;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
@@ -290,6 +292,28 @@ impl Display for Results {
     }
 }
 
+#[derive(Deserialize)]
+struct RustToolchain {
+    pub channel: String,
+}
+
+#[derive(Deserialize)]
+struct RustToolchainFile {
+    pub toolchain: RustToolchain,
+}
+
+fn parse_toolchain(working_directory: &Path) -> String {
+    let toml_content = match fs::read_to_string(working_directory.join("rust-toolchain.toml")) {
+        Ok(content) => content,
+        Err(_) => return "1.74".to_string(),
+    };
+    let rust_toolchain: RustToolchainFile = match toml_from_str(&toml_content) {
+        Ok(r) => r,
+        Err(_) => return "1.74".to_string(),
+    };
+    rust_toolchain.toolchain.channel
+}
+
 pub async fn check_workspace(
     options: Box<Options>,
     working_directory: PathBuf,
@@ -415,7 +439,7 @@ pub async fn check_workspace(
                         &mut docker,
                         &binary_store,
                         options.release_channel.clone(),
-                        "1.74".to_string(), //todo: infer
+                        parse_toolchain(&working_directory),
                     )
                     .await
                 {
