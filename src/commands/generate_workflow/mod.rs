@@ -98,6 +98,8 @@ pub struct GithubWorkflowTriggerPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs: Option<IndexMap<String, GithubWorkflowInput>>,
@@ -378,6 +380,7 @@ pub async fn generate_workflow(
         GithubWorkflowTrigger::PullRequest,
         GithubWorkflowTriggerPayload {
             branches: None,
+            tags: None,
             paths: None,
             inputs: None,
             secrets: None,
@@ -388,6 +391,11 @@ pub async fn generate_workflow(
         GithubWorkflowTrigger::Push,
         GithubWorkflowTriggerPayload {
             branches: Some(vec!["main".to_string()]),
+            tags: Some(vec![
+                "*-alpha-*.*.*".to_string(),
+                "*-beta-*.*.*".to_string(),
+                "*-prod-*.*.*".to_string(),
+            ]),
             paths: None,
             inputs: None,
             secrets: None,
@@ -398,6 +406,7 @@ pub async fn generate_workflow(
         GithubWorkflowTrigger::WorkflowDispatch,
         GithubWorkflowTriggerPayload {
             branches: None,
+            tags: None,
             paths: None,
             inputs: Some(IndexMap::from([(
                 "publish".to_string(),
