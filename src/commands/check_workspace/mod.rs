@@ -65,8 +65,10 @@ pub struct Options {
     binary_store_container_name: Option<String>,
     #[arg(long, env)]
     binary_store_access_key: Option<String>,
-    #[arg(long, default_value = "nightly")]
-    release_channel: String,
+    #[arg(long)]
+    release_channel: Option<String>,
+    #[arg(long)]
+    toolchain: Option<String>,
     #[arg(long, default_value_t = false)]
     progress: bool,
     #[arg(long, default_value_t = false)]
@@ -423,7 +425,31 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
+    let toolchain = match options.toolchain {
+        Some(t) => t,
+        None => parse_toolchain(&working_directory),
+    };
     for package_key in package_keys.clone() {
+        let release_channel = match options.release_channel.clone() {
+            Some(r) => r,
+            None => {
+                // Parse from the environment
+                match std::env::var("GITHUB_REF") {
+                    Ok(r) => {
+                        if r.starts_with(&format!("refs/tags/{}-alpha", package_key)) {
+                            "alpha".to_string()
+                        } else if r.starts_with(&format!("refs/tags/{}-beta", package_key)) {
+                            "beta".to_string()
+                        } else if r.starts_with(&format!("refs/tags/{}-prod", package_key)) {
+                            "prod".to_string()
+                        } else {
+                            "nightly".to_string()
+                        }
+                    }
+                    Err(_) => "nightly".to_string(),
+                }
+            }
+        };
         if let Some(ref pb) = pb {
             pb.inc(1);
         }
@@ -438,8 +464,8 @@ pub async fn check_workspace(
                         &cargo,
                         &mut docker,
                         &binary_store,
-                        options.release_channel.clone(),
-                        parse_toolchain(&working_directory),
+                        release_channel,
+                        toolchain.clone(),
                     )
                     .await
                 {

@@ -108,17 +108,9 @@ impl PackageMetadataFslabsCiPublishBinary {
                 "{}/{}/{}-{}-{}-v{}{}",
                 name, release_channel, name, target, toolchain, version, extension
             ));
-            log::info!(
-                "BINARY: checking if version {} of {} already exists {:?}: {}",
-                version,
-                name,
-                self,
-                blob_path,
-            );
             match object_store.get_client().head(&blob_path).await {
                 Ok(_) => {}
-                Err(e) => {
-                    println!("Got error: {}", e);
+                Err(_) => {
                     publish = true;
                 }
             };
