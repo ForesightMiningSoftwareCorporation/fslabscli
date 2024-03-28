@@ -487,7 +487,7 @@ pub async fn generate_workflow(
                     let github_secret_key = scope.clone().replace('.', "_").to_ascii_uppercase();
                     let run = format!(
                         r#"
-echo "@{scope}:registry = https://npm.pkg.github.com >> .npmrc"
+echo "@{scope}:registry=https://npm.pkg.github.com >> .npmrc"
 echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOKEN }}}} >> .npmrc"
                     "#
                     );
