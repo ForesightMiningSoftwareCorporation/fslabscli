@@ -573,6 +573,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
     }
     let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
     member_keys.sort();
+    let base_if = "always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
     let mut actual_tests: Vec<String> = vec![];
     for member_key in member_keys {
         let Some(member) = members.0.get(&member_key) else {
@@ -601,7 +602,6 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         if !member.test_detail.skip.unwrap_or(false) && !split_workflows {
             publish_needs.push(test_job_key.clone());
         }
-        let base_if = "always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
         let mut publish_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let mut test_if = base_if.clone();
         if !options.no_check_changed_and_publish {
@@ -817,7 +817,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
     // Add Tests Reporting
     test_workflow.jobs.insert("test_results".to_string(), GithubWorkflowJob {
         name: Some("Tests Results".to_string()),
-        job_if: Some("always()".to_string()),
+        job_if: Some("always() && !contains(needs.*.result, 'cancelled')".to_string()),
             uses: Some(
                 format!(
                     "ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@{}",

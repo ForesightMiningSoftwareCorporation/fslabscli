@@ -1,0 +1,10 @@
+name: Update Pre Commit Repo
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  generate_release_workflows:
+    uses: ForesightMiningSoftwareCorporation/github/.github/workflows/update_pre_commit.yml@v2
+    secrets: inherit
