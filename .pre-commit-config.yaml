@@ -1,0 +1,20 @@
+default_stages:
+  - pre-commit
+  - pre-push
+fail_fast: true
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.2
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/mpalmer/action-validator
+    rev: v0.6.0
+    hooks:
+      - id: action-validator
+  - repo: https://github.com/ForesightMiningSoftwareCorporation/pre-commit
+    rev: v1.0.2
+    hooks:
+      - id: cargo-fmt
+      - id: cargo-check
+      - id: cargo-clippy
+      - id: cargo-lock
