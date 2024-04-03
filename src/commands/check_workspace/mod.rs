@@ -436,11 +436,19 @@ pub async fn check_workspace(
                 // Parse from the environment
                 match std::env::var("GITHUB_REF") {
                     Ok(r) => {
-                        if r.starts_with(&format!("refs/tags/{}-alpha", package_key)) {
+                        // Regarding installer and launcher, we need to check the tag of their counterpart
+                        let mut check_key = package_key.clone();
+                        if package_key.ends_with("_launcher") {
+                            check_key = check_key.replace("_launcher", "");
+                        }
+                        if package_key.ends_with("_installer") {
+                            check_key = check_key.replace("_installer", "");
+                        }
+                        if r.starts_with(&format!("refs/tags/{}-alpha", check_key)) {
                             "alpha".to_string()
-                        } else if r.starts_with(&format!("refs/tags/{}-beta", package_key)) {
+                        } else if r.starts_with(&format!("refs/tags/{}-beta", check_key)) {
                             "beta".to_string()
-                        } else if r.starts_with(&format!("refs/tags/{}-prod", package_key)) {
+                        } else if r.starts_with(&format!("refs/tags/{}-prod", check_key)) {
                             "prod".to_string()
                         } else {
                             "nightly".to_string()
