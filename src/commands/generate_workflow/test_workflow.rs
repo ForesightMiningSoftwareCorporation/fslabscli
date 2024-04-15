@@ -31,6 +31,8 @@ pub struct TestWorkflowArgs {
     pub skip_miri_test: Option<StringBool>,
     /// Should the publish dry-run test be marked as required
     pub test_publish_required: Option<StringBool>,
+    /// Should a postgres service be started and feeded through env variable
+    pub service_database: Option<StringBool>,
 }
 
 impl TestWorkflowArgs {
@@ -49,6 +51,7 @@ impl TestWorkflowArgs {
             fail_fast: self.fail_fast.or(other.fail_fast),
             skip_miri_test: self.skip_miri_test.or(other.skip_miri_test),
             test_publish_required: self.test_publish_required.or(other.test_publish_required),
+            service_database: self.service_database.or(other.service_database),
         }
     }
 }
@@ -109,6 +112,9 @@ impl From<TestWorkflowArgs> for IndexMap<String, Value> {
                 "test_publish_required".to_string(),
                 test_publish_required.into(),
             );
+        }
+        if let Some(service_database) = val.service_database {
+            map.insert("service_database".to_string(), service_database.into());
         }
         map
     }
@@ -184,6 +190,7 @@ impl From<IndexMap<String, Value>> for TestWorkflowArgs {
                 "fail_fast" => me.fail_fast = Some(v.into()),
                 "skip_miri_test" => me.skip_miri_test = Some(v.into()),
                 "test_publish_required" => me.test_publish_required = Some(v.into()),
+                "service_database" => me.service_database = Some(v.into()),
                 _ => {}
             };
         }
