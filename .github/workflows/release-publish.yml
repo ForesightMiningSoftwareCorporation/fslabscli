@@ -3,6 +3,10 @@ on:
   push:
     branches:
     - main
+    tags:
+    - '*-alpha-*.*.*'
+    - '*-beta-*.*.*'
+    - '*-prod-*.*.*'
   workflow_dispatch:
     inputs:
       publish:
@@ -16,9 +20,7 @@ jobs:
   check_changed_and_publish:
     name: Check which workspace member changed and / or needs publishing
     runs-on:
-    - self-hosted
-    - standard
-    - ${{ github.run_id }}__check_changed__${{ github.run_attempt }}
+    - rust-1-77-scale-set
     outputs:
       workspace: ${{ steps.check_workspace.outputs.workspace }}
     steps:
@@ -55,13 +57,13 @@ jobs:
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@v2
     needs:
     - check_changed_and_publish
-    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish) }}
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish) }}
     with:
       publish: 'true'
-      publish_private_registry: 'true'
+      publish_private_registry: ${{ fromJson(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish_detail.cargo.publish }}
       publish_public_registry: 'false'
       publish_docker: 'false'
-      publish_binary: 'true'
+      publish_binary: ${{ fromJson(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish_detail.binary.publish }}
       publish_npm_napi: 'false'
       working_directory: .
       binary_sign_build: 'false'

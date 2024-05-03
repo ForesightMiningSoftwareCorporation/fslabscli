@@ -552,11 +552,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             name: Some(
                 "Check which workspace member changed and / or needs publishing".to_string(),
             ),
-            runs_on: Some(vec![
-                "self-hosted".to_string(),
-                options.nomad_runner_label,
-                "${{ github.run_id }}__check_changed__${{ github.run_attempt }}".to_string(),
-            ]),
+            runs_on: Some(vec!["rust-1-77-scale-set".to_string()]),
             outputs: Some(IndexMap::from([(
                 "workspace".to_string(),
                 "${{ steps.check_workspace.outputs.workspace }}".to_string(),
