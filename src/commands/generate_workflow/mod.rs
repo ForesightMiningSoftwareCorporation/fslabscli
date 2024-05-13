@@ -33,13 +33,11 @@ concurrency:
 jobs:
 "#;
 
-const CHECK_SCRIPT: &str = r#"BASE_REF=${{ github.base_ref }}
-HEAD_REF=${{ github.head_ref }}
-if [ -z "$HEAD_REF" ]; then
+const CHECK_SCRIPT: &str = r#"if [ -z "$HEAD_REF" ]; then
   CHECK_CHANGED=()
 else
-  CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/${{ github.base_ref }}' '--changed-head-ref' '${{ github.head_ref }}')
-  git fetch origin ${{ github.base_ref }} --depth 1
+  CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/$BASE_REF' '--changed-head-ref' '$HEAD_REF')
+  git fetch origin $BASE_REF --depth 1
 fi
 echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
 
@@ -543,6 +541,10 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 working_directory: Some(".".to_string()),
                 id: Some("check_workspace".to_string()),
                 shell: Some("bash".to_string()),
+                env: Some(IndexMap::from([
+                    ("BASE_REF".to_string(), "${{ github.base_ref }}".to_string()),
+                    ("HEAD_REF".to_string(), "${{ github.head_ref }}".to_string()),
+                ])),
                 run: Some(CHECK_SCRIPT.to_string()),
                 ..Default::default()
             },

@@ -5,8 +5,6 @@ use crate::commands::generate_workflow::StringBool;
 
 #[derive(Default, Clone, Debug)]
 pub struct TestWorkflowArgs {
-    /// Package that needs to be installed before Rust compilation can happens
-    pub required_packages: Option<String>,
     /// Rust toolchain to install. Do not set this to moving targets like "stable", instead leave it empty and regularly bump the default in this file.
     pub toolchain: Option<String>,
     /// Rust toolchain to install. Do not set this to moving targets like "nightly", instead leave it empty and regularly bump the default in this file.
@@ -38,7 +36,6 @@ pub struct TestWorkflowArgs {
 impl TestWorkflowArgs {
     pub fn merge(self, other: TestWorkflowArgs) -> Self {
         Self {
-            required_packages: self.required_packages.or(other.required_packages),
             toolchain: self.toolchain.or(other.toolchain),
             nightly_toolchain: self.nightly_toolchain.or(other.nightly_toolchain),
             additional_args: self.additional_args.or(other.additional_args),
@@ -59,9 +56,6 @@ impl TestWorkflowArgs {
 impl From<TestWorkflowArgs> for IndexMap<String, Value> {
     fn from(val: TestWorkflowArgs) -> Self {
         let mut map: IndexMap<String, Value> = IndexMap::new();
-        if let Some(required_packages) = val.required_packages {
-            map.insert("required_packages".to_string(), required_packages.into());
-        }
         if let Some(toolchain) = val.toolchain {
             map.insert("toolchain".to_string(), toolchain.into());
         }
@@ -127,12 +121,6 @@ impl From<IndexMap<String, Value>> for TestWorkflowArgs {
         };
         for (k, v) in value {
             match k.as_str() {
-                "required_packages" => {
-                    me.required_packages = match v {
-                        Value::String(s) => Some(s),
-                        _ => None,
-                    }
-                }
                 "toolchain" => {
                     me.toolchain = match v {
                         Value::String(s) => Some(s),

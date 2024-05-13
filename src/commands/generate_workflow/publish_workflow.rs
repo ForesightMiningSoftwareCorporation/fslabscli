@@ -43,8 +43,6 @@ pub struct PublishWorkflowArgs {
     pub additional_cache_miss: Option<String>,
     /// Additional script to run before the additional packages
     pub additional_script: Option<String>,
-    /// Package that needs to be installed before Rust compilation can happens
-    pub required_packages: Option<String>,
     /// Working directory to run the cargo command
     pub working_directory: Option<String>,
     /// Additional arguments to pass to the cargo command
@@ -95,7 +93,6 @@ impl PublishWorkflowArgs {
             additional_cache_key: self.additional_cache_key.or(other.additional_cache_key),
             additional_cache_miss: self.additional_cache_miss.or(other.additional_cache_miss),
             additional_script: self.additional_script.or(other.additional_script),
-            required_packages: self.required_packages.or(other.required_packages),
             working_directory: self.working_directory.or(other.working_directory),
             additional_args: self.additional_args.or(other.additional_args),
             custom_cargo_commands: self.custom_cargo_commands.or(other.custom_cargo_commands),
@@ -147,7 +144,6 @@ impl From<IndexMap<String, Value>> for PublishWorkflowArgs {
                 "additional_cache_key" => me.additional_cache_key = parse_string(v),
                 "additional_cache_miss" => me.additional_cache_miss = parse_string(v),
                 "additional_script" => me.additional_script = parse_string(v),
-                "required_packages" => me.required_packages = parse_string(v),
                 "working_directory" => me.working_directory = parse_string(v),
                 "additional_args" => me.additional_args = parse_string(v),
                 "custom_cargo_commands" => me.custom_cargo_commands = parse_string(v),
@@ -245,9 +241,6 @@ impl From<PublishWorkflowArgs> for IndexMap<String, Value> {
         }
         if let Some(additional_script) = val.additional_script {
             map.insert("additional_script".to_string(), additional_script.into());
-        }
-        if let Some(required_packages) = val.required_packages {
-            map.insert("required_packages".to_string(), required_packages.into());
         }
         if let Some(working_directory) = val.working_directory {
             map.insert("working_directory".to_string(), working_directory.into());
