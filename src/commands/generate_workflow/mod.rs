@@ -33,11 +33,11 @@ concurrency:
 jobs:
 "#;
 
-const CHECK_SCRIPT: &str = r#"if [ -z "$HEAD_REF" ]; then
+const CHECK_SCRIPT: &str = r#"if [ -z "${HEAD_REF}" ]; then
   CHECK_CHANGED=()
 else
-  CHECK_CHANGED=('--check-changed' '--changed-base-ref' 'origin/$BASE_REF' '--changed-head-ref' '$HEAD_REF')
-  git fetch origin $BASE_REF --depth 1
+  CHECK_CHANGED=('--check-changed' '--changed-base-ref' "origin/${BASE_REF}" '--changed-head-ref' "${HEAD_REF}")
+  git fetch origin ${BASE_REF} --depth 1
 fi
 echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
 
@@ -554,7 +554,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             name: Some(
                 "Check which workspace member changed and / or needs publishing".to_string(),
             ),
-            runs_on: Some(vec!["rust-1-77-scale-set".to_string()]),
+            runs_on: Some(vec!["ci-scale-set".to_string()]),
             outputs: Some(IndexMap::from([(
                 "workspace".to_string(),
                 "${{ steps.check_workspace.outputs.workspace }}".to_string(),
