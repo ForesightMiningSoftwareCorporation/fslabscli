@@ -362,8 +362,28 @@ pub async fn check_workspace(
                     package.clone(),
                     working_directory.clone(),
                 ) {
-                    Ok(r) => {
-                        packages.insert(r.package.clone(), r);
+                    Ok(package) => {
+                        let package_key = package.package.clone();
+
+                        // If we are in a tag, we are only looking for the packages that build a launcher or installer. Otherwise, we are looking at all the packages
+                        match std::env::var("GITHUB_REF") {
+                            Ok(env_string) => {
+                                // Regarding installer and launcher, we need to check the tag of their counterpart
+
+                                if env_string.starts_with("refs/tags") {
+                                    if package_key.ends_with("_launcher")
+                                        || package_key.ends_with("_installer")
+                                    {
+                                        packages.insert(package.package.clone(), package);
+                                    }
+                                } else {
+                                    packages.insert(package.package.clone(), package);
+                                }
+                            }
+                            Err(_) => {
+                                packages.insert(package.package.clone(), package);
+                            }
+                        }
                     }
                     Err(e) => {
                         let error_msg = format!("Could not check package {}: {}", package.name, e);
