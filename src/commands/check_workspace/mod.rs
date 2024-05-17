@@ -511,9 +511,14 @@ pub async fn check_workspace(
                 if let Ok(env_string) = std::env::var("GITHUB_REF") {
                     // Regarding installer and launcher, we need to check the tag of their counterpart
                     if env_string.starts_with("refs/tags") {
-                        if package_key.ends_with("_launcher") || package_key.ends_with("_installer")
-                        {
-                        } else {
+                        let mut check_key = package_key.clone();
+                        if package_key.ends_with("_launcher") {
+                            check_key = check_key.replace("_launcher", "");
+                        }
+                        if package_key.ends_with("_installer") {
+                            check_key = check_key.replace("_installer", "");
+                        }
+                        if !env_string.starts_with(&format!("refs/tags/{}", check_key)) {
                             package.publish = false;
                         }
                     }
