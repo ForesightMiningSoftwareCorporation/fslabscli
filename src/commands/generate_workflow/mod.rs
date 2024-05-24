@@ -795,6 +795,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                         PublishWorkflowArgs {
                             publish: Some(StringBool(true)),
                             publish_installer,
+                            binary_sign_build: Some(StringBool(member.publish_detail.binary.sign)),
                             binary_application_name: Some(member.publish_detail.binary.name.clone()),
             working_directory: Some(job_working_directory.clone()),
             skip_test: Some(StringBool(true)),
