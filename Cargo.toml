@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
 description = "Command line interface for helping FSLABS ci"
+license = "MIT OR Apache-2.0"
 publish = ["foresight-mining-software-corporation"]
 
 [dependencies]
