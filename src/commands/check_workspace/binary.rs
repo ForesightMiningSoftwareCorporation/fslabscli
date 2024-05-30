@@ -75,6 +75,7 @@ fn default_installer_path() -> String {
 #[serde(rename_all = "snake_case")]
 pub struct PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel {
     pub upgrade_code: Option<String>,
+    pub guid_prefix: Option<String>,
 }
 
 impl PackageMetadataFslabsCiPublishBinary {
