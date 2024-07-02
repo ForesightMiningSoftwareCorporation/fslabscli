@@ -615,8 +615,8 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 publish_if, &check_job_key, member_key
             );
             test_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed)",
-                test_if, &check_job_key, member_key,
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed || fromJSON(needs.{}.outputs.{}.dependencies_changed))",
+                test_if, &check_job_key, member_key,&check_job_key, member_key,
             );
         }
         let cargo_publish_options: PublishWorkflowArgs = match member.publish_detail.args.clone() {

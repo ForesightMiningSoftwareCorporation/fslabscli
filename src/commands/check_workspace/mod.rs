@@ -1,4 +1,5 @@
 use ignore::WalkBuilder;
+use std::cmp;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -318,7 +319,10 @@ impl PrettyPrintable for Results {
         // We need to calculate pad ots for `workspace` `package` `version`
         let workspace_len = results.iter().map(|v| v.workspace.len()).max().unwrap_or(0);
         let package_len = results.iter().map(|v| v.package.len()).max().unwrap_or(0);
-        let version_len = results.iter().map(|v| v.version.len()).max().unwrap_or(0);
+        let version_len = cmp::max(
+            results.iter().map(|v| v.version.len()).max().unwrap_or(0),
+            7,
+        );
         let out: Vec<String> = vec![
             format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-"),
             format!("| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |", "Workspace", "Package", "Version", "Publish", "Tests"),
@@ -335,7 +339,7 @@ impl PrettyPrintable for Results {
                     bool_to_emoji(v.publish_detail.npm_napi.publish),
                     bool_to_emoji(v.publish_detail.binary.publish),
                     bool_to_emoji(v.publish),
-                    bool_to_emoji(v.changed)
+                    bool_to_emoji(v.changed || v.dependencies_changed )
                 )
             })
             .collect::<Vec<String>>()].concat().join("\n")
