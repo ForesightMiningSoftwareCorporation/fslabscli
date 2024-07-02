@@ -98,7 +98,7 @@ impl NpmRCConfig {
         }
 
         if let Ok(lines) = read_lines(npmrc_path.clone()) {
-            for line in lines.flatten() {
+            for line in lines.map_while(Result::ok) {
                 // Registry
                 let token_value: Vec<&str> = line.split(":_authToken=").collect();
                 if token_value.len() == 2 {
