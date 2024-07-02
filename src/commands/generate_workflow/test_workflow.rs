@@ -31,6 +31,8 @@ pub struct TestWorkflowArgs {
     pub test_publish_required: Option<StringBool>,
     /// Should a postgres service be started and feeded through env variable
     pub service_database: Option<StringBool>,
+    /// Should an azurite service be started and feeded through env variable
+    pub service_azurite: Option<StringBool>,
 }
 
 impl TestWorkflowArgs {
@@ -49,6 +51,7 @@ impl TestWorkflowArgs {
             skip_miri_test: self.skip_miri_test.or(other.skip_miri_test),
             test_publish_required: self.test_publish_required.or(other.test_publish_required),
             service_database: self.service_database.or(other.service_database),
+            service_azurite: self.service_azurite.or(other.service_azurite),
         }
     }
 }
@@ -109,6 +112,9 @@ impl From<TestWorkflowArgs> for IndexMap<String, Value> {
         }
         if let Some(service_database) = val.service_database {
             map.insert("service_database".to_string(), service_database.into());
+        }
+        if let Some(service_azurite) = val.service_azurite {
+            map.insert("service_azurite".to_string(), service_azurite.into());
         }
         map
     }
@@ -179,6 +185,7 @@ impl From<IndexMap<String, Value>> for TestWorkflowArgs {
                 "skip_miri_test" => me.skip_miri_test = Some(v.into()),
                 "test_publish_required" => me.test_publish_required = Some(v.into()),
                 "service_database" => me.service_database = Some(v.into()),
+                "service_azurite" => me.service_azurite = Some(v.into()),
                 _ => {}
             };
         }

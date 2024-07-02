@@ -127,7 +127,7 @@ pub struct PackageMetadataFslabsCiPublish {
     #[serde(default = "PackageMetadataFslabsCiPublishBinary::default")]
     pub binary: PackageMetadataFslabsCiPublishBinary,
     #[serde(default)]
-    pub args: Option<IndexMap<String, Value>>,
+    pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,
 }
@@ -135,7 +135,7 @@ pub struct PackageMetadataFslabsCiPublish {
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiTest {
     #[serde(default)]
-    pub args: Option<IndexMap<String, Value>>,
+    pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::TestWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     pub env: Option<IndexMap<String, String>>,
     pub skip: Option<bool>,
 }
