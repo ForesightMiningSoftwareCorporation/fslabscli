@@ -115,6 +115,7 @@ pub struct Result {
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
+    pub perform_test: bool,
     pub test_detail: PackageMetadataFslabsCiTest,
 }
 
@@ -339,7 +340,7 @@ impl PrettyPrintable for Results {
                     bool_to_emoji(v.publish_detail.npm_napi.publish),
                     bool_to_emoji(v.publish_detail.binary.publish),
                     bool_to_emoji(v.publish),
-                    bool_to_emoji(v.changed || v.dependencies_changed )
+                    bool_to_emoji(v.perform_test )
                 )
             })
             .collect::<Vec<String>>()].concat().join("\n")
@@ -781,6 +782,13 @@ pub async fn check_workspace(
                     .map(|p| p.package.clone())
                     .collect();
                 mark_dependants_as_changed(&mut packages, &dependant);
+            }
+        }
+    }
+    for package_key in package_keys.clone() {
+        if let Some(package) = packages.get_mut(&package_key) {
+            if package.changed || package.dependencies_changed || package.publish {
+                package.perform_test = true;
             }
         }
     }
