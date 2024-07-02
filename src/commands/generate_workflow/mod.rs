@@ -620,7 +620,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 publish_if, &check_job_key, member_key
             );
             test_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed || fromJSON(needs.{}.outputs.{}.dependencies_changed))",
+                "{} && (fromJSON(needs.{}.outputs.workspace).{}.changed || fromJSON(needs.{}.outputs.worskpace).{}.dependencies_changed)",
                 test_if, &check_job_key, member_key,&check_job_key, member_key,
             );
         }
