@@ -30,6 +30,8 @@ struct Cli {
     verbose: u8,
     #[arg(long, global = true)]
     json: bool,
+    #[arg(short, long, global = true)]
+    pretty_print: bool,
     #[arg(short, long, global = true, default_value = ".", required = false)]
     working_directory: PathBuf,
     #[arg(hide = true, default_value = "fslabscli")]
@@ -77,9 +79,19 @@ pub fn setup_logging(verbosity: u8) {
         .unwrap();
 }
 
-fn display_or_json<T: Serialize + Display>(json: bool, results: T) -> String {
+pub trait PrettyPrintable {
+    fn pretty_print(&self) -> String;
+}
+
+fn display_results<T: Serialize + Display + PrettyPrintable>(
+    json: bool,
+    pretty_print: bool,
+    results: T,
+) -> String {
     if json {
         serde_json::to_string(&results).unwrap()
+    } else if pretty_print {
+        results.pretty_print()
     } else {
         format!("{}", results)
     }
@@ -96,13 +108,13 @@ async fn main() {
     let result = match cli.command {
         Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
             .await
-            .map(|r| display_or_json(cli.json, r)),
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
             .await
-            .map(|r| display_or_json(cli.json, r)),
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Summaries(options) => summaries(options, working_directory)
             .await
-            .map(|r| display_or_json(cli.json, r)),
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
     };
     match result {
         Ok(r) => {

@@ -21,6 +21,7 @@ use publish_workflow::PublishWorkflowArgs;
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
 use crate::commands::generate_workflow::test_workflow::TestWorkflowArgs;
 use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
+use crate::PrettyPrintable;
 
 mod publish_workflow;
 mod test_workflow;
@@ -70,6 +71,12 @@ pub struct GenerateResult {}
 impl Display for GenerateResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "")
+    }
+}
+
+impl PrettyPrintable for GenerateResult {
+    fn pretty_print(&self) -> String {
+        format!("{}", self)
     }
 }
 

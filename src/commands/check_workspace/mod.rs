@@ -1,4 +1,5 @@
 use ignore::WalkBuilder;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -24,7 +25,7 @@ use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
-use crate::utils;
+use crate::{utils, PrettyPrintable};
 
 mod binary;
 mod cargo;
@@ -292,6 +293,52 @@ impl Display for Results {
             writeln!(f, "{}: {}", k, v)?;
         }
         Ok(())
+    }
+}
+
+fn bool_to_emoji(value: bool) -> &'static str {
+    if value {
+        "x"
+    } else {
+        ""
+    }
+}
+impl PrettyPrintable for Results {
+    fn pretty_print(&self) -> String {
+        let mut results: Vec<&Result> = self.0.values().collect();
+        results.sort_by(|a, b| {
+            // Compare primary keys first
+            match a.workspace.cmp(&b.workspace) {
+                // If primary keys are equal, compare backup keys
+                Ordering::Equal => a.package.cmp(&b.package),
+                // Otherwise, return the ordering of the primary keys
+                other => other,
+            }
+        });
+        // We need to calculate pad ots for `workspace` `package` `version`
+        let workspace_len = results.iter().map(|v| v.workspace.len()).max().unwrap_or(0);
+        let package_len = results.iter().map(|v| v.package.len()).max().unwrap_or(0);
+        let version_len = results.iter().map(|v| v.version.len()).max().unwrap_or(0);
+        let out: Vec<String> = vec![
+            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-"),
+            format!("| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |", "Workspace", "Package", "Version", "Publish", "Tests"),
+            format!("| {:workspace_len$} | {:package_len$} | {:version_len$} | docker | cargo | npm | binary | any | {:^5} |", "", "", "", ""),
+            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-")];
+        [out,
+         results.iter()
+            .map(|v| {
+                format!(
+                    "| {:workspace_len$} | {:package_len$} | {:version_len$} | {:^6} | {:^5} | {:^3} | {:^6} | {:^3} | {:^5} | ",
+                    v.workspace, v.package, v.version,
+                    bool_to_emoji(v.publish_detail.docker.publish),
+                    bool_to_emoji(v.publish_detail.cargo.publish),
+                    bool_to_emoji(v.publish_detail.npm_napi.publish),
+                    bool_to_emoji(v.publish_detail.binary.publish),
+                    bool_to_emoji(v.publish),
+                    bool_to_emoji(v.changed)
+                )
+            })
+            .collect::<Vec<String>>()].concat().join("\n")
     }
 }
 
