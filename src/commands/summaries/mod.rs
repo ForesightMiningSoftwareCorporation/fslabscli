@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use template::Summary;
 
 use crate::commands::summaries::template::SummaryTableCell;
+use crate::PrettyPrintable;
 
 mod template;
 
@@ -59,6 +60,12 @@ pub struct SummariesResult {}
 impl Display for SummariesResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "")
+    }
+}
+
+impl PrettyPrintable for SummariesResult {
+    fn pretty_print(&self) -> String {
+        format!("{}", self)
     }
 }
 
