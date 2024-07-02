@@ -687,6 +687,11 @@ pub async fn check_workspace(
                 if let Some(ref pb) = pb {
                     pb.set_message(format!("{} : {}", package.workspace, package.package));
                 }
+                if options.check_publish && package.publish {
+                    // mark package as changed
+                    package.changed = true;
+                    continue;
+                }
                 // let Ok(folder_entry) = head_tree.get_path(package_folder) else {
                 //     continue;
                 // };
@@ -751,7 +756,6 @@ pub async fn check_workspace(
             ));
         }
 
-        // Check changed from a git pov
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
                 pb.inc(1);
