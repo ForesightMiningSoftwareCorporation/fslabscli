@@ -45,6 +45,8 @@ pub struct Options {
     hide_previous_pr_comment: bool,
     #[arg(long, default_value = "https://ci.fslabs.ca")]
     mining_bot_url: String,
+    #[arg(long, default_value_t, value_enum)]
+    check_changed_outcome: RunOutcome,
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
@@ -54,6 +56,14 @@ enum RunType {
     Publishing,
 }
 
+#[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, PartialEq)]
+enum RunOutcome {
+    #[default]
+    Success,
+    Failure,
+    Cancelled,
+    Skipped,
+}
 #[derive(Serialize)]
 pub struct SummariesResult {}
 
@@ -583,6 +593,9 @@ pub async fn summaries(
     options: Box<Options>,
     working_directory: PathBuf,
 ) -> anyhow::Result<SummariesResult> {
+    if options.check_changed_outcome.clone() != RunOutcome::Success {
+        anyhow::bail!("Ci error, please check `check_workspace` job and ping devops ");
+    }
     match options.run_type.clone() {
         RunType::Checks => checks_summaries(options, working_directory).await,
         RunType::Publishing => publishing_summaries(options, working_directory).await,

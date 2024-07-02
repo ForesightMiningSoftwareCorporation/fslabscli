@@ -821,6 +821,8 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         }
     }
     // Add Tests Reporting
+    let mut test_reporting_needs = vec![check_job_key.clone()];
+    test_reporting_needs.extend(actual_tests);
     test_workflow.jobs.insert("test_results".to_string(), GithubWorkflowJob {
         name: Some("Tests Results".to_string()),
         job_if: Some("always() && !contains(needs.*.result, 'cancelled')".to_string()),
@@ -830,12 +832,17 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                     options.build_workflow_version
                 )
             ),
-        with: Some(IndexMap::from([("run_type".to_string(), "checks".into())])),
+        with: Some(
+            IndexMap::from([
+                ("run_type".to_string(), "checks".into()),
+                ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
+            ])
+        ),
         secrets: Some(GithubWorkflowJobSecret {
             inherit: true,
             secrets: None,
         }),
-        needs: Some(actual_tests),
+        needs: Some(test_reporting_needs),
 
         ..Default::default()
     });
