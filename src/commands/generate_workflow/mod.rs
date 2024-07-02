@@ -40,7 +40,12 @@ else
   CHECK_CHANGED=('--check-changed' '--changed-base-ref' "origin/${BASE_REF}" '--changed-head-ref' "${HEAD_REF}")
   git fetch origin ${BASE_REF} --depth 1
 fi
-echo workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}") >> $GITHUB_OUTPUT"#;
+workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}")
+if [ $? -ne 0 ]; then
+  echo "Could not check workspace"
+  exit 1
+fi
+echo workspace=${workspace} >> $GITHUB_OUTPUT"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
