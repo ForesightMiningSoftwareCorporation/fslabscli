@@ -1,9 +1,12 @@
+use indexmap::IndexMap;
 use object_store::{
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
     path::Path,
     ObjectStore,
 };
 use serde::{Deserialize, Serialize};
+
+use super::ResultDependency;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +51,8 @@ pub struct PackageMetadataFslabsCiPublishBinaryInstaller {
     pub alpha: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
     pub beta: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
     pub prod: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
+    #[serde(default)]
+    pub sub_apps: IndexMap<String, ResultDependency>,
 }
 
 impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
@@ -59,6 +64,7 @@ impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
             alpha: Default::default(),
             beta: Default::default(),
             prod: Default::default(),
+            sub_apps: Default::default(),
         }
     }
 }

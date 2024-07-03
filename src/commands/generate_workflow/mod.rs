@@ -596,7 +596,9 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             true => vec![check_job_key.clone()],
         };
         for dependency in &member.dependencies {
-            test_needs.push(format!("test_{}", dependency.package))
+            if let Some(package_name) = dependency.package.clone() {
+                test_needs.push(format!("test_{}", package_name))
+            }
         }
         let mut publish_needs = match options.no_depends_on_template_jobs {
             false => initial_jobs.clone(),
@@ -604,8 +606,9 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         };
         for dependency in &member.dependencies {
             if dependency.publishable {
-                // Can this really be?
-                publish_needs.push(format!("publish_{}", dependency.package))
+                if let Some(package_name) = dependency.package.clone() {
+                    publish_needs.push(format!("publish_{}", package_name))
+                }
             }
         }
         // add self test to publish needs and not split

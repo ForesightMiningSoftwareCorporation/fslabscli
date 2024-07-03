@@ -96,10 +96,11 @@ impl Options {
     }
 }
 
-#[derive(Serialize, Clone, Default, Debug)]
+#[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
-    pub package: String,
+    pub package: Option<String>,
     pub version: String,
+    #[serde(default)]
     pub publishable: bool,
 }
 
@@ -143,14 +144,14 @@ pub struct PackageMetadataFslabsCiTest {
     pub skip: Option<bool>,
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 struct PackageMetadataFslabsCi {
     pub publish: Option<PackageMetadataFslabsCiPublish>,
     #[serde(default)]
     pub test: Option<PackageMetadataFslabsCiTest>,
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 struct PackageMetadata {
     pub fslabs: PackageMetadataFslabsCi,
 }
@@ -165,7 +166,7 @@ impl Result {
             .to_path_buf();
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
-        let mut publish = metadata.fslabs.publish.unwrap_or_default();
+        let mut publish = metadata.clone().fslabs.publish.unwrap_or_default();
         publish.cargo.registry = match package.publish.clone() {
             Some(r) => Some(r.clone()),
             None => {
@@ -185,15 +186,31 @@ impl Result {
             .map(|r| r.len() == 1)
             .unwrap_or(false);
 
-        let dependencies = package
+        let dependencies: Vec<ResultDependency> = package
             .dependencies
             .into_iter()
             .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
-                package: d.name,
+                package: Some(d.name),
                 version: d.req.to_string(),
                 publishable: false,
             })
+            // Add subapps
+            .chain(
+                publish
+                    .binary
+                    .installer
+                    .sub_apps
+                    .clone()
+                    .into_iter()
+                    .map(|(k, mut v)| {
+                        if v.package.is_none() {
+                            v.package = Some(k);
+                        }
+                        v
+                    })
+                    .collect::<Vec<ResultDependency>>(),
+            )
             .collect();
         let mut path = path.strip_prefix(root_dir)?.to_path_buf();
         if path.to_string_lossy().is_empty() {
@@ -606,12 +623,16 @@ pub async fn check_workspace(
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            package
-                .dependencies
-                .retain(|d| package_keys.contains(&d.package));
+            package.dependencies.retain(|d| {
+                d.package
+                    .as_ref()
+                    .map_or(false, |p| package_keys.contains(p))
+            });
             for dep in &mut package.dependencies {
-                if let Some(dep_p) = publish_status.get(&dep.package) {
-                    dep.publishable = *dep_p;
+                if let Some(package_name) = &dep.package {
+                    if let Some(dep_p) = publish_status.get(package_name) {
+                        dep.publishable = *dep_p;
+                    }
                 }
             }
         }
@@ -642,12 +663,14 @@ pub async fn check_workspace(
             }
             // for each dependency we need to edit it and add ourself as a dependeant
             for dependency in package.dependencies.clone() {
-                if let Some(dependant) = packages.get_mut(&dependency.package) {
-                    dependant.dependant.push(ResultDependency {
-                        package: package.package.clone(),
-                        version: package.version.clone(),
-                        publishable: package.publish,
-                    });
+                if let Some(package_name) = dependency.package {
+                    if let Some(dependant) = packages.get_mut(&package_name) {
+                        dependant.dependant.push(ResultDependency {
+                            package: Some(package.package.clone()),
+                            version: package.version.clone(),
+                            publishable: package.publish,
+                        });
+                    }
                 }
             }
         }
@@ -779,7 +802,7 @@ pub async fn check_workspace(
                 let dependant: Vec<String> = package
                     .dependant
                     .iter()
-                    .map(|p| p.package.clone())
+                    .filter_map(|p| p.package.clone())
                     .collect();
                 mark_dependants_as_changed(&mut packages, &dependant);
             }
@@ -810,7 +833,7 @@ fn mark_dependants_as_changed(all_packages: &mut HashMap<String, Result>, change
             let dependant: Vec<String> = package
                 .dependant
                 .iter()
-                .map(|p| p.package.clone())
+                .filter_map(|p| p.package.clone())
                 .collect();
             mark_dependants_as_changed(all_packages, &dependant);
         }
