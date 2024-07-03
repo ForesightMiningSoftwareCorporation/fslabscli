@@ -9,6 +9,7 @@ use log4rs::encode::pattern::PatternEncoder;
 use serde::Serialize;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
+use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
 
@@ -51,6 +52,7 @@ enum Commands {
     /// Check which crates needs to be published
     CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
+    GenerateWix(Box<GenerateWixOptions>),
     Summaries(Box<SummariesOptions>),
 }
 
@@ -110,6 +112,9 @@ async fn main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::GenerateWix(options) => generate_wix(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Summaries(options) => summaries(options, working_directory)

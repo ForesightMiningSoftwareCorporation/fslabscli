@@ -102,6 +102,7 @@ pub struct ResultDependency {
     pub version: String,
     #[serde(default)]
     pub publishable: bool,
+    pub guid_suffix: Option<String>,
 }
 
 #[derive(Serialize, Clone, Default, Debug)]
@@ -194,6 +195,7 @@ impl Result {
                 package: Some(d.name),
                 version: d.req.to_string(),
                 publishable: false,
+                guid_suffix: None,
             })
             // Add subapps
             .chain(
@@ -669,6 +671,7 @@ pub async fn check_workspace(
                             package: Some(package.package.clone()),
                             version: package.version.clone(),
                             publishable: package.publish,
+                            guid_suffix: None,
                         });
                     }
                 }

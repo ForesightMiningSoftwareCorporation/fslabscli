@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fslabscli"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -32,6 +32,7 @@ serde_yaml = "0.9.31"
 void = "1.0.2"
 indexmap = { version = "2.2", features = ["serde"] }
 serde_with = { version = "3.6", features = ["macros"] }
+quick-xml = {version = "0.35.0", features = ["serialize"] }
 url = "2.5.0"
 itertools = "0.12"
 num = "0.4.1"
@@ -39,6 +40,7 @@ octocrab = "0.34.3"
 ignore = "0.4.22"
 object_store = { version = "0.9.1", features = ["azure"]}
 toml = "0.8.12"
+convert_case = "0.6.0"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"

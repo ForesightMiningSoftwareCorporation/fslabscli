@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -255,6 +255,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "console",
+ "convert_case",
  "exitcode",
  "git2",
  "http-body-util",
@@ -272,6 +273,7 @@ dependencies = [
  "object_store",
  "oci-distribution",
  "octocrab",
+ "quick-xml 0.35.0",
  "rustls 0.22.4",
  "serde",
  "serde_json",
@@ -398,6 +400,15 @@ dependencies = [
  "libc",
  "unicode-width",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -1531,7 +1542,7 @@ dependencies = [
  "itertools",
  "parking_lot",
  "percent-encoding",
- "quick-xml",
+ "quick-xml 0.31.0",
  "rand",
  "reqwest",
  "ring",
@@ -1776,6 +1787,16 @@ name = "quick-xml"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1004a344b30a54e2ee58d66a71b32d2db2feb0a31f9a2d302bf0536f15de2a33"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86e446ed58cef1bbfe847bc2fda0e2e4ea9f0e57b90c507d4781292590d72a4e"
 dependencies = [
  "memchr",
  "serde",
@@ -2804,6 +2825,12 @@ checksum = "a56d1686db2308d901306f92a263857ef59ea39678a5458e7cb17f01415101f5"
 dependencies = [
  "tinyvec",
 ]
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4c87d22b6e3f4a18d4d40ef354e97c90fcb14dd91d7dc0aa9d8a1172ebf7202"
 
 [[package]]
 name = "unicode-width"
