@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use indexmap::IndexMap;
 use object_store::{
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
@@ -99,9 +100,21 @@ impl PackageMetadataFslabsCiPublishBinary {
         let Some(object_store) = store else {
             return Ok(());
         };
+        // Nightly version should be current date
+
+        let rc_version = match release_channel.as_ref() {
+            "nightly" => {
+                if name.ends_with("_launcher") {
+                    version.clone()
+                } else {
+                    Utc::now().date_naive().to_string()
+                }
+            }
+            _ => version.clone(),
+        };
         log::debug!(
             "BINARY: checking if version {} of {} already exists {:?}",
-            version,
+            rc_version,
             name,
             self
         );
@@ -113,7 +126,7 @@ impl PackageMetadataFslabsCiPublishBinary {
             };
             let blob_path = Path::from(format!(
                 "{}/{}/{}-{}-{}-v{}{}",
-                name, release_channel, name, target, toolchain, version, extension
+                name, release_channel, name, target, toolchain, rc_version, extension
             ));
             match object_store.get_client().head(&blob_path).await {
                 Ok(_) => {}
