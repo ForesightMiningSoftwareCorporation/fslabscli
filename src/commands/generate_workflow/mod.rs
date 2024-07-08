@@ -68,6 +68,8 @@ pub struct Options {
     nomad_runner_label: String,
     #[arg(long, default_value_t = false)]
     test_publish_required_disabled: bool,
+    #[arg(long, default_value = "0 19 * * *")]
+    nightly_cron_schedule: String,
 }
 
 #[derive(Serialize)]
@@ -496,7 +498,7 @@ pub async fn generate_workflow(
             inputs: None,
             secrets: None,
             crons: Some(vec![GithubWorkflowCron {
-                cron: "0 3 * * *".to_string(),
+                cron: options.nightly_cron_schedule.clone(),
             }]),
         },
     );
