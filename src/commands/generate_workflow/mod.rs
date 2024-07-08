@@ -9,7 +9,7 @@ use std::str::FromStr;
 use anyhow::Context;
 use clap::Parser;
 use indexmap::IndexMap;
-use serde::ser::SerializeMap;
+use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::{formats::PreferOne, serde_as, OneOrMany};
 use serde_yaml::Value;
@@ -104,6 +104,11 @@ pub struct GithubWorkflowSecret {
 }
 
 #[derive(Serialize, Debug, Deserialize, PartialEq, Clone)]
+pub struct GithubWorkflowCron {
+    pub cron: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct GithubWorkflowTriggerPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<String>>,
@@ -115,6 +120,41 @@ pub struct GithubWorkflowTriggerPayload {
     pub inputs: Option<IndexMap<String, GithubWorkflowInput>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<IndexMap<String, GithubWorkflowSecret>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crons: Option<Vec<GithubWorkflowCron>>,
+}
+
+impl Serialize for GithubWorkflowTriggerPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(crons) = self.crons.clone() {
+            let mut seq = serializer.serialize_seq(Some(crons.len()))?;
+            for e in crons {
+                seq.serialize_element(&e)?;
+            }
+            seq.end()
+        } else {
+            let mut state = serializer.serialize_struct("GithubWorkflowTriggerPayload", 5)?;
+            if let Some(branches) = &self.branches {
+                state.serialize_field("branches", branches)?;
+            }
+            if let Some(tags) = &self.tags {
+                state.serialize_field("tags", tags)?;
+            }
+            if let Some(paths) = &self.paths {
+                state.serialize_field("paths", paths)?;
+            }
+            if let Some(inputs) = &self.inputs {
+                state.serialize_field("inputs", inputs)?;
+            }
+            if let Some(secrets) = &self.secrets {
+                state.serialize_field("secrets", secrets)?;
+            }
+            state.end()
+        }
+    }
 }
 
 #[derive(Serialize, Debug, Deserialize, Eq, PartialEq, Hash, Ord, PartialOrd, Clone)]
@@ -124,6 +164,7 @@ pub enum GithubWorkflowTrigger {
     Push,
     WorkflowCall,
     WorkflowDispatch,
+    Schedule,
 }
 
 #[derive(Debug, Default, Deserialize, Eq, PartialEq, Clone)]
@@ -362,6 +403,18 @@ pub async fn generate_workflow(
     options: Box<Options>,
     working_directory: PathBuf,
 ) -> anyhow::Result<GenerateResult> {
+    // Get Directory information
+    let members = check_workspace(
+        Box::new(
+            CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish),
+        ),
+        working_directory,
+    )
+    .await
+    .map_err(|e| {
+        log::error!("Unparseable template: {}", e);
+        e
+    })?;
     // Get Base Workflow
     let workflow_template: GithubWorkflow = match options.template {
         Some(template) => {
@@ -394,6 +447,7 @@ pub async fn generate_workflow(
             paths: None,
             inputs: None,
             secrets: None,
+            crons: None,
         },
     );
     // Publish should be done on push to main
@@ -409,6 +463,7 @@ pub async fn generate_workflow(
             paths: None,
             inputs: None,
             secrets: None,
+            crons: None,
         },
     );
     // Publish should be done on manual dispatch
@@ -428,6 +483,21 @@ pub async fn generate_workflow(
                 },
             )])),
             secrets: None,
+            crons: None,
+        },
+    );
+    // If we have binaries to publish,  nightly Publish should be done every night at 3AM
+    publish_triggers.insert(
+        GithubWorkflowTrigger::Schedule,
+        GithubWorkflowTriggerPayload {
+            branches: None,
+            tags: None,
+            paths: None,
+            inputs: None,
+            secrets: None,
+            crons: Some(vec![GithubWorkflowCron {
+                cron: "0 3 * * *".to_string(),
+            }]),
         },
     );
     if split_workflows {
@@ -445,18 +515,6 @@ pub async fn generate_workflow(
     let mut initial_jobs: Vec<String> = test_workflow.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
-    // Get Directory information
-    let members = check_workspace(
-        Box::new(
-            CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish),
-        ),
-        working_directory,
-    )
-    .await
-    .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
-        e
-    })?;
     if !options.no_check_changed_and_publish {
         // We need to login to any docker registry required
         let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
