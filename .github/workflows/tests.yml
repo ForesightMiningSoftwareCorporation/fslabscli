@@ -12,16 +12,10 @@ jobs:
     outputs:
       workspace: ${{ steps.check_workspace.outputs.workspace }}
     steps:
-    - id: generate_token
-      name: Generate token
-      uses: tibdex/github-app-token@v2.1.0
-      with:
-        app_id: ${{ secrets.FMSC_BOT_GITHUB_APP_ID }}
-        private_key: ${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}
     - name: Install FSLABScli
       uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
       with:
-        token: ${{ steps.generate_token.outputs.token }}
+        token: ${{ secrets.GITHUB_TOKEN }}
     - name: Checkout repo
       uses: actions/checkout@v4
       with:
@@ -51,7 +45,7 @@ jobs:
     uses: ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@v2
     needs:
     - check_changed_and_publish
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.changed || fromJSON(needs.check_changed_and_publish.outputs.cargo-fslabscli.dependencies_changed)) }}
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.perform_test) }}
     with:
       working_directory: .
       test_publish_required: 'false'
