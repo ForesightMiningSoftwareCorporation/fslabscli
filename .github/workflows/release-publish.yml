@@ -13,6 +13,8 @@ on:
         description: Trigger with publish
         required: false
         type: boolean
+  schedule:
+  - cron: 0 19 * * *
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -24,16 +26,10 @@ jobs:
     outputs:
       workspace: ${{ steps.check_workspace.outputs.workspace }}
     steps:
-    - id: generate_token
-      name: Generate token
-      uses: tibdex/github-app-token@v2.1.0
-      with:
-        app_id: ${{ secrets.FMSC_BOT_GITHUB_APP_ID }}
-        private_key: ${{ secrets.FMSC_BOT_GITHUB_APP_PRIVATE_KEY }}
     - name: Install FSLABScli
       uses: ForesightMiningSoftwareCorporation/fslabscli-action@v1
       with:
-        token: ${{ steps.generate_token.outputs.token }}
+        token: ${{ secrets.GITHUB_TOKEN }}
     - name: Checkout repo
       uses: actions/checkout@v4
       with:
@@ -66,7 +62,7 @@ jobs:
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) && (fromJSON(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish) }}
     with:
       publish: 'true'
-      publish_private_registry: 'false'
+      publish_private_registry: ${{ fromJson(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish_detail.cargo.publish }}
       publish_public_registry: 'false'
       publish_docker: 'false'
       publish_binary: ${{ fromJson(needs.check_changed_and_publish.outputs.workspace).cargo-fslabscli.publish_detail.binary.publish }}
