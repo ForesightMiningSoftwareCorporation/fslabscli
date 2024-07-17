@@ -124,9 +124,13 @@ impl PackageMetadataFslabsCiPublishBinary {
                 true => ".exe",
                 false => "",
             };
+            let signed = match self.sign {
+                true => "-signed",
+                false => "",
+            };
             let blob_path = Path::from(format!(
-                "{}/{}/{}-{}-{}-v{}{}",
-                name, release_channel, name, target, toolchain, rc_version, extension
+                "{}/{}/{}-{}-{}-v{}{}{}",
+                name, release_channel, name, target, toolchain, rc_version, signed, extension
             ));
             match object_store.get_client().head(&blob_path).await {
                 Ok(_) => {}
