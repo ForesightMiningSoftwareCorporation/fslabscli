@@ -489,19 +489,25 @@ pub async fn generate_workflow(
         },
     );
     // If we have binaries to publish,  nightly Publish should be done every night at 3AM
-    publish_triggers.insert(
-        GithubWorkflowTrigger::Schedule,
-        GithubWorkflowTriggerPayload {
-            branches: None,
-            tags: None,
-            paths: None,
-            inputs: None,
-            secrets: None,
-            crons: Some(vec![GithubWorkflowCron {
-                cron: options.nightly_cron_schedule.clone(),
-            }]),
-        },
-    );
+    if members
+        .0
+        .values()
+        .any(|r| r.publish_detail.binary.publish || r.publish_detail.binary.installer.publish)
+    {
+        publish_triggers.insert(
+            GithubWorkflowTrigger::Schedule,
+            GithubWorkflowTriggerPayload {
+                branches: None,
+                tags: None,
+                paths: None,
+                inputs: None,
+                secrets: None,
+                crons: Some(vec![GithubWorkflowCron {
+                    cron: options.nightly_cron_schedule.clone(),
+                }]),
+            },
+        );
+    }
     if split_workflows {
         test_workflow.name = Some("CI - CD: Tests".to_string());
         publish_workflow.name = Some("CI - CD: Publishing".to_string());
