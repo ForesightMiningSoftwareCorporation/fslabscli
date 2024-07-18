@@ -1,4 +1,3 @@
-use chrono::prelude::*;
 use indexmap::IndexMap;
 use object_store::{
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
@@ -7,7 +6,7 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::ResultDependency;
+use super::{ReleaseChannel, ResultDependency};
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +16,7 @@ pub struct PackageMetadataFslabsCiPublishBinary {
     #[serde(default)]
     pub sign: bool,
     pub name: String,
+    pub fallback_name: Option<String>,
     #[serde(default)]
     pub launcher: PackageMetadataFslabsCiPublishBinaryLauncher,
     #[serde(default)]
@@ -91,7 +91,7 @@ impl PackageMetadataFslabsCiPublishBinary {
         name: String,
         version: String,
         store: &Option<BinaryStore>,
-        release_channel: String,
+        release_channel: &ReleaseChannel,
         toolchain: String,
     ) -> anyhow::Result<()> {
         if !self.publish {
@@ -100,25 +100,6 @@ impl PackageMetadataFslabsCiPublishBinary {
         let Some(object_store) = store else {
             return Ok(());
         };
-        // Nightly version should be current date
-
-        let rc_version = match release_channel.as_ref() {
-            "nightly" => {
-                if name.ends_with("_launcher") {
-                    version.clone()
-                } else {
-                    let now = Utc::now();
-                    now.format("%Y.%-m.%d").to_string()
-                }
-            }
-            _ => version.clone(),
-        };
-        log::debug!(
-            "BINARY: checking if version {} of {} already exists {:?}",
-            rc_version,
-            name,
-            self
-        );
         let mut publish = false;
         for target in self.targets.clone() {
             let extension = match target.contains("windows") {
@@ -130,8 +111,8 @@ impl PackageMetadataFslabsCiPublishBinary {
                 false => "",
             };
             let blob_path = Path::from(format!(
-                "{}/{}/{}-{}-{}-v{}{}{}",
-                name, release_channel, name, target, toolchain, rc_version, signed, extension
+                "{}/{:?}/{}-{}-{}-v{}{}{}",
+                name, release_channel, name, target, toolchain, version, signed, extension
             ));
             match object_store.get_client().head(&blob_path).await {
                 Ok(_) => {}

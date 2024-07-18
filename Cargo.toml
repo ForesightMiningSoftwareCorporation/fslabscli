@@ -26,6 +26,8 @@ hyper-util = { version = "0.1", default-features = false, features = ["tokio", "
 rustls = { version = "0.22", default-features = false, features = ["tls12"] }
 http-body-util = "0.1"
 console = "0.15.8"
+strum = "0.26"
+strum_macros = "0.26"
 indicatif = "0.17.8"
 git2 = { version = "0.18.2", default-features = false } # No need to clone so can remove https and ssh support
 serde_yaml = "0.9.31"
@@ -42,6 +44,7 @@ object_store = { version = "0.9.1", features = ["azure"]}
 toml = "0.8.12"
 convert_case = "0.6.0"
 chrono = "0.4"
+rust-toolchain-file = "0.1"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"
