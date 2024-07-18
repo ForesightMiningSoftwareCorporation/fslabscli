@@ -16,15 +16,19 @@ use serde_yaml::Value;
 use void::Void;
 
 use itertools::Itertools;
-use publish_workflow::PublishWorkflowArgs;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
-use crate::commands::generate_workflow::test_workflow::TestWorkflowArgs;
 use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
 
+use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
+use self::workflows::Workflow;
+
+use super::check_workspace::Results as Members;
+
 mod publish_workflow;
 mod test_workflow;
+mod workflows;
 
 const EMPTY_WORKFLOW: &str = r#"
 concurrency:
@@ -59,8 +63,6 @@ pub struct Options {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
-    #[arg(long, default_value_t = false)]
-    no_check_changed_and_publish: bool,
     #[arg(long, default_value = "v2")]
     build_workflow_version: String,
     #[arg(long, default_value_t = false)]
@@ -71,6 +73,9 @@ pub struct Options {
     test_publish_required_disabled: bool,
     #[arg(long, default_value = "0 19 * * *")]
     nightly_cron_schedule: String,
+    /// Default branch to consider for publishing and schedule release
+    #[arg(long, default_value = "main")]
+    default_branch: String,
 }
 
 #[derive(Serialize)]
@@ -111,7 +116,7 @@ pub struct GithubWorkflowCron {
     pub cron: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Deserialize, PartialEq, Clone, Default)]
 pub struct GithubWorkflowTriggerPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<String>>,
@@ -402,93 +407,187 @@ impl Serialize for StringBool {
     }
 }
 
-pub async fn generate_workflow(
-    options: Box<Options>,
-    working_directory: PathBuf,
-) -> anyhow::Result<GenerateResult> {
-    // Get Directory information
-    let members = check_workspace(
-        Box::new(
-            CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish),
-        ),
-        working_directory,
-    )
-    .await
-    .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
-        e
-    })?;
-    // Get Base Workflow
-    let workflow_template: GithubWorkflow = match options.template {
+fn get_base_workflow(template: &Option<PathBuf>, name: String) -> anyhow::Result<GithubWorkflow> {
+    let mut workflow: GithubWorkflow = (match template {
         Some(template) => {
             let file = File::open(template)?;
             let reader = BufReader::new(file);
             serde_yaml::from_reader(reader)
         }
         None => serde_yaml::from_str(EMPTY_WORKFLOW),
-    }
-    .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
-        e
     })
     .with_context(|| "Could not parse workflow template")?;
-    let mut publish_workflow = workflow_template.clone();
-    let mut test_workflow = workflow_template;
-    let split_workflows = options.output_release.is_some();
+    workflow.name = Some(name);
+    Ok(workflow)
+}
+
+fn get_publish_triggers(
+    default_branch: String,
+) -> IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> {
+    IndexMap::from([
+        (
+            GithubWorkflowTrigger::Push,
+            GithubWorkflowTriggerPayload {
+                branches: Some(vec![default_branch]),
+                tags: Some(vec![
+                    "*-alpha-*.*.*".to_string(),
+                    "*-beta-*.*.*".to_string(),
+                    "*-prod-*.*.*".to_string(),
+                ]),
+                ..Default::default()
+            },
+        ),
+        (
+            GithubWorkflowTrigger::WorkflowDispatch,
+            GithubWorkflowTriggerPayload {
+                inputs: Some(IndexMap::from([(
+                    "publish".to_string(),
+                    GithubWorkflowInput {
+                        description: "Trigger with publish".to_string(),
+                        default: None,
+                        required: false,
+                        input_type: "boolean".to_string(),
+                    },
+                )])),
+                ..Default::default()
+            },
+        ),
+    ])
+}
+
+fn get_test_triggers() -> IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> {
+    IndexMap::from([(
+        GithubWorkflowTrigger::PullRequest,
+        GithubWorkflowTriggerPayload::default(),
+    )])
+}
+
+fn get_check_workspace_job(members: &Members, required_jobs: Vec<String>) -> GithubWorkflowJob {
+    // For each package published to docker, we need to login to the registry in order to check if the package needs publishing
+    let docker_steps: Vec<GithubWorkflowJobSteps> = members
+        .0
+        .iter()
+        .filter(|(_, v)| v.publish_detail.docker.publish)
+        .unique_by(|(_, v)| v.publish_detail.docker.repository.clone())
+        .filter_map(|(_, v)| {
+            if let Some(repo) = v.publish_detail.docker.repository.clone() {
+                let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
+                return Some(GithubWorkflowJobSteps {
+                    name: Some(format!("Docker Login to {}", repo)),
+                    uses: Some("docker/login-action@v3".to_string()),
+                    with: Some(IndexMap::from([
+                        ("registry".to_string(), repo.clone()),
+                        (
+                            "username".to_string(),
+                            format!("${{{{ secrets.DOCKER_{}_USERNAME }}}}", github_secret_key),
+                        ),
+                        (
+                            "password".to_string(),
+                            format!("${{{{ secrets.DOCKER_{}_PASSWORD }}}}", github_secret_key),
+                        ),
+                    ])),
+                    ..Default::default()
+                });
+            }
+            None
+        })
+        .collect();
+    // For each packaeg published to npm, we need to login to the npm registry
+    let npm_steps: Vec<GithubWorkflowJobSteps> = members
+        .0
+        .iter()
+        .filter(|(_, v)| v.publish_detail.npm_napi.publish)
+        .unique_by(|(_, v)| v.publish_detail.npm_napi.scope.clone())
+        .filter_map(|(_, v)| {
+            if let Some(scope) = v.publish_detail.npm_napi.scope.clone() {
+                let github_secret_key = scope.clone().replace('.', "_").to_ascii_uppercase();
+                let run = format!(
+                    r#"
+echo "@{scope}:registry=https://npm.pkg.github.com/" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOKEN }}}}" >> ~/.npmrc
+                    "#
+                );
+                return Some(GithubWorkflowJobSteps {
+                    name: Some(format!("NPM Login to {}", scope)),
+                    shell: Some("bash".to_string()),
+                    run: Some(run.to_string()),
+                    ..Default::default()
+                });
+            }
+            None
+        })
+        .collect();
+    let steps = vec![
+        GithubWorkflowJobSteps {
+            name: Some("Install FSLABScli".to_string()),
+            uses: Some("ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string()),
+            with: Some(IndexMap::from([(
+                "token".to_string(),
+                "${{ secrets.GITHUB_TOKEN }}".to_string(),
+            )])),
+            ..Default::default()
+        },
+        GithubWorkflowJobSteps {
+            name: Some("Checkout repo".to_string()),
+            uses: Some("actions/checkout@v4".to_string()),
+            with: Some(IndexMap::from([(
+                "ref".to_string(),
+                "${{ github.head_ref }}".to_string(),
+            )])),
+            ..Default::default()
+        },
+        GithubWorkflowJobSteps {
+            name: Some("Check workspace".to_string()),
+            working_directory: Some(".".to_string()),
+            id: Some("check_workspace".to_string()),
+            shell: Some("bash".to_string()),
+            env: Some(IndexMap::from([
+                ("BASE_REF".to_string(), "${{ github.base_ref }}".to_string()),
+                ("HEAD_REF".to_string(), "${{ github.head_ref }}".to_string()),
+            ])),
+            run: Some(CHECK_SCRIPT.to_string()),
+            ..Default::default()
+        },
+    ];
+    GithubWorkflowJob {
+        name: Some("Check which workspace member changed and / or needs publishing".to_string()),
+        runs_on: Some(vec!["ci-scale-set".to_string()]),
+        needs: Some(required_jobs),
+        outputs: Some(IndexMap::from([
+            (
+                "workspace".to_string(),
+                "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+            ),
+            (
+                "workspace_escaped".to_string(),
+                "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
+            ),
+        ])),
+        steps: Some(vec![docker_steps, npm_steps, steps].concat()),
+        ..Default::default()
+    }
+}
+
+pub async fn generate_workflow(
+    options: Box<Options>,
+    working_directory: PathBuf,
+) -> anyhow::Result<GenerateResult> {
+    // Get Directory information
+    let check_workspace_options =
+        CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish);
+    let members = check_workspace(Box::new(check_workspace_options), working_directory)
+        .await
+        .with_context(|| "Could not get directory information")?;
+    // Get workflows, useful in case where additional tools need to be run before
+    let mut publish_workflow =
+        get_base_workflow(&options.template, "CI - CD: Publishing".to_string())?;
+    let mut test_workflow = get_base_workflow(&options.template, "CI - CD: Tests".to_string())?;
 
     // Triggers
-    let mut test_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
-        IndexMap::new();
-    let mut publish_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
-        IndexMap::new();
     // Tests should be done on pr always
-    test_triggers.insert(
-        GithubWorkflowTrigger::PullRequest,
-        GithubWorkflowTriggerPayload {
-            branches: None,
-            tags: None,
-            paths: None,
-            inputs: None,
-            secrets: None,
-            crons: None,
-        },
-    );
-    // Publish should be done on push to main
-    publish_triggers.insert(
-        GithubWorkflowTrigger::Push,
-        GithubWorkflowTriggerPayload {
-            branches: Some(vec!["main".to_string()]),
-            tags: Some(vec![
-                "*-alpha-*.*.*".to_string(),
-                "*-beta-*.*.*".to_string(),
-                "*-prod-*.*.*".to_string(),
-            ]),
-            paths: None,
-            inputs: None,
-            secrets: None,
-            crons: None,
-        },
-    );
-    // Publish should be done on manual dispatch
-    publish_triggers.insert(
-        GithubWorkflowTrigger::WorkflowDispatch,
-        GithubWorkflowTriggerPayload {
-            branches: None,
-            tags: None,
-            paths: None,
-            inputs: Some(IndexMap::from([(
-                "publish".to_string(),
-                GithubWorkflowInput {
-                    description: "Trigger with publish".to_string(),
-                    default: None,
-                    required: false,
-                    input_type: "boolean".to_string(),
-                },
-            )])),
-            secrets: None,
-            crons: None,
-        },
-    );
+    let test_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
+        get_test_triggers();
+    let mut publish_triggers = get_publish_triggers(options.default_branch);
     // If we have binaries to publish,  nightly Publish should be done every night at 3AM
     if members
         .0
@@ -498,313 +597,207 @@ pub async fn generate_workflow(
         publish_triggers.insert(
             GithubWorkflowTrigger::Schedule,
             GithubWorkflowTriggerPayload {
-                branches: None,
-                tags: None,
-                paths: None,
-                inputs: None,
-                secrets: None,
                 crons: Some(vec![GithubWorkflowCron {
                     cron: options.nightly_cron_schedule.clone(),
                 }]),
+                ..Default::default()
             },
         );
     }
-    if split_workflows {
-        test_workflow.name = Some("CI - CD: Tests".to_string());
-        publish_workflow.name = Some("CI - CD: Publishing".to_string());
-    } else {
-        test_workflow.name = Some("CI - CD: Tests and Publishing".to_string());
-        test_triggers.extend(publish_triggers.clone());
-    }
     test_workflow.triggers = Some(test_triggers);
     publish_workflow.triggers = Some(publish_triggers);
-    // If we need to test for changed and publish
+
+    // Create check_workspace job, and add it to both workflows
     let check_job_key = "check_changed_and_publish".to_string();
-    // Default Publish workflow args
-    // Get Template jobs, we'll make the generated jobs depends on it
-    let mut initial_jobs: Vec<String> = test_workflow.jobs.keys().cloned().collect();
-    if !options.no_check_changed_and_publish {
-        // We need to login to any docker registry required
-        let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
-            .0
-            .iter()
-            .filter(|(_, v)| v.publish_detail.docker.publish)
-            .unique_by(|(_, v)| v.publish_detail.docker.repository.clone())
-            .filter_map(|(_, v)| {
-                if let Some(repo) = v.publish_detail.docker.repository.clone() {
-                    let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
-                    return Some(GithubWorkflowJobSteps {
-                        name: Some(format!("Docker Login to {}", repo)),
-                        uses: Some("docker/login-action@v3".to_string()),
-                        with: Some(IndexMap::from([
-                            ("registry".to_string(), repo.clone()),
-                            (
-                                "username".to_string(),
-                                format!("${{{{ secrets.DOCKER_{}_USERNAME }}}}", github_secret_key),
-                            ),
-                            (
-                                "password".to_string(),
-                                format!("${{{{ secrets.DOCKER_{}_PASSWORD }}}}", github_secret_key),
-                            ),
-                        ])),
-                        ..Default::default()
-                    });
-                }
-                None
-            })
-            .collect();
-        let npm_steps: Vec<GithubWorkflowJobSteps> = members
-            .0
-            .iter()
-            .filter(|(_, v)| v.publish_detail.npm_napi.publish)
-            .unique_by(|(_, v)| v.publish_detail.npm_napi.scope.clone())
-            .filter_map(|(_, v)| {
-                if let Some(scope) = v.publish_detail.npm_napi.scope.clone() {
-                    let github_secret_key = scope.clone().replace('.', "_").to_ascii_uppercase();
-                    let run = format!(
-                        r#"
-echo "@{scope}:registry=https://npm.pkg.github.com/" >> ~/.npmrc
-echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOKEN }}}}" >> ~/.npmrc
-                    "#
-                    );
-                    return Some(GithubWorkflowJobSteps {
-                        name: Some(format!("NPM Login to {}", scope)),
-                        shell: Some("bash".to_string()),
-                        run: Some(run.to_string()),
-                        ..Default::default()
-                    });
-                }
-                None
-            })
-            .collect();
-        registries_steps.extend(npm_steps);
-        initial_jobs.push(check_job_key.clone());
-        let steps = vec![
-            GithubWorkflowJobSteps {
-                name: Some("Install FSLABScli".to_string()),
-                uses: Some("ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string()),
-                with: Some(IndexMap::from([(
-                    "token".to_string(),
-                    "${{ secrets.GITHUB_TOKEN }}".to_string(),
-                )])),
-                ..Default::default()
-            },
-            GithubWorkflowJobSteps {
-                name: Some("Checkout repo".to_string()),
-                uses: Some("actions/checkout@v4".to_string()),
-                with: Some(IndexMap::from([(
-                    "ref".to_string(),
-                    "${{ github.head_ref }}".to_string(),
-                )])),
-                ..Default::default()
-            },
-            GithubWorkflowJobSteps {
-                name: Some("Check workspace".to_string()),
-                working_directory: Some(".".to_string()),
-                id: Some("check_workspace".to_string()),
-                shell: Some("bash".to_string()),
-                env: Some(IndexMap::from([
-                    ("BASE_REF".to_string(), "${{ github.base_ref }}".to_string()),
-                    ("HEAD_REF".to_string(), "${{ github.head_ref }}".to_string()),
-                ])),
-                run: Some(CHECK_SCRIPT.to_string()),
-                ..Default::default()
-            },
-        ];
-        registries_steps.extend(steps);
-        let check_job = GithubWorkflowJob {
-            name: Some(
-                "Check which workspace member changed and / or needs publishing".to_string(),
-            ),
-            runs_on: Some(vec!["ci-scale-set".to_string()]),
-            outputs: Some(IndexMap::from([
-                (
-                    "workspace".to_string(),
-                    "${{ steps.check_workspace.outputs.workspace }}".to_string(),
-                ),
-                (
-                    "workspace_escaped".to_string(),
-                    "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
-                ),
-            ])),
-            steps: Some(registries_steps),
-            ..Default::default()
-        };
-        test_workflow
-            .jobs
-            .insert(check_job_key.clone(), check_job.clone());
-        publish_workflow
-            .jobs
-            .insert(check_job_key.clone(), check_job);
-    }
+    let check_workspace_job =
+        get_check_workspace_job(&members, test_workflow.jobs.keys().cloned().collect());
+    test_workflow
+        .jobs
+        .insert(check_job_key.clone(), check_workspace_job.clone());
+    publish_workflow
+        .jobs
+        .insert(check_job_key.clone(), check_workspace_job);
+
     let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
     member_keys.sort();
     let base_if = "!cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
+
     let mut actual_tests: Vec<String> = vec![];
     for member_key in member_keys {
         let Some(member) = members.0.get(&member_key) else {
             continue;
         };
-        let test_job_key = format!("test_{}", member.package);
-        let publish_job_key = format!("publish_{}", member.package);
-        let mut test_needs = match options.no_depends_on_template_jobs {
-            false => initial_jobs.clone(),
-            true => vec![check_job_key.clone()],
-        };
-        for dependency in &member.dependencies {
-            if let Some(package_name) = dependency.package.clone() {
-                test_needs.push(format!("test_{}", package_name))
-            }
+        let mut working_directory = member.path.to_string_lossy().to_string();
+        if working_directory == "." {
+            working_directory = String::from("");
         }
-        let mut publish_needs = match options.no_depends_on_template_jobs {
-            false => initial_jobs.clone(),
-            true => vec![check_job_key.clone()],
-        };
+        let dynamic_value_base = format!(
+            "(fromJSON(needs.{}.outputs.workspace).{}",
+            check_job_key, member_key
+        );
+
+        let mut testing_requirements: Vec<String> = vec![];
+        let mut publishing_requirements: Vec<String> = vec![];
+
         for dependency in &member.dependencies {
             if dependency.publishable {
                 if let Some(package_name) = dependency.package.clone() {
-                    publish_needs.push(format!("publish_{}", package_name))
+                    // Each testing job needs to depends on its'previous testing job
+                    testing_requirements.push(format!("test_{}", package_name));
+
+                    let publishers = vec!["docker", "cargo", "npm_napi", "binary"];
+                    for publisher in publishers {
+                        if let Some(publish) = dependency.publishable_details.get(publisher) {
+                            if *publish {
+                                publishing_requirements
+                                    .push(format!("publish_{}_{}", publisher, package_name,));
+                            }
+                        }
+                    }
                 }
             }
         }
-        // add self test to publish needs and not split
-        if !member.test_detail.skip.unwrap_or(false) && !split_workflows {
-            publish_needs.push(test_job_key.clone());
+        let mut member_workflows: Vec<Box<dyn Workflow>> = vec![];
+        if member.publish {
+            if member.publish_detail.binary.publish {
+                member_workflows.push(Box::new(PublishRustBinaryWorkflow::new(
+                    member_key.clone(),
+                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
+                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
+                    format!(
+                        "${{{{ {}.{}) }}}}",
+                        dynamic_value_base, "publish_detail.release_channel"
+                    ),
+                    member.publish_detail.binary.targets.clone(),
+                    member.publish_detail.additional_args.clone(),
+                    working_directory,
+                    member.publish_detail.binary.sign,
+                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "publish_detail.binary.name"),
+                    format!(
+                        "${{{{ {}.{}) }}}}",
+                        dynamic_value_base, "publish_detail.binary.fallback_name"
+                    ),
+                )));
+            }
         }
-        let mut publish_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
-        let mut test_if = base_if.clone();
-        if !options.no_check_changed_and_publish {
-            publish_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.publish)",
-                publish_if, &check_job_key, member_key
-            );
-            test_if = format!(
-                "{} && (fromJSON(needs.{}.outputs.workspace).{}.perform_test)",
-                test_if, &check_job_key, member_key,
-            );
-        }
-        let cargo_publish_options: PublishWorkflowArgs = match member.publish_detail.args.clone() {
-            Some(a) => a.into(),
-            None => Default::default(),
-        };
-        let cargo_test_options: TestWorkflowArgs = match member.test_detail.args.clone() {
-            Some(a) => a.into(),
-            None => Default::default(),
-        };
-        let job_working_directory = member.path.to_string_lossy().to_string();
-        let publish_private_registry = Some(
-            match member.publish_detail.cargo.publish
-                && !(member.publish_detail.cargo.allow_public
-                    && (member
-                        .publish_detail
-                        .cargo
-                        .registry
-                        .clone()
-                        .unwrap_or(vec!["public".to_string()])
-                        == vec!["public"]))
-            {
-                true => format!(
-                    "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
-                    &check_job_key, member_key
-                ),
-                false => "false".to_string(),
-            },
-        );
-        let publish_public_registry = Some(
-            match member.publish_detail.cargo.publish
-                && (member.publish_detail.cargo.allow_public
-                    && (member
-                        .publish_detail
-                        .cargo
-                        .registry
-                        .clone()
-                        .unwrap_or(vec!["public".to_string()])
-                        == vec!["public"]))
-            {
-                true => format!(
-                    "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
-                    &check_job_key, member_key
-                ),
-                false => "false".to_string(),
-            },
-        );
-        let publish_docker = Some(match member.publish_detail.docker.publish {
-            true => format!(
-                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.docker.publish }}}}",
-                &check_job_key, member_key
-            ),
-            false => "false".to_string(),
-        });
-        let publish_npm_napi = Some(match member.publish_detail.npm_napi.publish {
-            true => format!(
-                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.npm_napi.publish }}}}",
-                &check_job_key, member_key
-            ),
-            false => "false".to_string(),
-        });
-        let publish_binary = Some(match member.publish_detail.binary.publish {
-            true => format!(
-                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
-                &check_job_key, member_key
-            ),
-            false => "false".to_string(),
-        });
-        let publish_installer = Some(match member.publish_detail.binary.installer.publish {
-            true => format!(
-                "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
-                &check_job_key, member_key
-            ),
-            false => "false".to_string(),
-        });
-        let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
-            working_directory: Some(job_working_directory.clone()),
-            publish: Some(StringBool(member.publish)),
-            publish_private_registry,
-            publish_public_registry,
-            publish_docker,
-            publish_npm_napi,
-            publish_binary,
-            docker_image: match member.publish_detail.docker.publish {
-                true => Some(member.package.clone()),
-                false => None,
-            },
-            docker_registry: match member.publish_detail.docker.publish {
-                true => member.publish_detail.docker.repository.clone(),
-                false => None,
-            },
-            binary_sign_build: match member.publish_detail.binary.publish {
-                true => Some(StringBool(member.publish_detail.binary.sign)),
-                false => None,
-            },
-            binary_targets: match member.publish_detail.binary.publish {
-                true => Some(member.publish_detail.binary.targets.clone()),
-                false => None,
-            },
-            package_detail: Some(format!(
-                "${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}",
-                &check_job_key, member_key
-            )),
-            ..Default::default()
-        }
-        .merge(cargo_publish_options.clone());
-        let test_with: TestWorkflowArgs = TestWorkflowArgs {
-            working_directory: Some(job_working_directory.clone()),
-            test_publish_required: Some(StringBool(
-                member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
-            )),
-            ..Default::default()
-        }
-        .merge(cargo_test_options.clone());
 
+        let testing_if = base_if.clone();
+        let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
+        // let publish_private_registry = Some(
+        //     match member.publish_detail.cargo.publish
+        //         && !(member.publish_detail.cargo.allow_public
+        //             && (member
+        //                 .publish_detail
+        //                 .cargo
+        //                 .registry
+        //                 .clone()
+        //                 .unwrap_or(vec!["public".to_string()])
+        //                 == vec!["public"]))
+        //     {
+        //         true => format!(
+        //             "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
+        //             &check_job_key, member_key
+        //         ),
+        //         false => "false".to_string(),
+        //     },
+        // );
+        // let publish_public_registry = Some(
+        //     // match member.publish_detail.cargo.publish
+        //         && (member.publish_detail.cargo.allow_public
+        //             && (member
+        //                 .publish_detail
+        //                 .cargo
+        //                 .registry
+        //                 .clone()
+        //                 .unwrap_or(vec!["public".to_string()])
+        //                 == vec!["public"]))
+        //     {
+        //         true => format!(
+        //             "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
+        //             &check_job_key, member_key
+        //         ),
+        //         false => "false".to_string(),
+        //     },
+        // );
+        // let publish_docker = Some(match member.publish_detail.docker.publish {
+        //     true => format!(
+        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.docker.publish }}}}",
+        //         &check_job_key, member_key
+        //     ),
+        //     false => "false".to_string(),
+        // });
+        // let publish_npm_napi = Some(match member.publish_detail.npm_napi.publish {
+        //     true => format!(
+        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.npm_napi.publish }}}}",
+        //         &check_job_key, member_key
+        //     ),
+        //     false => "false".to_string(),
+        // });
+        // let publish_binary = Some(match member.publish_detail.binary.publish {
+        //     true => format!(
+        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
+        //         &check_job_key, member_key
+        //     ),
+        //     false => "false".to_string(),
+        // });
+        // let publish_installer = Some(match member.publish_detail.binary.installer.publish {
+        //     true => format!(
+        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
+        //         &check_job_key, member_key
+        //     ),
+        //     false => "false".to_string(),
+        // });
+        // let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
+        //     working_directory: Some(job_working_directory.clone()),
+        //     publish: Some(StringBool(member.publish)),
+        //     publish_private_registry,
+        //     publish_public_registry,
+        //     publish_docker,
+        //     publish_npm_napi,
+        //     publish_binary,
+        //     docker_image: match member.publish_detail.docker.publish {
+        //         true => Some(member.package.clone()),
+        //         false => None,
+        //     },
+        //     docker_registry: match member.publish_detail.docker.publish {
+        //         true => member.publish_detail.docker.repository.clone(),
+        //         false => None,
+        //     },
+        //     binary_sign_build: match member.publish_detail.binary.publish {
+        //         true => Some(StringBool(member.publish_detail.binary.sign)),
+        //         false => None,
+        //     },
+        //     binary_targets: match member.publish_detail.binary.publish {
+        //         true => Some(member.publish_detail.binary.targets.clone()),
+        //         false => None,
+        //     },
+        //     package_detail: Some(format!(
+        //         "${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}",
+        //         &check_job_key, member_key
+        //     )),
+        //     ..Default::default()
+        // }
+        // .merge(cargo_publish_options.clone());
+        // let test_with: TestWorkflowArgs = TestWorkflowArgs {
+        //     working_directory: Some(job_working_directory.clone()),
+        //     test_publish_required: Some(StringBool(
+        //         member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
+        //     )),
+        //     ..Default::default()
+        // }
+        // .merge(cargo_test_options.clone());
+
+        let test_job_key = format!("testing_{}", member_key);
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
             uses: Some(format!(
                 "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-test.yml@{}",
                 options.build_workflow_version
             )),
-            needs: Some(test_needs),
-            job_if: Some(format!("${{{{ {} }}}}", test_if)),
-            with: Some(test_with.into()),
+            needs: Some(testing_requirements),
+            job_if: Some(format!("${{{{ {} }}}}", testing_if)),
+            with: None,
+            // with: Some(test_with.into()),
             secrets: Some(GithubWorkflowJobSecret {
                 inherit: true,
                 secrets: None,
@@ -812,77 +805,80 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             env: member.test_detail.env.clone(),
             ..Default::default()
         };
-        let publish_job = GithubWorkflowJob {
-            name: Some(format!("Publish {}: {}", member.workspace, member.package)),
-            uses: Some(
-                format!(
-                    "ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}",
-                    options.build_workflow_version
-                )
-                .to_string(),
-            ),
-            needs: Some(publish_needs),
-            job_if: Some(format!("${{{{ {} }}}}", publish_if)),
-            with: Some(publish_with.into()),
-            env: member.publish_detail.env.clone(),
-            secrets: Some(GithubWorkflowJobSecret {
-                inherit: true,
-                secrets: None,
-            }),
-            ..Default::default()
-        };
-
-        if !member.test_detail.skip.unwrap_or(false) {
-            test_workflow.jobs.insert(test_job_key.clone(), test_job);
-            actual_tests.push(test_job_key.clone());
-        }
-        if member.publish {
-            let wf = match split_workflows {
-                true => &mut publish_workflow,
-                false => &mut test_workflow,
+        for publishing_job in member_workflows.iter() {
+            let job = GithubWorkflowJob {
+                name: Some(format!(
+                    "{} {}: {}",
+                    publishing_job.job_label(),
+                    member.workspace,
+                    member.package
+                )),
+                needs: Some(publishing_requirements.clone()),
+                uses: Some(
+                    format!(
+                        "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
+                        publishing_job.workflow_name(),
+                        options.build_workflow_version
+                    )
+                    .to_string(),
+                ),
+                job_if: Some(format!("${{{{ {} && {}.publish_detail.{}.publish) }}}}", publishing_if, dynamic_value_base, publishing_job.publish_info_key())),
+                with: Some(publishing_job.get_inputs()),
+                secrets: Some(GithubWorkflowJobSecret {
+                    inherit: true,
+                    secrets: None,
+                }),
+                ..Default::default()
             };
-            wf.jobs.insert(publish_job_key.clone(), publish_job);
-            if member.publish_detail.binary.installer.publish {
-                let mut installer_needs = match options.no_depends_on_template_jobs {
-                    false => initial_jobs.clone(),
-                    true => vec![check_job_key.clone()],
-                };
-                installer_needs.push(publish_job_key.clone());
-                installer_needs.push(format!(
-                    "{}_{}",
-                    publish_job_key, member.publish_detail.binary.launcher.path
-                ));
-                // We need to add a new publish job for the installer
-                wf.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
-                    name: Some(format!(
-                        "Publish {}: {} installer",
-                        member.workspace, member.package
-                    )),
-                    uses: Some(
-                        format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version).to_string(),
-                    ),
-                    needs: Some(installer_needs),
-                    with: Some(
-                        PublishWorkflowArgs {
-                            publish: Some(StringBool(true)),
-                            publish_installer,
-                            binary_sign_build: Some(StringBool(member.publish_detail.binary.sign)),
-            working_directory: Some(job_working_directory.clone()),
-            skip_test: Some(StringBool(true)),
-            package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
-                            ..Default::default()
-                        }
-                        .into(),
-                    ),
-                    job_if: Some(format!("${{{{ {} }}}}", publish_if)),
-                    secrets: Some(GithubWorkflowJobSecret {
-                        inherit: true,
-                        secrets: None,
-                    }),
-                    ..Default::default()
-                });
-            };
+            publish_workflow.jobs.insert(
+                format!("{}_{}", publishing_job.job_prefix_key(), member.package),
+                job,
+            );
         }
+        test_workflow.jobs.insert(test_job_key.clone(), test_job);
+        actual_tests.push(test_job_key.clone());
+        // if member.publish {
+        //     publish_workflow
+        //         .jobs
+        //         .insert(publish_job_key.clone(), publish_job);
+        //     if member.publish_detail.binary.installer.publish {
+        //         let mut installer_needs = vec![check_job_key.clone()];
+        //         installer_needs.push(publish_job_key.clone());
+        //         installer_needs.push(format!(
+        //             "{}_{}",
+        //             publish_job_key, member.publish_detail.binary.launcher.path
+        //         ));
+        //         // We need to add a new publish job for the installer
+        //         publish_workflow.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
+        //             name: Some(format!(
+        //                 "Publish {}: {} installer",
+        //                 member.workspace, member.package
+        //             )),
+        //             uses: Some(
+        //                 format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version).to_string(),
+        //             ),
+        //             needs: Some(installer_needs),
+        //             with: Some(
+        //                 PublishWorkflowArgs {
+        //                     publish: Some(StringBool(true)),
+        //                     publish_installer,
+        //                     binary_sign_build: Some(StringBool(member.publish_detail.binary.sign)),
+        //     working_directory: Some(job_working_directory.clone()),
+        //     skip_test: Some(StringBool(true)),
+        //     package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
+        //                     ..Default::default()
+        //                 }
+        //                 .into(),
+        //             ),
+        //             job_if: Some(format!("${{{{ {} }}}}", publish_if)),
+        //             secrets: Some(GithubWorkflowJobSecret {
+        //                 inherit: true,
+        //                 secrets: None,
+        //             }),
+        //             ..Default::default()
+        //         });
+        //     };
+        // }
     }
     // Add Tests Reporting
     let mut test_reporting_needs = vec![check_job_key.clone()];

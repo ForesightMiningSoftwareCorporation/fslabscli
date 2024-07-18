@@ -120,6 +120,7 @@ pub struct ResultDependency {
     pub version: String,
     #[serde(default)]
     pub publishable: bool,
+    pub publishable_details: HashMap<String, bool>,
     pub guid_suffix: Option<String>,
 }
 
@@ -152,6 +153,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub binary: PackageMetadataFslabsCiPublishBinary,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
+    #[serde(default)]
+    pub additional_args: Option<String>,
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,
     #[serde(default = "ReleaseChannel::default")]
@@ -238,6 +241,7 @@ impl Result {
                 package: Some(d.name),
                 version: d.req.to_string(),
                 publishable: false,
+                publishable_details: HashMap::new(),
                 guid_suffix: None,
             })
             // Add subapps
@@ -268,7 +272,7 @@ impl Result {
                 // Parse from the environment
                 std::env::var("GITHUB_REF")
                     .map(|r| {
-                        // Regad8drding installer and launcher, we need to check the tag of their counterpart
+                        // Regarding installer and launcher, we need to check the tag of their counterpart
                         let mut check_key = package.name.clone();
                         if check_key.ends_with("_launcher") {
                             check_key = check_key.replace("_launcher", "");
@@ -733,6 +737,15 @@ pub async fn check_workspace(
                             package: Some(package.package.clone()),
                             version: package.version.clone(),
                             publishable: package.publish,
+                            publishable_details: HashMap::from([
+                                ("docker".to_string(), package.publish_detail.docker.publish),
+                                ("cargo".to_string(), package.publish_detail.cargo.publish),
+                                (
+                                    "npm_napi".to_string(),
+                                    package.publish_detail.npm_napi.publish,
+                                ),
+                                ("binary".to_string(), package.publish_detail.binary.publish),
+                            ]),
                             guid_suffix: None,
                         });
                     }
