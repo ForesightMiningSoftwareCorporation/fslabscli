@@ -617,14 +617,16 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 "Check which workspace member changed and / or needs publishing".to_string(),
             ),
             runs_on: Some(vec!["ci-scale-set".to_string()]),
-            outputs: Some(IndexMap::from([(
-                "workspace".to_string(),
-                "${{ steps.check_workspace.outputs.workspace }}".to_string(),
-            ), (
-                "workspace_escaped".to_string(),
-                "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
-
-            )])),
+            outputs: Some(IndexMap::from([
+                (
+                    "workspace".to_string(),
+                    "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+                ),
+                (
+                    "workspace_escaped".to_string(),
+                    "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
+                ),
+            ])),
             steps: Some(registries_steps),
             ..Default::default()
         };
@@ -774,15 +776,14 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 true => Some(StringBool(member.publish_detail.binary.sign)),
                 false => None,
             },
-            binary_application_name: match member.publish_detail.binary.publish {
-                true => Some(member.publish_detail.binary.name.clone()),
-                false => None,
-            },
             binary_targets: match member.publish_detail.binary.publish {
                 true => Some(member.publish_detail.binary.targets.clone()),
                 false => None,
             },
-            package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
+            package_detail: Some(format!(
+                "${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}",
+                &check_job_key, member_key
+            )),
             ..Default::default()
         }
         .merge(cargo_publish_options.clone());
@@ -866,9 +867,9 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                             publish: Some(StringBool(true)),
                             publish_installer,
                             binary_sign_build: Some(StringBool(member.publish_detail.binary.sign)),
-                            binary_application_name: Some(member.publish_detail.binary.name.clone()),
             working_directory: Some(job_working_directory.clone()),
             skip_test: Some(StringBool(true)),
+            package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
                             ..Default::default()
                         }
                         .into(),

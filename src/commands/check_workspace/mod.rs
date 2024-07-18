@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use ignore::WalkBuilder;
 use std::cmp;
 use std::cmp::Ordering;
@@ -5,6 +6,7 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -14,9 +16,11 @@ use console::{style, Emoji};
 use git2::{DiffDelta, DiffOptions, Repository};
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
+use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
+use strum_macros::EnumString;
 use toml::from_str as toml_from_str;
 
 use crate::commands::check_workspace::binary::BinaryStore;
@@ -37,6 +41,20 @@ static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 static PAPER: Emoji<'_, '_> = Emoji("📃  ", "");
 static SPARKLE: Emoji<'_, '_> = Emoji("✨ ", ":-)");
+
+const DEFAULT_TOOLCHAIN: &str = "1.76";
+const CUSTOM_EPOCH: &str = "2024-01-01";
+
+#[derive(Deserialize, Serialize, Clone, Default, Debug, EnumString)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
+pub enum ReleaseChannel {
+    #[default]
+    Nightly,
+    Alpha,
+    Beta,
+    Prod,
+}
 
 #[derive(Debug, Parser, Default)]
 #[command(about = "Check directory for crates that need to be published.")]
@@ -119,6 +137,7 @@ pub struct Result {
     pub dependencies_changed: bool,
     pub perform_test: bool,
     pub test_detail: PackageMetadataFslabsCiTest,
+    pub toolchain: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -135,6 +154,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,
+    #[serde(default = "ReleaseChannel::default")]
+    pub release_channel: ReleaseChannel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -157,14 +178,36 @@ struct PackageMetadata {
     pub fslabs: PackageMetadataFslabsCi,
 }
 
+fn get_toolchain(path: &PathBuf) -> anyhow::Result<String> {
+    Ok(
+        ToolchainParser::new(&fs::read_to_string(path.join("rust-toolchain.toml"))?)
+            .parse()?
+            .toolchain()
+            .spec()
+            .ok_or_else(|| anyhow::anyhow!("no spec"))?
+            .channel()
+            .ok_or_else(|| anyhow::anyhow!("no channel"))?
+            .name()
+            .to_string(),
+    )
+}
+
 impl Result {
-    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(
+        workspace: String,
+        package: Package,
+        root_dir: PathBuf,
+        release_channel: Option<String>,
+    ) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
             .canonicalize()?
             .parent()
             .unwrap()
             .to_path_buf();
+
+        let toolchain = get_toolchain(&root_dir).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
+
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.clone().fslabs.publish.unwrap_or_default();
@@ -218,14 +261,68 @@ impl Result {
         if path.to_string_lossy().is_empty() {
             path = PathBuf::from(".");
         }
+        // Deduct release channel
+        let release_channel: ReleaseChannel = match release_channel {
+            Some(r) => ReleaseChannel::from_str(&r).unwrap_or_default(),
+            None => {
+                // Parse from the environment
+                std::env::var("GITHUB_REF")
+                    .map(|r| {
+                        // Regad8drding installer and launcher, we need to check the tag of their counterpart
+                        let mut check_key = package.name.clone();
+                        if check_key.ends_with("_launcher") {
+                            check_key = check_key.replace("_launcher", "");
+                        }
+                        if check_key.ends_with("_installer") {
+                            check_key = check_key.replace("_installer", "");
+                        }
+                        if r.starts_with(&format!("refs/tags/{}-alpha", check_key)) {
+                            ReleaseChannel::Alpha
+                        } else if r.starts_with(&format!("refs/tags/{}-beta", check_key)) {
+                            ReleaseChannel::Beta
+                        } else if r.starts_with(&format!("refs/tags/{}-prod", check_key)) {
+                            ReleaseChannel::Prod
+                        } else {
+                            ReleaseChannel::Nightly
+                        }
+                    })
+                    .unwrap_or_default()
+            }
+        };
+        publish.release_channel = release_channel.clone();
+
+        // Deduct version based on if it's nightly or not
+        let version = match release_channel {
+            ReleaseChannel::Nightly => {
+                // Nightly version should be current date
+                if package.name.ends_with("_launcher") {
+                    package.version.to_string()
+                } else {
+                    let now = Utc::now().date_naive();
+                    let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
+                    let timestamp = (now - epoch).num_days();
+                    format!("{}.{}", package.version, timestamp)
+                }
+            }
+            _ => package.version.to_string(),
+        };
+        publish.binary.name = match release_channel {
+            ReleaseChannel::Nightly => format!("{} Nightly", publish.binary.name),
+            ReleaseChannel::Alpha => format!("{} Alpha", publish.binary.name),
+            ReleaseChannel::Beta => format!("{} Beta", publish.binary.name),
+            ReleaseChannel::Prod => publish.binary.name.clone(),
+        };
+        publish.binary.fallback_name = Some(publish.binary.name.replace(" ", "_"));
+
         Ok(Self {
             workspace,
             package: package.name,
-            version: package.version.to_string(),
+            version,
             path,
             publish_detail: publish,
             test_detail: metadata.fslabs.test.unwrap_or_default(),
             dependencies,
+            toolchain,
             ..Default::default()
         })
     }
@@ -236,7 +333,6 @@ impl Result {
         cargo: &Cargo,
         docker: &mut Docker,
         binary_store: &Option<BinaryStore>,
-        release_channel: String,
         toolchain: String,
     ) -> anyhow::Result<()> {
         match self
@@ -273,7 +369,7 @@ impl Result {
                 self.package.clone(),
                 self.version.clone(),
                 binary_store,
-                release_channel,
+                &self.publish_detail.release_channel,
                 toolchain,
             )
             .await
@@ -433,6 +529,7 @@ pub async fn check_workspace(
                     workspace_name.to_string_lossy().to_string(),
                     package.clone(),
                     working_directory.clone(),
+                    options.release_channel.clone(),
                 ) {
                     Ok(package) => {
                         packages.insert(package.package.clone(), package);
@@ -502,34 +599,6 @@ pub async fn check_workspace(
         None => parse_toolchain(&working_directory),
     };
     for package_key in package_keys.clone() {
-        let release_channel = match options.release_channel.clone() {
-            Some(r) => r,
-            None => {
-                // Parse from the environment
-                match std::env::var("GITHUB_REF") {
-                    Ok(r) => {
-                        // Regarding installer and launcher, we need to check the tag of their counterpart
-                        let mut check_key = package_key.clone();
-                        if package_key.ends_with("_launcher") {
-                            check_key = check_key.replace("_launcher", "");
-                        }
-                        if package_key.ends_with("_installer") {
-                            check_key = check_key.replace("_installer", "");
-                        }
-                        if r.starts_with(&format!("refs/tags/{}-alpha", check_key)) {
-                            "alpha".to_string()
-                        } else if r.starts_with(&format!("refs/tags/{}-beta", check_key)) {
-                            "beta".to_string()
-                        } else if r.starts_with(&format!("refs/tags/{}-prod", check_key)) {
-                            "prod".to_string()
-                        } else {
-                            "nightly".to_string()
-                        }
-                    }
-                    Err(_) => "nightly".to_string(),
-                }
-            }
-        };
         if let Some(ref pb) = pb {
             pb.inc(1);
         }
@@ -539,14 +608,7 @@ pub async fn check_workspace(
             }
             if options.check_publish {
                 match package
-                    .check_publishable(
-                        &npm,
-                        &cargo,
-                        &mut docker,
-                        &binary_store,
-                        release_channel,
-                        toolchain.clone(),
-                    )
+                    .check_publishable(&npm, &cargo, &mut docker, &binary_store, toolchain.clone())
                     .await
                 {
                     Ok(_) => {}
