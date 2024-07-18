@@ -107,7 +107,8 @@ impl PackageMetadataFslabsCiPublishBinary {
                 if name.ends_with("_launcher") {
                     version.clone()
                 } else {
-                    Utc::now().date_naive().to_string()
+                    let now = Utc::now();
+                    now.format("%Y.%-m.%d").to_string()
                 }
             }
             _ => version.clone(),
