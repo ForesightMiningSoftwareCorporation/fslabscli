@@ -45,7 +45,8 @@ if [ $? -ne 0 ]; then
   echo "Could not check workspace"
   exit 1
 fi
-echo workspace=${workspace} >> $GITHUB_OUTPUT"#;
+echo workspace=${workspace} >> $GITHUB_OUTPUT
+echo workspace_escaped=$(echo $workspace | jq 'with_entries(.value |= @json)') >> $GITHUB_OUTPUT"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
@@ -517,12 +518,11 @@ pub async fn generate_workflow(
     }
     test_workflow.triggers = Some(test_triggers);
     publish_workflow.triggers = Some(publish_triggers);
-
-    //
-    // Get Template jobs, we'll make the generated jobs depends on it
-    let mut initial_jobs: Vec<String> = test_workflow.jobs.keys().cloned().collect();
     // If we need to test for changed and publish
     let check_job_key = "check_changed_and_publish".to_string();
+    // Default Publish workflow args
+    // Get Template jobs, we'll make the generated jobs depends on it
+    let mut initial_jobs: Vec<String> = test_workflow.jobs.keys().cloned().collect();
     if !options.no_check_changed_and_publish {
         // We need to login to any docker registry required
         let mut registries_steps: Vec<GithubWorkflowJobSteps> = members
@@ -620,6 +620,10 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             outputs: Some(IndexMap::from([(
                 "workspace".to_string(),
                 "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+            ), (
+                "workspace_escaped".to_string(),
+                "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
+
             )])),
             steps: Some(registries_steps),
             ..Default::default()
@@ -778,6 +782,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 true => Some(member.publish_detail.binary.targets.clone()),
                 false => None,
             },
+            package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
             ..Default::default()
         }
         .merge(cargo_publish_options.clone());
