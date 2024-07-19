@@ -103,7 +103,7 @@ impl From<&PublishRustInstallerWorkflowInputs> for IndexMap<String, Value> {
         );
 
         if let Some(sign_build) = &val.sign_build {
-            map.insert("sign_build".to_string(), sign_build.clone().into());
+            map.insert("sign_build".to_string(), (*sign_build).into());
         }
         map
     }

@@ -65,6 +65,7 @@ pub struct ReportReleaseWorkflow {
     pub _outputs: Option<ReportReleaseWorkflowOutputs>,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl ReportReleaseWorkflow {
     pub fn new(
         package: &str,

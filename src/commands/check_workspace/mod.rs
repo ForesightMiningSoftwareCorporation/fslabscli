@@ -187,7 +187,7 @@ struct PackageMetadata {
     pub fslabs: PackageMetadataFslabsCi,
 }
 
-fn get_toolchain(path: &PathBuf) -> anyhow::Result<String> {
+fn get_toolchain(path: &Path) -> anyhow::Result<String> {
     Ok(
         ToolchainParser::new(&fs::read_to_string(path.join("rust-toolchain.toml"))?)
             .parse()?
@@ -338,7 +338,7 @@ impl Result {
             }
         };
         publish.release_channel = release_channel.clone();
-        publish.ci_runner = Some(format!("rust-{}-scale-set", toolchain.replace(".", "-")));
+        publish.ci_runner = Some(format!("rust-{}-scale-set", toolchain.replace('.', "-")));
 
         // Deduct version based on if it's nightly or not
         //
@@ -364,7 +364,7 @@ impl Result {
                 ReleaseChannel::Beta => format!("{} Beta", publish.binary.name),
                 ReleaseChannel::Prod => publish.binary.name.clone(),
             };
-            publish.binary.fallback_name = Some(publish.binary.name.replace(" ", "_"));
+            publish.binary.fallback_name = Some(publish.binary.name.replace(' ', "_"));
             if publish.binary.installer.publish {
                 // Expiry
                 let now = Utc::now();
@@ -442,14 +442,14 @@ impl Result {
                             suffix = format!("{}{}", timestamp, suffix);
                         }
                         let (sub_app_dir, sub_app_name) =
-                            get_blob_name(&s, &v.version, &toolchain, &release_channel);
+                            get_blob_name(s, &v.version, &toolchain, &release_channel);
                         // we need to remove the `-signed.exe` suffix, we don't need it here
                         let sub_app_name = sub_app_name
                             .strip_suffix(&"-signed.exe")
                             .unwrap_or_else(|| &sub_app_name);
                         let mut list_stream = store
                             .get_client()
-                            .list(Some(&BSPath::from(format!("{}", sub_app_dir))));
+                            .list(Some(&BSPath::from(sub_app_dir.to_string())));
                         // Print a line about each object
                         let mut candidates = vec![];
                         while let Some(meta) = list_stream.next().await.transpose().unwrap() {

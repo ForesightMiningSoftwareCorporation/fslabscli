@@ -31,7 +31,6 @@ pub struct PublishRustBinaryWorkflowInputs {
     pub sign_build: Option<bool>,
     /// Used to configure the target runner and extension
     pub targets_config: Option<String>,
-    pub ci_runner: String,
 }
 
 impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
@@ -56,7 +55,6 @@ impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
             "launcher_fallback_app_name".to_string(),
             val.launcher_fallback_app_name.clone().into(),
         );
-        map.insert("ci_runner".to_string(), val.ci_runner.clone().into());
 
         if let Some(targets) = &val.targets {
             map.insert(
@@ -71,7 +69,7 @@ impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
             );
         }
         if let Some(sign_build) = &val.sign_build {
-            map.insert("sign_build".to_string(), sign_build.clone().into());
+            map.insert("sign_build".to_string(), (*sign_build).into());
         }
         if let Some(targets_config) = &val.targets_config {
             map.insert("targets_config".to_string(), targets_config.clone().into());
@@ -113,7 +111,6 @@ impl PublishRustBinaryWorkflow {
                     "${{{{ {}.{}) }}}}",
                     dynamic_value_base, "publish_detail.binary.fallback_name"
                 ),
-                ci_runner: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "publish_detail.ci_runner"),
                 targets: Some(targets),
                 additional_args,
                 working_directory,
