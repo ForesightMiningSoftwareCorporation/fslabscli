@@ -26,6 +26,7 @@ use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
 use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
 use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
+use self::workflows::report_release::ReportReleaseWorkflow;
 use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
@@ -677,24 +678,11 @@ pub async fn generate_workflow(
                 };
                 member_workflows.push(Box::new(PublishRustBinaryWorkflow::new(
                     member_key.clone(),
-                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
-                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
-                    format!(
-                        "${{{{ {}.{}) }}}}",
-                        dynamic_value_base, "publish_detail.release_channel"
-                    ),
                     member.publish_detail.binary.targets.clone(),
                     member.publish_detail.additional_args.clone(),
-                    windows_working_directory.clone(),
                     member.publish_detail.binary.sign,
-                    format!(
-                        "${{{{ {}.{}) }}}}",
-                        dynamic_value_base, "publish_detail.binary.name"
-                    ),
-                    format!(
-                        "${{{{ {}.{}) }}}}",
-                        dynamic_value_base, "publish_detail.binary.fallback_name"
-                    ),
+                    windows_working_directory.clone(),
+                    &dynamic_value_base,
                 )));
                 if member.publish_detail.binary.installer.publish {
                     member_workflows.push(Box::new(PublishRustInstallerWorkflow::new(
@@ -731,94 +719,6 @@ pub async fn generate_workflow(
 
         let testing_if = base_if.clone();
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
-        // let publish_private_registry = Some(
-        //     match member.publish_detail.cargo.publish
-        //         && !(member.publish_detail.cargo.allow_public
-        //             && (member
-        //                 .publish_detail
-        //                 .cargo
-        //                 .registry
-        //                 .clone()
-        //                 .unwrap_or(vec!["public".to_string()])
-        //                 == vec!["public"]))
-        //     {
-        //         true => format!(
-        //             "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
-        //             &check_job_key, member_key
-        //         ),
-        //         false => "false".to_string(),
-        //     },
-        // );
-        // let publish_public_registry = Some(
-        //     // match member.publish_detail.cargo.publish
-        //         && (member.publish_detail.cargo.allow_public
-        //             && (member
-        //                 .publish_detail
-        //                 .cargo
-        //                 .registry
-        //                 .clone()
-        //                 .unwrap_or(vec!["public".to_string()])
-        //                 == vec!["public"]))
-        //     {
-        //         true => format!(
-        //             "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.cargo.publish }}}}",
-        //             &check_job_key, member_key
-        //         ),
-        //         false => "false".to_string(),
-        //     },
-        // );
-        // let publish_docker = Some(match member.publish_detail.docker.publish {
-        //     true => format!(
-        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.docker.publish }}}}",
-        //         &check_job_key, member_key
-        //     ),
-        //     false => "false".to_string(),
-        // });
-        // let publish_npm_napi = Some(match member.publish_detail.npm_napi.publish {
-        //     true => format!(
-        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.npm_napi.publish }}}}",
-        //         &check_job_key, member_key
-        //     ),
-        //     false => "false".to_string(),
-        // });
-        // let publish_installer = Some(match member.publish_detail.binary.installer.publish {
-        //     true => format!(
-        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
-        //         &check_job_key, member_key
-        //     ),
-        //     false => "false".to_string(),
-        // });
-        // let publish_with: PublishWorkflowArgs = PublishWorkflowArgs {
-        //     working_directory: Some(job_working_directory.clone()),
-        //     publish: Some(StringBool(member.publish)),
-        //     publish_private_registry,
-        //     publish_public_registry,
-        //     publish_docker,
-        //     publish_npm_napi,
-        //     publish_binary,
-        //     docker_image: match member.publish_detail.docker.publish {
-        //         true => Some(member.package.clone()),
-        //         false => None,
-        //     },
-        //     docker_registry: match member.publish_detail.docker.publish {
-        //         true => member.publish_detail.docker.repository.clone(),
-        //         false => None,
-        //     },
-        //     binary_sign_build: match member.publish_detail.binary.publish {
-        //         true => Some(StringBool(member.publish_detail.binary.sign)),
-        //         false => None,
-        //     },
-        //     binary_targets: match member.publish_detail.binary.publish {
-        //         true => Some(member.publish_detail.binary.targets.clone()),
-        //         false => None,
-        //     },
-        //     package_detail: Some(format!(
-        //         "${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}",
-        //         &check_job_key, member_key
-        //     )),
-        //     ..Default::default()
-        // }
-        // .merge(cargo_publish_options.clone());
         // let test_with: TestWorkflowArgs = TestWorkflowArgs {
         //     working_directory: Some(job_working_directory.clone()),
         //     test_publish_required: Some(StringBool(
@@ -846,6 +746,8 @@ pub async fn generate_workflow(
             env: member.test_detail.env.clone(),
             ..Default::default()
         };
+
+        let mut publish_reporting_needs: Vec<String> = vec![];
         for publishing_job in member_workflows.iter() {
             let mut needs = publishing_requirements.clone();
             if let Some(additional_keys) = publishing_job.get_additional_dependencies() {
@@ -880,55 +782,57 @@ pub async fn generate_workflow(
                 }),
                 ..Default::default()
             };
-            publish_workflow.jobs.insert(
-                format!("{}_{}", publishing_job.job_prefix_key(), member.package),
-                job,
-            );
+            let key = format!("{}_{}", publishing_job.job_prefix_key(), member.package);
+            publish_reporting_needs.push(key.clone());
+            publish_workflow.jobs.insert(key, job);
         }
+        let publish_reporting_job_args = ReportReleaseWorkflow::new(
+            &member_key,
+            &working_directory,
+            member.publish_detail.cargo.publish,
+            member.publish_detail.binary.publish,
+            member.publish_detail.binary.installer.publish,
+            member.publish_detail.docker.publish,
+            member.publish_detail.npm_napi.publish,
+            &dynamic_value_base,
+        );
+        let publish_reporting_job = GithubWorkflowJob {
+            name: Some(format!(
+                "{} {}: {}",
+                publish_reporting_job_args.job_label(),
+                member.workspace,
+                member.package
+            )),
+            needs: Some(publish_reporting_needs),
+            uses: Some(
+                format!(
+                    "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
+                    publish_reporting_job_args.workflow_name(),
+                    options.build_workflow_version
+                )
+                .to_string(),
+            ),
+            job_if: Some(format!(
+                "${{{{ {} && {}.publish) }}}}",
+                publishing_if, dynamic_value_base,
+            )),
+            with: Some(publish_reporting_job_args.get_inputs()),
+            secrets: Some(GithubWorkflowJobSecret {
+                inherit: true,
+                secrets: None,
+            }),
+            ..Default::default()
+        };
+        publish_workflow.jobs.insert(
+            format!(
+                "{}_{}",
+                publish_reporting_job_args.job_prefix_key(),
+                member.package
+            ),
+            publish_reporting_job,
+        );
         test_workflow.jobs.insert(test_job_key.clone(), test_job);
         actual_tests.push(test_job_key.clone());
-        // if member.publish {
-        //     publish_workflow
-        //         .jobs
-        //         .insert(publish_job_key.clone(), publish_job);
-        //     if member.publish_detail.binary.installer.publish {
-        //         let mut installer_needs = vec![check_job_key.clone()];
-        //         installer_needs.push(publish_job_key.clone());
-        //         installer_needs.push(format!(
-        //             "{}_{}",
-        //             publish_job_key, member.publish_detail.binary.launcher.path
-        //         ));
-        //         // We need to add a new publish job for the installer
-        //         publish_workflow.jobs.insert(format!("{}_installer", publish_job_key.clone()), GithubWorkflowJob {
-        //             name: Some(format!(
-        //                 "Publish {}: {} installer",
-        //                 member.workspace, member.package
-        //             )),
-        //             uses: Some(
-        //                 format!("ForesightMiningSoftwareCorporation/github/.github/workflows/rust-build.yml@{}", options.build_workflow_version).to_string(),
-        //             ),
-        //             needs: Some(installer_needs),
-        //             with: Some(
-        //                 PublishWorkflowArgs {
-        //                     publish: Some(StringBool(true)),
-        //                     publish_installer,
-        //                     binary_sign_build: Some(StringBool(member.publish_detail.binary.sign)),
-        //     working_directory: Some(job_working_directory.clone()),
-        //     skip_test: Some(StringBool(true)),
-        //     package_detail: Some(format!("${{{{ fromJson(needs.{}.outputs.workspace_escaped).{} }}}}", &check_job_key, member_key)),
-        //                     ..Default::default()
-        //                 }
-        //                 .into(),
-        //             ),
-        //             job_if: Some(format!("${{{{ {} }}}}", publish_if)),
-        //             secrets: Some(GithubWorkflowJobSecret {
-        //                 inherit: true,
-        //                 secrets: None,
-        //             }),
-        //             ..Default::default()
-        //         });
-        //     };
-        // }
     }
     // Add Tests Reporting
     let mut test_reporting_needs = vec![check_job_key.clone()];
