@@ -23,6 +23,7 @@ pub struct PublishRustRegistryWorkflowInputs {
     pub custom_cargo_commands: String,
     /// Public release
     pub public_release: String,
+    pub ci_runner: String,
 }
 
 impl From<&PublishRustRegistryWorkflowInputs> for IndexMap<String, Value> {
@@ -49,6 +50,7 @@ impl From<&PublishRustRegistryWorkflowInputs> for IndexMap<String, Value> {
             "custom_cargo_commands".to_string(),
             val.custom_cargo_commands.clone().into(),
         );
+        map.insert("ci_runner".to_string(), val.ci_runner.clone().into());
         map
     }
 }
@@ -79,6 +81,10 @@ impl PublishRustRegistryWorkflow {
                 public_release: format!(
                     "${{{{ {}).cargo.allow_public && 'true' || 'false' }}}}",
                     dynamic_value_base
+                ),
+                ci_runner: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.ci_runner"
                 ),
             },
 

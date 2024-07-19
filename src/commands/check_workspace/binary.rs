@@ -145,10 +145,13 @@ impl PackageMetadataFslabsCiPublishBinary {
                 true => "-signed",
                 false => "",
             };
-            let blob_path = Path::from(format!(
-                "{}/{:?}/{}-{}-{}-v{}{}{}",
-                name, release_channel, name, target, toolchain, version, signed, extension
-            ));
+            let blob_path = Path::from(
+                format!(
+                    "{}/{:?}/{}-{}-{}-v{}{}{}",
+                    name, release_channel, name, target, toolchain, version, signed, extension
+                )
+                .to_lowercase(),
+            );
             match object_store.get_client().head(&blob_path).await {
                 Ok(_) => {}
                 Err(_) => {

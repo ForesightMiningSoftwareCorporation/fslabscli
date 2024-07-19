@@ -21,6 +21,7 @@ use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspac
 use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
 
+use self::test_workflow::TestWorkflowArgs;
 use self::workflows::publish_docker::PublishDockerWorkflow;
 use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
@@ -31,7 +32,6 @@ use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
 
-mod publish_workflow;
 mod test_workflow;
 mod workflows;
 
@@ -64,7 +64,7 @@ pub struct Options {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
-    #[arg(long, default_value = "v2")]
+    #[arg(long, default_value = "v3.0.0")]
     build_workflow_version: String,
     #[arg(long)]
     fslabscli_version: Option<String>,
@@ -574,7 +574,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                 "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
             ),
         ])),
-        steps: Some(vec![docker_steps, npm_steps, steps].concat()),
+        steps: Some([docker_steps, npm_steps, steps].concat()),
         ..Default::default()
     }
 }
@@ -719,14 +719,18 @@ pub async fn generate_workflow(
 
         let testing_if = base_if.clone();
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
-        // let test_with: TestWorkflowArgs = TestWorkflowArgs {
-        //     working_directory: Some(job_working_directory.clone()),
-        //     test_publish_required: Some(StringBool(
-        //         member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
-        //     )),
-        //     ..Default::default()
-        // }
-        // .merge(cargo_test_options.clone());
+        let cargo_test_options: TestWorkflowArgs = match member.test_detail.args.clone() {
+            Some(a) => a.into(),
+            None => Default::default(),
+        };
+        let test_with: TestWorkflowArgs = TestWorkflowArgs {
+            working_directory: Some(working_directory.clone()),
+            test_publish_required: Some(StringBool(
+                member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
+            )),
+            ..Default::default()
+        }
+        .merge(cargo_test_options.clone());
 
         let test_job_key = format!("testing_{}", member_key);
         let test_job = GithubWorkflowJob {
@@ -737,8 +741,7 @@ pub async fn generate_workflow(
             )),
             needs: Some(testing_requirements),
             job_if: Some(format!("${{{{ {} }}}}", testing_if)),
-            with: None,
-            // with: Some(test_with.into()),
+            with: Some(test_with.into()),
             secrets: Some(GithubWorkflowJobSecret {
                 inherit: true,
                 secrets: None,

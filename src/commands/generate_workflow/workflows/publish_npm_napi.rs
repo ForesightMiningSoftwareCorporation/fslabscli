@@ -49,7 +49,7 @@ impl Workflow for PublishNpmNapiWorkflow {
         "Publish Npm Napi".to_string()
     }
     fn workflow_name(&self) -> String {
-        "npm-napi-release".to_string()
+        "npm_napi_publish".to_string()
     }
     fn publish_info_key(&self) -> String {
         "npm_napi".to_string()
