@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fslabscli"
-version = "1.6.6"
+version = "2.0.0-rc1"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -45,6 +45,7 @@ toml = "0.8.12"
 convert_case = "0.6.0"
 chrono = "0.4"
 rust-toolchain-file = "0.1"
+futures-util = "0.3.30"
 [dev-dependencies]
 assert_fs = "1.1.1"
 testcontainers = "0.15"

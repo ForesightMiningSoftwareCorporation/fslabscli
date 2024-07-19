@@ -21,7 +21,11 @@ use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspac
 use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
 
+use self::workflows::publish_docker::PublishDockerWorkflow;
+use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
+use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
+use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
 use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
@@ -56,15 +60,13 @@ echo workspace_escaped=$(echo $workspace | jq 'with_entries(.value |= @json)') >
 #[command(about = "Check directory for crates that need to be published.")]
 pub struct Options {
     #[arg(long)]
-    output: PathBuf,
-    #[arg(long)]
-    output_release: Option<PathBuf>,
-    #[arg(long)]
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
     #[arg(long, default_value = "v2")]
     build_workflow_version: String,
+    #[arg(long)]
+    fslabscli_version: Option<String>,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
     #[arg(long, default_value = "standard")]
@@ -462,7 +464,11 @@ fn get_test_triggers() -> IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerP
     )])
 }
 
-fn get_check_workspace_job(members: &Members, required_jobs: Vec<String>) -> GithubWorkflowJob {
+fn get_check_workspace_job(
+    members: &Members,
+    required_jobs: Vec<String>,
+    fslabscli_version: Option<String>,
+) -> GithubWorkflowJob {
     // For each package published to docker, we need to login to the registry in order to check if the package needs publishing
     let docker_steps: Vec<GithubWorkflowJobSteps> = members
         .0
@@ -517,14 +523,18 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             None
         })
         .collect();
+    let mut install_fslabscli_args = IndexMap::from([(
+        "token".to_string(),
+        "${{ secrets.GITHUB_TOKEN }}".to_string(),
+    )]);
+    if let Some(v) = fslabscli_version {
+        install_fslabscli_args.insert("version".to_string(), v);
+    }
     let steps = vec![
         GithubWorkflowJobSteps {
             name: Some("Install FSLABScli".to_string()),
             uses: Some("ForesightMiningSoftwareCorporation/fslabscli-action@v1".to_string()),
-            with: Some(IndexMap::from([(
-                "token".to_string(),
-                "${{ secrets.GITHUB_TOKEN }}".to_string(),
-            )])),
+            with: Some(install_fslabscli_args),
             ..Default::default()
         },
         GithubWorkflowJobSteps {
@@ -575,7 +585,7 @@ pub async fn generate_workflow(
     // Get Directory information
     let check_workspace_options =
         CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish);
-    let members = check_workspace(Box::new(check_workspace_options), working_directory)
+    let members = check_workspace(Box::new(check_workspace_options), working_directory.clone())
         .await
         .with_context(|| "Could not get directory information")?;
     // Get workflows, useful in case where additional tools need to be run before
@@ -609,8 +619,11 @@ pub async fn generate_workflow(
 
     // Create check_workspace job, and add it to both workflows
     let check_job_key = "check_changed_and_publish".to_string();
-    let check_workspace_job =
-        get_check_workspace_job(&members, test_workflow.jobs.keys().cloned().collect());
+    let check_workspace_job = get_check_workspace_job(
+        &members,
+        test_workflow.jobs.keys().cloned().collect(),
+        options.fslabscli_version,
+    );
     test_workflow
         .jobs
         .insert(check_job_key.clone(), check_workspace_job.clone());
@@ -627,17 +640,14 @@ pub async fn generate_workflow(
         let Some(member) = members.0.get(&member_key) else {
             continue;
         };
-        let mut working_directory = member.path.to_string_lossy().to_string();
-        if working_directory == "." {
-            working_directory = String::from("");
-        }
+        let working_directory = member.path.to_string_lossy().to_string();
         let dynamic_value_base = format!(
             "(fromJSON(needs.{}.outputs.workspace).{}",
             check_job_key, member_key
         );
 
-        let mut testing_requirements: Vec<String> = vec![];
-        let mut publishing_requirements: Vec<String> = vec![];
+        let mut testing_requirements: Vec<String> = vec![check_job_key.clone()];
+        let mut publishing_requirements: Vec<String> = vec![check_job_key.clone()];
 
         for dependency in &member.dependencies {
             if dependency.publishable {
@@ -660,6 +670,11 @@ pub async fn generate_workflow(
         let mut member_workflows: Vec<Box<dyn Workflow>> = vec![];
         if member.publish {
             if member.publish_detail.binary.publish {
+                let windows_working_directory = match working_directory == "." {
+                    //true => "".to_string(),
+                    true => working_directory.clone(),
+                    false => working_directory.clone(),
+                };
                 member_workflows.push(Box::new(PublishRustBinaryWorkflow::new(
                     member_key.clone(),
                     format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
@@ -670,13 +685,46 @@ pub async fn generate_workflow(
                     ),
                     member.publish_detail.binary.targets.clone(),
                     member.publish_detail.additional_args.clone(),
-                    working_directory,
+                    windows_working_directory.clone(),
                     member.publish_detail.binary.sign,
-                    format!("${{{{ {}.{}) }}}}", dynamic_value_base, "publish_detail.binary.name"),
+                    format!(
+                        "${{{{ {}.{}) }}}}",
+                        dynamic_value_base, "publish_detail.binary.name"
+                    ),
                     format!(
                         "${{{{ {}.{}) }}}}",
                         dynamic_value_base, "publish_detail.binary.fallback_name"
                     ),
+                )));
+                if member.publish_detail.binary.installer.publish {
+                    member_workflows.push(Box::new(PublishRustInstallerWorkflow::new(
+                        member_key.clone(),
+                        windows_working_directory.clone(),
+                        member.publish_detail.binary.sign,
+                        &dynamic_value_base,
+                    )));
+                }
+            }
+            if member.publish_detail.docker.publish {
+                member_workflows.push(Box::new(PublishDockerWorkflow::new(
+                    member_key.clone(),
+                    working_directory.clone(),
+                    member.publish_detail.docker.context.clone(),
+                    member.publish_detail.docker.dockerfile.clone(),
+                    member.publish_detail.docker.repository.clone(),
+                    &dynamic_value_base,
+                )));
+            }
+            if member.publish_detail.npm_napi.publish {
+                member_workflows.push(Box::new(PublishNpmNapiWorkflow::new(
+                    working_directory.clone(),
+                    &dynamic_value_base,
+                )));
+            }
+            if member.publish_detail.cargo.publish {
+                member_workflows.push(Box::new(PublishRustRegistryWorkflow::new(
+                    working_directory.clone(),
+                    &dynamic_value_base,
                 )));
             }
         }
@@ -729,13 +777,6 @@ pub async fn generate_workflow(
         // let publish_npm_napi = Some(match member.publish_detail.npm_napi.publish {
         //     true => format!(
         //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.npm_napi.publish }}}}",
-        //         &check_job_key, member_key
-        //     ),
-        //     false => "false".to_string(),
-        // });
-        // let publish_binary = Some(match member.publish_detail.binary.publish {
-        //     true => format!(
-        //         "${{{{ fromJson(needs.{}.outputs.workspace).{}.publish_detail.binary.publish }}}}",
         //         &check_job_key, member_key
         //     ),
         //     false => "false".to_string(),
@@ -806,6 +847,10 @@ pub async fn generate_workflow(
             ..Default::default()
         };
         for publishing_job in member_workflows.iter() {
+            let mut needs = publishing_requirements.clone();
+            if let Some(additional_keys) = publishing_job.get_additional_dependencies() {
+                needs.extend(additional_keys);
+            }
             let job = GithubWorkflowJob {
                 name: Some(format!(
                     "{} {}: {}",
@@ -813,7 +858,7 @@ pub async fn generate_workflow(
                     member.workspace,
                     member.package
                 )),
-                needs: Some(publishing_requirements.clone()),
+                needs: Some(needs),
                 uses: Some(
                     format!(
                         "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
@@ -822,7 +867,12 @@ pub async fn generate_workflow(
                     )
                     .to_string(),
                 ),
-                job_if: Some(format!("${{{{ {} && {}.publish_detail.{}.publish) }}}}", publishing_if, dynamic_value_base, publishing_job.publish_info_key())),
+                job_if: Some(format!(
+                    "${{{{ {} && {}.publish_detail.{}.publish) }}}}",
+                    publishing_if,
+                    dynamic_value_base,
+                    publishing_job.publish_info_key()
+                )),
                 with: Some(publishing_job.get_inputs()),
                 secrets: Some(GithubWorkflowJobSecret {
                     inherit: true,
@@ -907,13 +957,13 @@ pub async fn generate_workflow(
         ..Default::default()
     });
     // If we are splitted then we actually need to create two files
-    let output_file = File::create(options.output)?;
-    let mut writer = BufWriter::new(output_file);
-    serde_yaml::to_writer(&mut writer, &test_workflow)?;
-    if let Some(output_path) = options.output_release {
-        let output_file = File::create(output_path)?;
-        let mut writer = BufWriter::new(output_file);
-        serde_yaml::to_writer(&mut writer, &publish_workflow)?;
-    }
+    let test_file_path = working_directory.join(".github/workflows/test.yml");
+    let release_file_path = working_directory.join(".github/workflows/release_publish.yml");
+    let test_file = File::create(test_file_path)?;
+    let mut test_writer = BufWriter::new(test_file);
+    serde_yaml::to_writer(&mut test_writer, &test_workflow)?;
+    let release_file = File::create(release_file_path)?;
+    let mut release_writer = BufWriter::new(release_file);
+    serde_yaml::to_writer(&mut release_writer, &publish_workflow)?;
     Ok(GenerateResult {})
 }

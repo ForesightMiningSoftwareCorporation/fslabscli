@@ -54,6 +54,28 @@ pub struct PackageMetadataFslabsCiPublishBinaryInstaller {
     pub prod: PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel,
     #[serde(default)]
     pub sub_apps: IndexMap<String, ResultDependency>,
+    #[serde(default)]
+    pub sub_apps_download_script: Option<String>,
+    #[serde(default)]
+    pub launcher_blob_dir: Option<String>,
+    #[serde(default)]
+    pub launcher_name: Option<String>,
+    #[serde(default)]
+    pub package_blob_dir: Option<String>,
+    #[serde(default)]
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub installer_blob_dir: Option<String>,
+    #[serde(default)]
+    pub installer_name: Option<String>,
+    #[serde(default)]
+    pub installer_signed_name: Option<String>,
+    #[serde(default)]
+    pub upgrade_code: Option<String>,
+    #[serde(default)]
+    pub guid_prefix: Option<String>,
+    #[serde(default)]
+    pub sas_expiry: Option<String>,
 }
 
 impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
@@ -66,6 +88,17 @@ impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
             beta: Default::default(),
             prod: Default::default(),
             sub_apps: Default::default(),
+            sub_apps_download_script: Default::default(),
+            launcher_blob_dir: None,
+            launcher_name: None,
+            package_blob_dir: None,
+            package_name: None,
+            installer_blob_dir: None,
+            installer_name: None,
+            installer_signed_name: None,
+            upgrade_code: None,
+            guid_prefix: None,
+            sas_expiry: None,
         }
     }
 }
