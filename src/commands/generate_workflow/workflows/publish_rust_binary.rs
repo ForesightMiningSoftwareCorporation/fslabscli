@@ -6,7 +6,7 @@ use super::Workflow;
 #[derive(Default, Clone)]
 pub struct PublishRustBinaryWorkflowOutputs {
     /// Was the binary released
-    pub released: bool,
+    pub _released: bool,
 }
 
 #[derive(Default, Clone)]
@@ -80,7 +80,7 @@ impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
 
 pub struct PublishRustBinaryWorkflow {
     pub inputs: PublishRustBinaryWorkflowInputs,
-    pub outputs: Option<PublishRustBinaryWorkflowOutputs>,
+    pub _outputs: Option<PublishRustBinaryWorkflowOutputs>,
 }
 
 impl PublishRustBinaryWorkflow {
@@ -110,7 +110,7 @@ impl PublishRustBinaryWorkflow {
                 launcher_app_name,
                 launcher_fallback_app_name,
             },
-            outputs: None,
+            _outputs: None,
         }
     }
 }
@@ -131,5 +131,8 @@ impl Workflow for PublishRustBinaryWorkflow {
     }
     fn get_inputs(&self) -> IndexMap<String, Value> {
         (&self.inputs).into()
+    }
+    fn get_additional_dependencies(&self) -> Option<Vec<String>> {
+        None
     }
 }

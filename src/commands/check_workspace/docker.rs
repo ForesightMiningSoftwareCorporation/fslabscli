@@ -227,6 +227,8 @@ impl Docker {
 pub struct PackageMetadataFslabsCiPublishDocker {
     pub publish: bool,
     pub repository: Option<String>,
+    pub context: Option<String>,
+    pub dockerfile: Option<String>,
     pub error: Option<String>,
 }
 
