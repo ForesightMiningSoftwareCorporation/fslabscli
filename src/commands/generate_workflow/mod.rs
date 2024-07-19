@@ -717,7 +717,7 @@ pub async fn generate_workflow(
             }
         }
 
-        let testing_if = base_if.clone();
+        let testing_if = format!("{} && (fromJSON(needs.{}.outputs.workspace).{}.perform_test)", base_if, check_job_key, member_key);
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let cargo_test_options: TestWorkflowArgs = match member.test_detail.args.clone() {
             Some(a) => a.into(),
