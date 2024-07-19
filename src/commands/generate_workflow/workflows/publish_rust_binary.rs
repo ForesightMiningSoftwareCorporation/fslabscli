@@ -30,7 +30,8 @@ pub struct PublishRustBinaryWorkflowInputs {
     /// Should the binary bin be signed
     pub sign_build: Option<bool>,
     /// Used to configure the target runner and extension
-    pub targets_config: Option<String>, // '{"x86_64-pc-windows-msvc":{"extension":".exe","runner":"windows-latest-16-cores-custom"},"x86_64-unknown-linux-gnu":{"extension":"","runner":"ubuntu-latest-16-cores"}}'
+    pub targets_config: Option<String>,
+    pub ci_runner: String,
 }
 
 impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
@@ -55,6 +56,7 @@ impl From<&PublishRustBinaryWorkflowInputs> for IndexMap<String, Value> {
             "launcher_fallback_app_name".to_string(),
             val.launcher_fallback_app_name.clone().into(),
         );
+        map.insert("ci_runner".to_string(), val.ci_runner.clone().into());
 
         if let Some(targets) = &val.targets {
             map.insert(
@@ -82,33 +84,41 @@ pub struct PublishRustBinaryWorkflow {
     pub inputs: PublishRustBinaryWorkflowInputs,
     pub _outputs: Option<PublishRustBinaryWorkflowOutputs>,
 }
-
 impl PublishRustBinaryWorkflow {
     pub fn new(
         package: String,
-        version: String,
-        toolchain: String,
-        release_channel: String,
         targets: Vec<String>,
         additional_args: Option<String>,
-        working_directory: String,
         sign_build: bool,
-        launcher_app_name: String,
-        launcher_fallback_app_name: String,
+        working_directory: String,
+        dynamic_value_base: &str,
     ) -> Self {
         Self {
             inputs: PublishRustBinaryWorkflowInputs {
                 package,
-                version,
-                toolchain,
-                release_channel,
+                version: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.binary.version"
+                ),
+                toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
+                release_channel: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.release_channel"
+                ),
+                launcher_app_name: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.binary.name"
+                ),
+                launcher_fallback_app_name: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.binary.fallback_name"
+                ),
+                ci_runner: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "publish_detail.ci_runner"),
                 targets: Some(targets),
                 additional_args,
                 working_directory,
                 sign_build: Some(sign_build),
                 targets_config: None,
-                launcher_app_name,
-                launcher_fallback_app_name,
             },
             _outputs: None,
         }

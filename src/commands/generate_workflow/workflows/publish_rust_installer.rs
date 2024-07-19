@@ -96,7 +96,7 @@ impl From<&PublishRustInstallerWorkflowInputs> for IndexMap<String, Value> {
         map.insert("upgrade_code".to_string(), val.upgrade_code.clone().into());
 
         map.insert("guid_prefix".to_string(), val.guid_prefix.clone().into());
-        map.insert("sas_expiry".to_string(), val.guid_prefix.clone().into());
+        map.insert("sas_expiry".to_string(), val.sas_expiry.clone().into());
         map.insert(
             "sub_apps_download_script".to_string(),
             val.sub_apps_download_script.clone().into(),
@@ -126,7 +126,10 @@ impl PublishRustInstallerWorkflow {
                 package,
                 sign_build: Some(sign_build),
                 working_directory,
-                version: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
+                version: format!(
+                    "${{{{ {}.{}) }}}}",
+                    dynamic_value_base, "publish_detail.binary.version"
+                ),
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
                 release_channel: format!(
                     "${{{{ {}.{}) }}}}",
@@ -178,7 +181,7 @@ impl PublishRustInstallerWorkflow {
                 ),
                 sas_expiry: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.expiry"
+                    dynamic_value_base, "publish_detail.binary.installer.sas_expiry"
                 ),
                 sub_apps_download_script: format!(
                     "${{{{ {}.{}) }}}}",

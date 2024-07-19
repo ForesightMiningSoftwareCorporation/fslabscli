@@ -18,6 +18,8 @@ pub struct PackageMetadataFslabsCiPublishBinary {
     pub name: String,
     pub fallback_name: Option<String>,
     #[serde(default)]
+    pub rc_version: Option<String>,
+    #[serde(default)]
     pub launcher: PackageMetadataFslabsCiPublishBinaryLauncher,
     #[serde(default)]
     pub installer: PackageMetadataFslabsCiPublishBinaryInstaller,

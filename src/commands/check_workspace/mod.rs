@@ -163,6 +163,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub env: Option<IndexMap<String, String>>,
     #[serde(default = "ReleaseChannel::default")]
     pub release_channel: ReleaseChannel,
+    #[serde(default)]
+    pub ci_runner: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -336,24 +338,26 @@ impl Result {
             }
         };
         publish.release_channel = release_channel.clone();
+        publish.ci_runner = Some(format!("rust-{}-scale-set", toolchain.replace(".", "-")));
 
         // Deduct version based on if it's nightly or not
         //
         let now = Utc::now().date_naive();
         let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
         let timestamp = (now - epoch).num_days();
-        let version = match release_channel {
-            ReleaseChannel::Nightly => {
-                // Nightly version should be current date
-                if package.name.ends_with("_launcher") {
-                    package.version.to_string()
-                } else {
-                    format!("{}.{}", package.version, timestamp)
-                }
-            }
-            _ => package.version.to_string(),
-        };
         if publish.binary.publish {
+            let rc_version = match release_channel {
+                ReleaseChannel::Nightly => {
+                    // Nightly version should be current date
+                    if package.name.ends_with("_launcher") {
+                        package.version.to_string()
+                    } else {
+                        format!("{}.{}", package.version, timestamp)
+                    }
+                }
+                _ => package.version.to_string(),
+            };
+            publish.binary.rc_version = Some(rc_version.clone());
             publish.binary.name = match release_channel {
                 ReleaseChannel::Nightly => format!("{} Nightly", publish.binary.name),
                 ReleaseChannel::Alpha => format!("{} Alpha", publish.binary.name),
@@ -391,14 +395,14 @@ impl Result {
 
                 // Compute blob names
                 let (package_blob_dir, package_name) =
-                    get_blob_name(&package.name, &version, &toolchain, &release_channel);
+                    get_blob_name(&package.name, &rc_version, &toolchain, &release_channel);
 
                 publish.binary.installer.package_blob_dir = Some(package_blob_dir);
                 publish.binary.installer.package_name = Some(package_name);
 
                 let (installer_blob_dir, _) = get_blob_name(
                     format!("{}_installer", package.name).as_ref(),
-                    &version,
+                    &rc_version,
                     &toolchain,
                     &release_channel,
                 );
@@ -416,13 +420,13 @@ impl Result {
                     publish.binary.installer.launcher_name = Some(launcher_name);
                     if let Some(ref fallback_name) = publish.binary.fallback_name {
                         publish.binary.installer.installer_name = Some(
-                            format!("{}.{}.{}.msi", fallback_name, launcher_version, version)
+                            format!("{}.{}.{}.msi", fallback_name, launcher_version, rc_version)
                                 .to_lowercase(),
                         );
                         publish.binary.installer.installer_signed_name = Some(
                             format!(
                                 "{}.{}.{}-signed.msi",
-                                fallback_name, launcher_version, version
+                                fallback_name, launcher_version, rc_version
                             )
                             .to_lowercase(),
                         );
@@ -473,7 +477,7 @@ impl Result {
         Ok(Self {
             workspace,
             package: package.name,
-            version,
+            version: package.version.to_string(),
             path,
             publish_detail: publish,
             test_detail: metadata.fslabs.test.unwrap_or_default(),
