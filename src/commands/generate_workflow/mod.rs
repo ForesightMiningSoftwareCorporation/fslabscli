@@ -27,7 +27,6 @@ use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
 use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
 use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
-use self::workflows::report_release::ReportReleaseWorkflow;
 use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
@@ -563,12 +562,10 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         name: Some("Check which workspace member changed and / or needs publishing".to_string()),
         runs_on: Some(vec!["ci-scale-set".to_string()]),
         needs: Some(required_jobs),
-        outputs: Some(IndexMap::from([
-            (
-                "workspace".to_string(),
-                "${{ steps.check_workspace.outputs.workspace }}".to_string(),
-            )
-        ])),
+        outputs: Some(IndexMap::from([(
+            "workspace".to_string(),
+            "${{ steps.check_workspace.outputs.workspace }}".to_string(),
+        )])),
         steps: Some([docker_steps, npm_steps, steps].concat()),
         ..Default::default()
     }
@@ -632,6 +629,7 @@ pub async fn generate_workflow(
     let base_if = "!cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
 
     let mut actual_tests: Vec<String> = vec![];
+    let mut actual_publishings: Vec<String> = vec![];
     for member_key in member_keys {
         let Some(member) = members.0.get(&member_key) else {
             continue;
@@ -749,7 +747,6 @@ pub async fn generate_workflow(
             ..Default::default()
         };
 
-        let mut publish_reporting_needs: Vec<String> = vec![];
         for publishing_job in member_workflows.iter() {
             let mut needs = publishing_requirements.clone();
             if let Some(additional_keys) = publishing_job.get_additional_dependencies() {
@@ -785,60 +782,14 @@ pub async fn generate_workflow(
                 ..Default::default()
             };
             let key = format!("{}_{}", publishing_job.job_prefix_key(), member.package);
-            publish_reporting_needs.push(key.clone());
+            actual_publishings.push(key.clone());
             publish_workflow.jobs.insert(key, job);
-        }
-        if !publish_reporting_needs.is_empty() {
-            let publish_reporting_job_args = ReportReleaseWorkflow::new(
-                &member_key,
-                &working_directory,
-                member.publish_detail.cargo.publish,
-                member.publish_detail.binary.publish,
-                member.publish_detail.binary.installer.publish,
-                member.publish_detail.docker.publish,
-                member.publish_detail.npm_napi.publish,
-                &dynamic_value_base,
-            );
-            let publish_reporting_job = GithubWorkflowJob {
-                name: Some(format!(
-                    "{} {}: {}",
-                    publish_reporting_job_args.job_label(),
-                    member.workspace,
-                    member.package
-                )),
-                needs: Some(publish_reporting_needs),
-                uses: Some(
-                    format!(
-                        "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
-                        publish_reporting_job_args.workflow_name(),
-                        options.build_workflow_version
-                    )
-                    .to_string(),
-                ),
-                job_if: Some(format!(
-                    "${{{{ {} && {}.publish) }}}}",
-                    publishing_if, dynamic_value_base,
-                )),
-                with: Some(publish_reporting_job_args.get_inputs()),
-                secrets: Some(GithubWorkflowJobSecret {
-                    inherit: true,
-                    secrets: None,
-                }),
-                ..Default::default()
-            };
-            publish_workflow.jobs.insert(
-                format!(
-                    "{}_{}",
-                    publish_reporting_job_args.job_prefix_key(),
-                    member.package
-                ),
-                publish_reporting_job,
-            );
         }
         test_workflow.jobs.insert(test_job_key.clone(), test_job);
         actual_tests.push(test_job_key.clone());
     }
-    // Add Tests Reporting
+    // Add Reporting
+    // Tests
     let mut test_reporting_needs = vec![check_job_key.clone()];
     test_reporting_needs.extend(actual_tests);
     test_workflow.jobs.insert("test_results".to_string(), GithubWorkflowJob {
@@ -861,7 +812,31 @@ pub async fn generate_workflow(
             secrets: None,
         }),
         needs: Some(test_reporting_needs),
-
+        ..Default::default()
+    });
+    // Publishing
+    let mut publishing_reporting_needs = vec![check_job_key.clone()];
+    publishing_reporting_needs.extend(actual_publishings);
+    publish_workflow.jobs.insert("publishing_results".to_string(), GithubWorkflowJob {
+        name: Some("Publishing Results".to_string()),
+        job_if: Some("always() && !contains(needs.*.result, 'cancelled')".to_string()),
+            uses: Some(
+                format!(
+                    "ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@{}",
+                    options.build_workflow_version
+                )
+            ),
+        with: Some(
+            IndexMap::from([
+                ("run_type".to_string(), "publishing".into()),
+                ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
+            ])
+        ),
+        secrets: Some(GithubWorkflowJobSecret {
+            inherit: true,
+            secrets: None,
+        }),
+        needs: Some(publishing_reporting_needs),
         ..Default::default()
     });
     // If we are splitted then we actually need to create two files

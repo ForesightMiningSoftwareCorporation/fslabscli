@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
 use strum_macros::EnumString;
-use toml::{from_str as toml_from_str, Value as TomlValue};
+use toml::Value as TomlValue;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
@@ -136,7 +136,9 @@ pub struct Result {
     pub path: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
     pub publish: bool,
+    #[serde(skip_serializing)]
     pub dependencies: Vec<ResultDependency>,
+    #[serde(skip_serializing)]
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
@@ -365,6 +367,13 @@ impl Result {
                 ReleaseChannel::Prod => publish.binary.name.clone(),
             };
             publish.binary.fallback_name = Some(publish.binary.name.replace(' ', "_"));
+
+            // Compute blob names
+            let (package_blob_dir, package_blob_name) =
+                get_blob_name(&package.name, &rc_version, &toolchain, &release_channel);
+
+            publish.binary.blob_dir = Some(package_blob_dir);
+            publish.binary.blob_name = Some(package_blob_name);
             if publish.binary.installer.publish {
                 // Expiry
                 let now = Utc::now();
@@ -393,13 +402,6 @@ impl Result {
                 publish.binary.installer.upgrade_code = upgrade_code;
                 publish.binary.installer.guid_prefix = guid_prefix;
 
-                // Compute blob names
-                let (package_blob_dir, package_name) =
-                    get_blob_name(&package.name, &rc_version, &toolchain, &release_channel);
-
-                publish.binary.installer.package_blob_dir = Some(package_blob_dir);
-                publish.binary.installer.package_name = Some(package_name);
-
                 let (installer_blob_dir, _) = get_blob_name(
                     format!("{}_installer", package.name).as_ref(),
                     &rc_version,
@@ -417,13 +419,13 @@ impl Result {
                         &release_channel,
                     );
                     publish.binary.installer.launcher_blob_dir = Some(launcher_blob_dir);
-                    publish.binary.installer.launcher_name = Some(launcher_name);
+                    publish.binary.installer.launcher_blob_name = Some(launcher_name);
                     if let Some(ref fallback_name) = publish.binary.fallback_name {
-                        publish.binary.installer.installer_name = Some(
+                        publish.binary.installer.installer_blob_name = Some(
                             format!("{}.{}.{}.msi", fallback_name, launcher_version, rc_version)
                                 .to_lowercase(),
                         );
-                        publish.binary.installer.installer_signed_name = Some(
+                        publish.binary.installer.installer_blob_signed_name = Some(
                             format!(
                                 "{}.{}.{}-signed.msi",
                                 fallback_name, launcher_version, rc_version
@@ -493,7 +495,6 @@ impl Result {
         cargo: &Cargo,
         docker: &mut Docker,
         binary_store: &Option<BinaryStore>,
-        toolchain: String,
     ) -> anyhow::Result<()> {
         match self
             .publish_detail
@@ -522,18 +523,7 @@ impl Result {
             Ok(_) => {}
             Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
         };
-        match self
-            .publish_detail
-            .binary
-            .check(
-                self.package.clone(),
-                self.publish_detail.binary.rc_version.clone().unwrap_or_else(|| self.version.clone()),
-                binary_store,
-                &self.publish_detail.release_channel,
-                toolchain,
-            )
-            .await
-        {
+        match self.publish_detail.binary.check(binary_store).await {
             Ok(_) => {}
             Err(e) => {
                 self.publish_detail.binary.error = Some(e.to_string());
@@ -620,28 +610,6 @@ impl PrettyPrintable for Results {
             })
             .collect::<Vec<String>>()].concat().join("\n")
     }
-}
-
-#[derive(Deserialize)]
-struct RustToolchain {
-    pub channel: String,
-}
-
-#[derive(Deserialize)]
-struct RustToolchainFile {
-    pub toolchain: RustToolchain,
-}
-
-fn parse_toolchain(working_directory: &Path) -> String {
-    let toml_content = match fs::read_to_string(working_directory.join("rust-toolchain.toml")) {
-        Ok(content) => content,
-        Err(_) => return "1.74".to_string(),
-    };
-    let rust_toolchain: RustToolchainFile = match toml_from_str(&toml_content) {
-        Ok(r) => r,
-        Err(_) => return "1.74".to_string(),
-    };
-    rust_toolchain.toolchain.channel
 }
 
 pub async fn check_workspace(
@@ -757,10 +725,6 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
-    let toolchain = match options.toolchain {
-        Some(t) => t,
-        None => parse_toolchain(&working_directory),
-    };
     for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
             pb.inc(1);
@@ -771,7 +735,7 @@ pub async fn check_workspace(
             }
             if options.check_publish {
                 match package
-                    .check_publishable(&npm, &cargo, &mut docker, &binary_store, toolchain.clone())
+                    .check_publishable(&npm, &cargo, &mut docker, &binary_store)
                     .await
                 {
                     Ok(_) => {}

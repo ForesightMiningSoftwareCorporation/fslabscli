@@ -5,7 +5,6 @@ pub mod publish_npm_napi;
 pub mod publish_rust_binary;
 pub mod publish_rust_installer;
 pub mod publish_rust_registry;
-pub mod report_release;
 
 pub trait Workflow {
     fn job_prefix_key(&self) -> String;

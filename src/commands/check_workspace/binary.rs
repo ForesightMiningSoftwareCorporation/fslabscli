@@ -6,7 +6,7 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{ReleaseChannel, ResultDependency};
+use super::ResultDependency;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +27,10 @@ pub struct PackageMetadataFslabsCiPublishBinary {
     pub error: Option<String>,
     #[serde(default)]
     pub targets: Vec<String>,
+    #[serde(default)]
+    pub blob_dir: Option<String>,
+    #[serde(default)]
+    pub blob_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -61,17 +65,13 @@ pub struct PackageMetadataFslabsCiPublishBinaryInstaller {
     #[serde(default)]
     pub launcher_blob_dir: Option<String>,
     #[serde(default)]
-    pub launcher_name: Option<String>,
-    #[serde(default)]
-    pub package_blob_dir: Option<String>,
-    #[serde(default)]
-    pub package_name: Option<String>,
+    pub launcher_blob_name: Option<String>,
     #[serde(default)]
     pub installer_blob_dir: Option<String>,
     #[serde(default)]
-    pub installer_name: Option<String>,
+    pub installer_blob_name: Option<String>,
     #[serde(default)]
-    pub installer_signed_name: Option<String>,
+    pub installer_blob_signed_name: Option<String>,
     #[serde(default)]
     pub upgrade_code: Option<String>,
     #[serde(default)]
@@ -92,12 +92,10 @@ impl Default for PackageMetadataFslabsCiPublishBinaryInstaller {
             sub_apps: Default::default(),
             sub_apps_download_script: Default::default(),
             launcher_blob_dir: None,
-            launcher_name: None,
-            package_blob_dir: None,
-            package_name: None,
+            launcher_blob_name: None,
             installer_blob_dir: None,
-            installer_name: None,
-            installer_signed_name: None,
+            installer_blob_name: None,
+            installer_blob_signed_name: None,
             upgrade_code: None,
             guid_prefix: None,
             sas_expiry: None,
@@ -121,14 +119,7 @@ pub struct PackageMetadataFslabsCiPublishBinaryInstallerReleaseChannel {
 }
 
 impl PackageMetadataFslabsCiPublishBinary {
-    pub async fn check(
-        &mut self,
-        name: String,
-        version: String,
-        store: &Option<BinaryStore>,
-        release_channel: &ReleaseChannel,
-        toolchain: String,
-    ) -> anyhow::Result<()> {
+    pub async fn check(&mut self, store: &Option<BinaryStore>) -> anyhow::Result<()> {
         if !self.publish {
             return Ok(());
         }
@@ -136,30 +127,28 @@ impl PackageMetadataFslabsCiPublishBinary {
             return Ok(());
         };
         let mut publish = false;
-        for target in self.targets.clone() {
-            let extension = match target.contains("windows") {
-                true => ".exe",
-                false => "",
-            };
-            let signed = match self.sign {
-                true => "-signed",
-                false => "",
-            };
-            let blob_path = Path::from(
-                format!(
-                    "{}/{:?}/{}-{}-{}-v{}{}{}",
-                    name, release_channel, name, target, toolchain, version, signed, extension
-                )
-                .to_lowercase(),
-            );
-            match object_store.get_client().head(&blob_path).await {
+        if let (Some(blob_dir), Some(blob_name)) = (&self.blob_dir, &self.blob_name) {
+            let blob_path = format!("{}/{}", blob_dir, blob_name);
+            match object_store.get_client().head(&Path::from(blob_path)).await {
                 Ok(_) => {}
                 Err(_) => {
                     publish = true;
                 }
             };
         }
+        let mut publish_installer = false;
+        if let (Some(blob_dir), Some(blob_name)) = (&self.installer.installer_blob_dir, &self.installer.installer_blob_signed_name) {
+            let blob_path = format!("{}/{}", blob_dir, blob_name);
+            match object_store.get_client().head(&Path::from(blob_path)).await {
+                Ok(_) => {}
+                Err(_) => {
+                    publish_installer = true;
+                }
+            };
+        }
         self.publish = publish;
+        self.installer.publish = publish_installer;
+
         Ok(())
     }
 }

@@ -149,15 +149,15 @@ impl PublishRustInstallerWorkflow {
                 ),
                 launcher_name: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.launcher_name"
+                    dynamic_value_base, "publish_detail.binary.installer.launcher_blob_name"
                 ),
                 package_blob_dir: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.package_blob_dir"
+                    dynamic_value_base, "publish_detail.binary.blob_dir"
                 ),
                 package_name: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.package_name"
+                    dynamic_value_base, "publish_detail.binary.blob_name"
                 ),
                 installer_blob_dir: format!(
                     "${{{{ {}.{}) }}}}",
@@ -165,11 +165,12 @@ impl PublishRustInstallerWorkflow {
                 ),
                 installer_name: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.installer_name"
+                    dynamic_value_base, "publish_detail.binary.installer.installer_blob_name"
                 ),
                 installer_signed_name: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.installer.installer_signed_name"
+                    dynamic_value_base,
+                    "publish_detail.binary.installer.installer_blob_signed_name"
                 ),
                 upgrade_code: format!(
                     "${{{{ {}.{}) }}}}",
