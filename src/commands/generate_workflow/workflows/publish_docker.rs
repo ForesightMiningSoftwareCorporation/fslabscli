@@ -11,6 +11,8 @@ pub struct PublishDockerWorkflowOutputs {
 
 #[derive(Default, Clone)]
 pub struct PublishDockerWorkflowInputs {
+    /// Package name
+    pub package: String,
     /// Docker image
     pub image: String,
     /// Docker Context image
@@ -28,6 +30,7 @@ pub struct PublishDockerWorkflowInputs {
 impl From<&PublishDockerWorkflowInputs> for IndexMap<String, Value> {
     fn from(val: &PublishDockerWorkflowInputs) -> Self {
         let mut map: IndexMap<String, Value> = IndexMap::new();
+        map.insert("package".to_string(), val.package.clone().into());
         map.insert("image".to_string(), val.image.clone().into());
         map.insert("toolchain".to_string(), val.toolchain.clone().into());
         if let Some(context) = &val.context {
@@ -54,6 +57,7 @@ pub struct PublishDockerWorkflow {
 
 impl PublishDockerWorkflow {
     pub fn new(
+        package: String,
         image: String,
         working_directory: String,
         context: Option<String>,
@@ -63,6 +67,7 @@ impl PublishDockerWorkflow {
     ) -> Self {
         Self {
             inputs: PublishDockerWorkflowInputs {
+                package,
                 image,
                 working_directory,
                 context,

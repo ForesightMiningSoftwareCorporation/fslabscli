@@ -11,6 +11,8 @@ pub struct PublishNpmNapiWorkflowOutputs {
 
 #[derive(Default, Clone)]
 pub struct PublishNpmNapiWorkflowInputs {
+    /// Package name
+    pub package: String,
     /// Working directory to run the cargo command
     pub working_directory: String,
 }
@@ -18,6 +20,7 @@ pub struct PublishNpmNapiWorkflowInputs {
 impl From<&PublishNpmNapiWorkflowInputs> for IndexMap<String, Value> {
     fn from(val: &PublishNpmNapiWorkflowInputs) -> Self {
         let mut map: IndexMap<String, Value> = IndexMap::new();
+        map.insert("package".to_string(), val.package.clone().into());
         map.insert(
             "working_directory".to_string(),
             val.working_directory.clone().into(),
@@ -32,9 +35,12 @@ pub struct PublishNpmNapiWorkflow {
 }
 
 impl PublishNpmNapiWorkflow {
-    pub fn new(working_directory: String, _dynamic_value_base: &str) -> Self {
+    pub fn new(package: String, working_directory: String, _dynamic_value_base: &str) -> Self {
         Self {
-            inputs: PublishNpmNapiWorkflowInputs { working_directory },
+            inputs: PublishNpmNapiWorkflowInputs {
+                package,
+                working_directory,
+            },
             _outputs: None,
         }
     }

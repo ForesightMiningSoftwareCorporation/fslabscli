@@ -690,6 +690,7 @@ pub async fn generate_workflow(
             if member.publish_detail.docker.publish {
                 member_workflows.push(Box::new(PublishDockerWorkflow::new(
                     member_key.clone(),
+                    member_key.clone(),
                     working_directory.clone(),
                     member.publish_detail.docker.context.clone(),
                     member.publish_detail.docker.dockerfile.clone(),
@@ -699,6 +700,7 @@ pub async fn generate_workflow(
             }
             if member.publish_detail.npm_napi.publish {
                 member_workflows.push(Box::new(PublishNpmNapiWorkflow::new(
+                    member_key.clone(),
                     working_directory.clone(),
                     &dynamic_value_base,
                 )));
