@@ -94,10 +94,7 @@ impl PublishRustBinaryWorkflow {
         Self {
             inputs: PublishRustBinaryWorkflowInputs {
                 package,
-                version: format!(
-                    "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.version"
-                ),
+                version: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "publish_detail.binary.rc_version"),
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
                 release_channel: format!(
                     "${{{{ {}.{}) }}}}",

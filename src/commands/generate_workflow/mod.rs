@@ -54,8 +54,7 @@ if [ $? -ne 0 ]; then
   echo "Could not check workspace"
   exit 1
 fi
-echo workspace=${workspace} >> $GITHUB_OUTPUT
-echo workspace_escaped=$(echo $workspace | jq 'with_entries(.value |= @json)') >> $GITHUB_OUTPUT"#;
+echo workspace=${workspace} >> $GITHUB_OUTPUT"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Check directory for crates that need to be published.")]
@@ -568,11 +567,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
             (
                 "workspace".to_string(),
                 "${{ steps.check_workspace.outputs.workspace }}".to_string(),
-            ),
-            (
-                "workspace_escaped".to_string(),
-                "${{ steps.check_workspace.outputs.workspace_escaped }}".to_string(),
-            ),
+            )
         ])),
         steps: Some([docker_steps, npm_steps, steps].concat()),
         ..Default::default()
@@ -651,11 +646,10 @@ pub async fn generate_workflow(
         let mut publishing_requirements: Vec<String> = vec![check_job_key.clone()];
 
         for dependency in &member.dependencies {
-            if dependency.publishable {
-                if let Some(package_name) = dependency.package.clone() {
-                    // Each testing job needs to depends on its'previous testing job
-                    testing_requirements.push(format!("test_{}", package_name));
-
+            // Each testing job needs to depends on its'previous testing job
+            if let Some(package_name) = dependency.package.clone() {
+                testing_requirements.push(format!("test_{}", package_name));
+                if dependency.publishable {
                     let publishers = vec!["docker", "cargo", "npm_napi", "binary"];
                     for publisher in publishers {
                         if let Some(publish) = dependency.publishable_details.get(publisher) {
@@ -717,7 +711,10 @@ pub async fn generate_workflow(
             }
         }
 
-        let testing_if = format!("{} && (fromJSON(needs.{}.outputs.workspace).{}.perform_test)", base_if, check_job_key, member_key);
+        let testing_if = format!(
+            "{} && (fromJSON(needs.{}.outputs.workspace).{}.perform_test)",
+            base_if, check_job_key, member_key
+        );
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
         let cargo_test_options: TestWorkflowArgs = match member.test_detail.args.clone() {
             Some(a) => a.into(),
@@ -732,7 +729,7 @@ pub async fn generate_workflow(
         }
         .merge(cargo_test_options.clone());
 
-        let test_job_key = format!("testing_{}", member_key);
+        let test_job_key = format!("test_{}", member_key);
         let test_job = GithubWorkflowJob {
             name: Some(format!("Test {}: {}", member.workspace, member.package)),
             uses: Some(format!(
@@ -789,51 +786,53 @@ pub async fn generate_workflow(
             publish_reporting_needs.push(key.clone());
             publish_workflow.jobs.insert(key, job);
         }
-        let publish_reporting_job_args = ReportReleaseWorkflow::new(
-            &member_key,
-            &working_directory,
-            member.publish_detail.cargo.publish,
-            member.publish_detail.binary.publish,
-            member.publish_detail.binary.installer.publish,
-            member.publish_detail.docker.publish,
-            member.publish_detail.npm_napi.publish,
-            &dynamic_value_base,
-        );
-        let publish_reporting_job = GithubWorkflowJob {
-            name: Some(format!(
-                "{} {}: {}",
-                publish_reporting_job_args.job_label(),
-                member.workspace,
-                member.package
-            )),
-            needs: Some(publish_reporting_needs),
-            uses: Some(
+        if !publish_reporting_needs.is_empty() {
+            let publish_reporting_job_args = ReportReleaseWorkflow::new(
+                &member_key,
+                &working_directory,
+                member.publish_detail.cargo.publish,
+                member.publish_detail.binary.publish,
+                member.publish_detail.binary.installer.publish,
+                member.publish_detail.docker.publish,
+                member.publish_detail.npm_napi.publish,
+                &dynamic_value_base,
+            );
+            let publish_reporting_job = GithubWorkflowJob {
+                name: Some(format!(
+                    "{} {}: {}",
+                    publish_reporting_job_args.job_label(),
+                    member.workspace,
+                    member.package
+                )),
+                needs: Some(publish_reporting_needs),
+                uses: Some(
+                    format!(
+                        "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
+                        publish_reporting_job_args.workflow_name(),
+                        options.build_workflow_version
+                    )
+                    .to_string(),
+                ),
+                job_if: Some(format!(
+                    "${{{{ {} && {}.publish) }}}}",
+                    publishing_if, dynamic_value_base,
+                )),
+                with: Some(publish_reporting_job_args.get_inputs()),
+                secrets: Some(GithubWorkflowJobSecret {
+                    inherit: true,
+                    secrets: None,
+                }),
+                ..Default::default()
+            };
+            publish_workflow.jobs.insert(
                 format!(
-                    "ForesightMiningSoftwareCorporation/github/.github/workflows/{}.yml@{}",
-                    publish_reporting_job_args.workflow_name(),
-                    options.build_workflow_version
-                )
-                .to_string(),
-            ),
-            job_if: Some(format!(
-                "${{{{ {} && {}.publish) }}}}",
-                publishing_if, dynamic_value_base,
-            )),
-            with: Some(publish_reporting_job_args.get_inputs()),
-            secrets: Some(GithubWorkflowJobSecret {
-                inherit: true,
-                secrets: None,
-            }),
-            ..Default::default()
-        };
-        publish_workflow.jobs.insert(
-            format!(
-                "{}_{}",
-                publish_reporting_job_args.job_prefix_key(),
-                member.package
-            ),
-            publish_reporting_job,
-        );
+                    "{}_{}",
+                    publish_reporting_job_args.job_prefix_key(),
+                    member.package
+                ),
+                publish_reporting_job,
+            );
+        }
         test_workflow.jobs.insert(test_job_key.clone(), test_job);
         actual_tests.push(test_job_key.clone());
     }

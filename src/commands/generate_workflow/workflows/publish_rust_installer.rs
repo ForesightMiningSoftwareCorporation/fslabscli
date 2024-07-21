@@ -128,7 +128,7 @@ impl PublishRustInstallerWorkflow {
                 working_directory,
                 version: format!(
                     "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.binary.version"
+                    dynamic_value_base, "publish_detail.binary.rc_version"
                 ),
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
                 release_channel: format!(
