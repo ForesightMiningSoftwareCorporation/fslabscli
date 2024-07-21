@@ -527,7 +527,7 @@ impl Result {
             .binary
             .check(
                 self.package.clone(),
-                self.version.clone(),
+                self.publish_detail.binary.rc_version.clone().unwrap_or_else(|| self.version.clone()),
                 binary_store,
                 &self.publish_detail.release_channel,
                 toolchain,
