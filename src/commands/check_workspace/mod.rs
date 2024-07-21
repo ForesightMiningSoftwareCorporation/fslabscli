@@ -468,7 +468,7 @@ impl Result {
                         });
                         candidates.reverse();
                         if let Some(c) = candidates.first() {
-                            lines.push(format!("az storage blob download --container-name ${{{{ vars.ARTIFACTS_CONTAINER }}}} --name {} --file target/x86_64-pc-windows-msvc/release/{}.exe", c, s));
+                            lines.push(format!("az storage blob download --container-name orica-cont-prod-update-001 --name {} --file target/x86_64-pc-windows-msvc/release/{}.exe", c, s));
                         }
                     }
                     publish.binary.installer.sub_apps_download_script = Some(lines.join("\n"));
