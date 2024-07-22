@@ -11,6 +11,8 @@ pub struct PublishRustRegistryWorkflowOutputs {
 
 #[derive(Default, Clone)]
 pub struct PublishRustRegistryWorkflowInputs {
+    /// Package name
+    pub package: String,
     /// Working directory to run the cargo command
     pub working_directory: String,
     /// Which toolchain to use
@@ -29,6 +31,7 @@ pub struct PublishRustRegistryWorkflowInputs {
 impl From<&PublishRustRegistryWorkflowInputs> for IndexMap<String, Value> {
     fn from(val: &PublishRustRegistryWorkflowInputs) -> Self {
         let mut map: IndexMap<String, Value> = IndexMap::new();
+        map.insert("package".to_string(), val.package.clone().into());
         map.insert(
             "working_directory".to_string(),
             val.working_directory.clone().into(),
@@ -61,9 +64,10 @@ pub struct PublishRustRegistryWorkflow {
 }
 
 impl PublishRustRegistryWorkflow {
-    pub fn new(working_directory: String, dynamic_value_base: &str) -> Self {
+    pub fn new(package: String, working_directory: String, dynamic_value_base: &str) -> Self {
         Self {
             inputs: PublishRustRegistryWorkflowInputs {
+                package,
                 working_directory,
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
                 additional_args: format!(

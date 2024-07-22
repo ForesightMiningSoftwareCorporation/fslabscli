@@ -718,6 +718,7 @@ pub async fn generate_workflow(
             }
             if member.publish_detail.cargo.publish {
                 member_workflows.push(Box::new(PublishRustRegistryWorkflow::new(
+                    member_key.clone(),
                     working_directory.clone(),
                     &dynamic_value_base,
                 )));
