@@ -17,12 +17,20 @@ use hyper_util::rt::TokioExecutor;
 use num::integer::lcm;
 use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use strum_macros::EnumString;
 use template::Summary;
 
 use crate::commands::summaries::template::SummaryTableCell;
+use self::run_types::{
+    Run,
+    checks::{CheckJobType, CheckRunOutput},
+    publishing::{PublishingJobType,  PublishingRunOutput}
+};
 use crate::PrettyPrintable;
 
 mod template;
+mod run_types;
 
 static GH_MAX_COMMENT_LENGTH: usize = 65536;
 
@@ -30,7 +38,7 @@ static GH_MAX_COMMENT_LENGTH: usize = 65536;
 #[command(about = "Generate summary of github run.")]
 pub struct Options {
     #[arg(long, default_value_t, value_enum)]
-    run_type: RunType,
+    run_type: RunTypeOption,
     #[arg(long, env = "GITHUB_STEP_SUMMARY")]
     output: PathBuf,
     #[arg(long)]
@@ -49,12 +57,21 @@ pub struct Options {
     check_changed_outcome: RunOutcome,
 }
 
+pub type Job<T, O> = HashMap<String, HashMap<T, Run<T, O>>>;
+
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
-enum RunType {
+enum RunTypeOption {
     #[default]
     Checks,
     Publishing,
 }
+
+#[derive(EnumString, Debug)]
+enum RunType {
+    Checks(Job<CheckJobType, CheckRunOutput>),
+    Publishing(Job<PublishingJobType, PublishingRunOutput>),
+}
+
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, PartialEq)]
 enum RunOutcome {
@@ -79,23 +96,6 @@ impl PrettyPrintable for SummariesResult {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Eq, Hash, PartialEq, Clone)]
-#[serde(rename_all = "kebab-case")]
-enum CheckType {
-    Check,
-    Test,
-    Miri,
-}
-
-impl Display for CheckType {
-    fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        match self {
-            Self::Check => write!(f, "check"),
-            Self::Test => write!(f, "test"),
-            Self::Miri => write!(f, "miri"),
-        }
-    }
-}
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
@@ -143,49 +143,6 @@ pub struct CheckOutput {
     pub log_url: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(rename_all = "kebab-case")]
-struct CheckOutputs {
-    pub check: Option<CheckOutput>,
-    pub clippy: Option<CheckOutput>,
-    pub doc: Option<CheckOutput>,
-    pub custom: Option<CheckOutput>,
-    pub deny_advisories: Option<CheckOutput>,
-    pub deny_bans: Option<CheckOutput>,
-    pub deny_license: Option<CheckOutput>,
-    pub deny_sources: Option<CheckOutput>,
-    pub dependencies: Option<CheckOutput>,
-    pub fmt: Option<CheckOutput>,
-    pub miri: Option<CheckOutput>,
-    pub publish_dryrun: Option<CheckOutput>,
-    pub tests: Option<CheckOutput>,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct CheckSummary {
-    pub name: String,
-    pub start_time: String,
-    pub end_time: String,
-    pub working_directory: String,
-    #[serde(rename = "type")]
-    pub check_type: CheckType,
-    pub server_url: String,
-    pub repository: String,
-    pub run_id: String,
-    pub run_attempt: String,
-    pub actor: String,
-    pub event_name: String,
-    pub outputs: CheckOutputs,
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-struct PublishSummary {
-    pub name: String,
-    pub start_time: String,
-    pub end_time: String,
-    pub working_directory: String,
-    pub released: bool,
-}
 
 fn get_success_emoji(success: bool) -> String {
     match success {
@@ -263,299 +220,274 @@ async fn get_workflow_info(
     )?)
 }
 
-pub async fn checks_summaries(
-    options: Box<Options>,
-    summaries_dir: PathBuf,
-) -> anyhow::Result<SummariesResult> {
-    // load all files as ChecksSummaries
-    let mut summaries: Vec<CheckSummary> = vec![];
-    // Read the directory
-    let dir = fs::read_dir(summaries_dir)?;
+// pub async fn checks_summaries(
+//     options: Box<Options>,
+//     summaries_dir: PathBuf,
+//     checks_map: HashMap<String, HashMap<JobType, SummaryFile<CheckOutputs>>>
+// ) -> anyhow::Result<SummariesResult> {
+//     // For each package we need to check if the checks wer a success, and for each check type, generate a report
+//     let mut summary = Summary::new(options.output);
+//     let mut overall_success = true;
+//     let mut failed = 0;
+//     let mut failed_o = 0;
+//     let mut skipped = 0;
+//     let mut cancelled = 0;
+//     let mut succeeded = 0;
 
-    // Collect paths of JSON files
-    let json_files: Vec<_> = dir
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "json"))
-        .map(|entry| entry.path())
-        .collect();
+//     let https = hyper_rustls::HttpsConnectorBuilder::new()
+//         .with_tls_config(
+//             rustls::ClientConfig::builder()
+//                 .with_native_roots()?
+//                 .with_no_client_auth(),
+//         )
+//         .https_or_http()
+//         .enable_http1()
+//         .build();
+//     let client = HyperClient::builder(TokioExecutor::new()).build(https);
+//     for (package, checks) in checks_map {
+//         let mut success = true;
 
-    // Deserialize each JSON file and collect into vector
-    for file_path in json_files {
-        let file_content = fs::read_to_string(&file_path)?;
-        let deserialized: CheckSummary = serde_json::from_str(&file_content)?;
-        summaries.push(deserialized);
-    }
+//         let mut check_outputs: Vec<CheckedOutput> = vec![];
+//         for (check_name, check_summary) in checks {
+//             let mining_bot_url = format!(
+//                 "{}/workflow?run_id={}&working_directory={}&summary_type={}&run_attempt={}",
+//                 options.mining_bot_url.clone(),
+//                 check_summary.run_id.clone(),
+//                 check_summary.working_directory.replace('/', "%2F"),
+//                 check_name,
+//                 check_summary.run_attempt.clone(),
+//             );
+//             let workflow_info = get_workflow_info(&client, mining_bot_url).await;
+//             let base_url: Option<String> =
+//                 workflow_info.as_ref().map(|w| w.raw.html_url.clone()).ok();
+//             let steps = workflow_info.as_ref().map(|w| w.raw.steps.to_vec()).ok();
+//             let mut check_success = true;
+//             let sub_checks: Vec<(String, Option<CheckOutput>)> = vec![
+//                 ("check".to_string(), check_summary.outputs.check.clone()),
+//                 ("clippy".to_string(), check_summary.outputs.clippy.clone()),
+//                 ("doc".to_string(), check_summary.outputs.doc.clone()),
+//                 // ("custom", check_summary.outputs.custom.clone()),
+//                 (
+//                     "deny_advisories".to_string(),
+//                     check_summary.outputs.deny_advisories.clone(),
+//                 ),
+//                 (
+//                     "deny_bans".to_string(),
+//                     check_summary.outputs.deny_bans.clone(),
+//                 ),
+//                 (
+//                     "deny_license".to_string(),
+//                     check_summary.outputs.deny_license.clone(),
+//                 ),
+//                 (
+//                     "deny_sources".to_string(),
+//                     check_summary.outputs.deny_sources.clone(),
+//                 ),
+//                 (
+//                     "dependencies".to_string(),
+//                     check_summary.outputs.dependencies.clone(),
+//                 ),
+//                 ("fmt".to_string(), check_summary.outputs.fmt.clone()),
+//                 ("miri".to_string(), check_summary.outputs.miri.clone()),
+//                 (
+//                     "publish_dryrun".to_string(),
+//                     check_summary.outputs.publish_dryrun.clone(),
+//                 ),
+//                 ("tests".to_string(), check_summary.outputs.tests.clone()),
+//             ];
+//             let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
+//             for (subcheck, check) in sub_checks {
+//                 if let Some(check) = check {
+//                     let mut new_check = check.clone();
+//                     if let (Some(steps), Some(base_url)) = (steps.clone(), base_url.clone()) {
+//                         let step = steps.iter().find(|c| c.name == subcheck.replace('_', "-"));
+//                         if let Some(step) = step {
+//                             new_check.number = Some(step.number);
+//                             new_check.log_url =
+//                                 Some(format!("{}#step:{}:1", base_url, step.number));
+//                         }
+//                     }
+//                     checked_sub_checks.push((subcheck, new_check));
+//                     if check.required {
+//                         check_success &= check.outcome.is_passing();
+//                     }
+//                 }
+//             }
+//             if checked_sub_checks.is_empty() {
+//                 continue;
+//             }
+//             // order sub check by number
+//             checked_sub_checks.sort_by_key(|(n, o)| (o.number, n.clone()));
+//             check_outputs.push(CheckedOutput {
+//                 check_name: check_name.to_string(),
+//                 sub_checks: checked_sub_checks,
+//                 check_success,
+//                 url: base_url,
+//             });
+//             success &= check_success;
+//         }
+//         // #1 Find the lcm between the result to display a nice table
+//         let mut lcm_result: usize = 1;
+//         for checked in check_outputs.iter() {
+//             lcm_result = lcm(lcm_result, checked.sub_checks.len());
+//         }
+//         let header_row: Vec<SummaryTableCell> = vec![
+//             SummaryTableCell::new_header("Category".to_string(), 1),
+//             SummaryTableCell::new_header("Checks".to_string(), lcm_result),
+//         ];
+//         let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
+//         check_outputs.sort_by_key(|c| c.check_name.clone());
+//         for checked in check_outputs.iter() {
+//             let colspan = lcm_result / (checked.sub_checks.len());
+//             let check_cell_name = format!(
+//                 "{} {}",
+//                 get_success_emoji(checked.check_success),
+//                 if let Some(url) = checked.url.clone() {
+//                     summary.link(checked.check_name.to_string(), url)
+//                 } else {
+//                     checked.check_name.to_string()
+//                 }
+//             );
+//             let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
+//             let mut imgs: Vec<String> = vec![];
+//             for (subcheck_name, subcheck) in checked.sub_checks.iter() {
+//                 match subcheck.outcome {
+//                     CheckOutcome::Success => succeeded += 1,
+//                     CheckOutcome::Failure => match subcheck.required {
+//                         true => failed += 1,
+//                         false => failed_o += 1,
+//                     },
+//                     CheckOutcome::Cancelled => cancelled += 1,
+//                     CheckOutcome::Skipped => skipped += 1,
+//                 }
+//                 let subcheck_image = summary.image(
+//                     format!(
+//                         "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
+//                         options.mining_bot_url,
+//                         get_outcome_color(subcheck.outcome, subcheck.required),
+//                         subcheck_name,
+//                         colspan,
+//                     ),
+//                     format!("{}", subcheck.outcome),
+//                     subcheck_name.to_string(),
+//                     None,
+//                     None,
+//                 );
+//                 let subcheck_cell = match subcheck.log_url.clone() {
+//                     Some(u) => summary.link(subcheck_image, u),
+//                     None => subcheck_image,
+//                 };
+//                 imgs.push(subcheck_cell);
+//             }
+//             row.push(SummaryTableCell::new(imgs.join(""), 1));
+//             rows.push(row);
+//         }
 
-    // We have a list of file we need to get to a HashMap<Package, HashMap<CheckType, CheckSummary>>
-    let mut checks_map: HashMap<String, HashMap<CheckType, CheckSummary>> = HashMap::new();
-    for summary in summaries {
-        let inner_map = checks_map.entry(summary.name.clone()).or_default();
-        inner_map.insert(summary.check_type.clone(), summary);
-    }
+//         summary.add_content(
+//             summary.detail(
+//                 summary.heading(
+//                     format!("{} - {}", package, get_success_emoji(success)),
+//                     Some(2),
+//                 ),
+//                 summary.table(rows),
+//                 !success,
+//             ),
+//             true,
+//         );
+//         overall_success &= success;
+//     }
 
-    // For each package we need to check if the checks wer a success, and for each check type, generate a report
-    let mut summary = Summary::new(options.output);
-    let mut overall_success = true;
-    let mut failed = 0;
-    let mut failed_o = 0;
-    let mut skipped = 0;
-    let mut cancelled = 0;
-    let mut succeeded = 0;
+//     let mut messages: Vec<String> = vec![];
+//     if succeeded > 0 {
+//         messages.push(format!("{} passed", succeeded))
+//     }
+//     if failed > 0 {
+//         messages.push(format!("{} failed", failed))
+//     }
+//     if failed_o > 0 {
+//         messages.push(format!("{} failed (non required)", failed_o))
+//     }
+//     if cancelled > 0 {
+//         messages.push(format!("{} cancelled", cancelled))
+//     }
+//     if skipped > 0 {
+//         messages.push(format!("{} skipped", skipped))
+//     }
 
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(
-            rustls::ClientConfig::builder()
-                .with_native_roots()?
-                .with_no_client_auth(),
-        )
-        .https_or_http()
-        .enable_http1()
-        .build();
-    let client = HyperClient::builder(TokioExecutor::new()).build(https);
-    for (package, checks) in checks_map {
-        let mut success = true;
+//     let icon_svg = format!(
+//         "{}/svg/tests.svg?passed={}&failed={}&failed_o={}&skipped={}&cancelled={}",
+//         options.mining_bot_url, succeeded, failed, failed_o, skipped, cancelled
+//     );
+//     summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
+//     summary.write(true).await?;
+//     if let (
+//         Some(github_token),
+//         Some(github_event_name),
+//         Some(github_issue_number),
+//         Some(github_repo),
+//     ) = (
+//         options.github_token,
+//         options.github_event_name,
+//         options.github_issue_number,
+//         options.github_repo,
+//     ) {
+//         if github_event_name == "pull_request" || github_event_name == "pull_request_target" {
+//             // We have a github token we should try to update the pr
+//             let octocrab = Octocrab::builder().personal_token(github_token).build()?;
+//             if let Some((owner, repo)) = github_repo.split_once('/') {
+//                 let issues_client = octocrab.issues(owner, repo);
+//                 let output = summary.get_content();
+//                 if options.hide_previous_pr_comment {
+//                     // Hide previsous
+//                     let user = octocrab
+//                         .current()
+//                         .user()
+//                         .await
+//                         .map(|u| u.login)
+//                         .unwrap_or_else(|_| "fmsc-bot[bot]".to_string());
+//                     if let Ok(existing_comments) = issues_client
+//                         .list_comments(github_issue_number)
+//                         .send()
+//                         .await
+//                         .map_err(|e| {
+//                             println!("Could not list comments: {:?}", e);
+//                             e
+//                         })
+//                     {
+//                         for existing_comment in existing_comments {
+//                             if existing_comment.user.login != user {
+//                                 continue;
+//                             }
+//                             // Delete all of our comments? Maybe we nmeed to be more clever
+//                             let _ = issues_client
+//                                 .delete_comment(existing_comment.id)
+//                                 .await
+//                                 .map_err(|e| {
+//                                     println!("Could not delete comment: {:?}", e);
+//                                     e
+//                                 });
+//                         }
+//                     }
+//                 }
+//                 let comments = split_comments(output);
+//                 for comment in comments {
+//                     let _ = issues_client
+//                         .create_comment(github_issue_number, comment)
+//                         .await
+//                         .map_err(|e| {
+//                             println!("Could not create comment: {:?}", e);
+//                             e
+//                         });
+//                 }
+//             }
+//         }
+//     }
 
-        let mut check_outputs: Vec<CheckedOutput> = vec![];
-        for (check_name, check_summary) in checks {
-            let mining_bot_url = format!(
-                "{}/workflow?run_id={}&working_directory={}&check_type={}&run_attempt={}",
-                options.mining_bot_url.clone(),
-                check_summary.run_id.clone(),
-                check_summary.working_directory.replace('/', "%2F"),
-                check_name,
-                check_summary.run_attempt.clone(),
-            );
-            let workflow_info = get_workflow_info(&client, mining_bot_url).await;
-            let base_url: Option<String> =
-                workflow_info.as_ref().map(|w| w.raw.html_url.clone()).ok();
-            let steps = workflow_info.as_ref().map(|w| w.raw.steps.to_vec()).ok();
-            let mut check_success = true;
-            let sub_checks: Vec<(String, Option<CheckOutput>)> = vec![
-                ("check".to_string(), check_summary.outputs.check.clone()),
-                ("clippy".to_string(), check_summary.outputs.clippy.clone()),
-                ("doc".to_string(), check_summary.outputs.doc.clone()),
-                // ("custom", check_summary.outputs.custom.clone()),
-                (
-                    "deny_advisories".to_string(),
-                    check_summary.outputs.deny_advisories.clone(),
-                ),
-                (
-                    "deny_bans".to_string(),
-                    check_summary.outputs.deny_bans.clone(),
-                ),
-                (
-                    "deny_license".to_string(),
-                    check_summary.outputs.deny_license.clone(),
-                ),
-                (
-                    "deny_sources".to_string(),
-                    check_summary.outputs.deny_sources.clone(),
-                ),
-                (
-                    "dependencies".to_string(),
-                    check_summary.outputs.dependencies.clone(),
-                ),
-                ("fmt".to_string(), check_summary.outputs.fmt.clone()),
-                ("miri".to_string(), check_summary.outputs.miri.clone()),
-                (
-                    "publish_dryrun".to_string(),
-                    check_summary.outputs.publish_dryrun.clone(),
-                ),
-                ("tests".to_string(), check_summary.outputs.tests.clone()),
-            ];
-            let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
-            for (subcheck, check) in sub_checks {
-                if let Some(check) = check {
-                    let mut new_check = check.clone();
-                    if let (Some(steps), Some(base_url)) = (steps.clone(), base_url.clone()) {
-                        let step = steps.iter().find(|c| c.name == subcheck.replace('_', "-"));
-                        if let Some(step) = step {
-                            new_check.number = Some(step.number);
-                            new_check.log_url =
-                                Some(format!("{}#step:{}:1", base_url, step.number));
-                        }
-                    }
-                    checked_sub_checks.push((subcheck, new_check));
-                    if check.required {
-                        check_success &= check.outcome.is_passing();
-                    }
-                }
-            }
-            if checked_sub_checks.is_empty() {
-                continue;
-            }
-            // order sub check by number
-            checked_sub_checks.sort_by_key(|(n, o)| (o.number, n.clone()));
-            check_outputs.push(CheckedOutput {
-                check_name: check_name.to_string(),
-                sub_checks: checked_sub_checks,
-                check_success,
-                url: base_url,
-            });
-            success &= check_success;
-        }
-        // #1 Find the lcm between the result to display a nice table
-        let mut lcm_result: usize = 1;
-        for checked in check_outputs.iter() {
-            lcm_result = lcm(lcm_result, checked.sub_checks.len());
-        }
-        let header_row: Vec<SummaryTableCell> = vec![
-            SummaryTableCell::new_header("Category".to_string(), 1),
-            SummaryTableCell::new_header("Checks".to_string(), lcm_result),
-        ];
-        let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
-        check_outputs.sort_by_key(|c| c.check_name.clone());
-        for checked in check_outputs.iter() {
-            let colspan = lcm_result / (checked.sub_checks.len());
-            let check_cell_name = format!(
-                "{} {}",
-                get_success_emoji(checked.check_success),
-                if let Some(url) = checked.url.clone() {
-                    summary.link(checked.check_name.to_string(), url)
-                } else {
-                    checked.check_name.to_string()
-                }
-            );
-            let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
-            let mut imgs: Vec<String> = vec![];
-            for (subcheck_name, subcheck) in checked.sub_checks.iter() {
-                match subcheck.outcome {
-                    CheckOutcome::Success => succeeded += 1,
-                    CheckOutcome::Failure => match subcheck.required {
-                        true => failed += 1,
-                        false => failed_o += 1,
-                    },
-                    CheckOutcome::Cancelled => cancelled += 1,
-                    CheckOutcome::Skipped => skipped += 1,
-                }
-                let subcheck_image = summary.image(
-                    format!(
-                        "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
-                        options.mining_bot_url,
-                        get_outcome_color(subcheck.outcome, subcheck.required),
-                        subcheck_name,
-                        colspan,
-                    ),
-                    format!("{}", subcheck.outcome),
-                    subcheck_name.to_string(),
-                    None,
-                    None,
-                );
-                let subcheck_cell = match subcheck.log_url.clone() {
-                    Some(u) => summary.link(subcheck_image, u),
-                    None => subcheck_image,
-                };
-                imgs.push(subcheck_cell);
-            }
-            row.push(SummaryTableCell::new(imgs.join(""), 1));
-            rows.push(row);
-        }
-
-        summary.add_content(
-            summary.detail(
-                summary.heading(
-                    format!("{} - {}", package, get_success_emoji(success)),
-                    Some(2),
-                ),
-                summary.table(rows),
-                !success,
-            ),
-            true,
-        );
-        overall_success &= success;
-    }
-
-    let mut messages: Vec<String> = vec![];
-    if succeeded > 0 {
-        messages.push(format!("{} passed", succeeded))
-    }
-    if failed > 0 {
-        messages.push(format!("{} failed", failed))
-    }
-    if failed_o > 0 {
-        messages.push(format!("{} failed (non required)", failed_o))
-    }
-    if cancelled > 0 {
-        messages.push(format!("{} cancelled", cancelled))
-    }
-    if skipped > 0 {
-        messages.push(format!("{} skipped", skipped))
-    }
-
-    let icon_svg = format!(
-        "{}/svg/tests.svg?passed={}&failed={}&failed_o={}&skipped={}&cancelled={}",
-        options.mining_bot_url, succeeded, failed, failed_o, skipped, cancelled
-    );
-    summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
-    summary.write(true).await?;
-    if let (
-        Some(github_token),
-        Some(github_event_name),
-        Some(github_issue_number),
-        Some(github_repo),
-    ) = (
-        options.github_token,
-        options.github_event_name,
-        options.github_issue_number,
-        options.github_repo,
-    ) {
-        if github_event_name == "pull_request" || github_event_name == "pull_request_target" {
-            // We have a github token we should try to update the pr
-            let octocrab = Octocrab::builder().personal_token(github_token).build()?;
-            if let Some((owner, repo)) = github_repo.split_once('/') {
-                let issues_client = octocrab.issues(owner, repo);
-                let output = summary.get_content();
-                if options.hide_previous_pr_comment {
-                    // Hide previsous
-                    let user = octocrab
-                        .current()
-                        .user()
-                        .await
-                        .map(|u| u.login)
-                        .unwrap_or_else(|_| "fmsc-bot[bot]".to_string());
-                    if let Ok(existing_comments) = issues_client
-                        .list_comments(github_issue_number)
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            println!("Could not list comments: {:?}", e);
-                            e
-                        })
-                    {
-                        for existing_comment in existing_comments {
-                            if existing_comment.user.login != user {
-                                continue;
-                            }
-                            // Delete all of our comments? Maybe we nmeed to be more clever
-                            let _ = issues_client
-                                .delete_comment(existing_comment.id)
-                                .await
-                                .map_err(|e| {
-                                    println!("Could not delete comment: {:?}", e);
-                                    e
-                                });
-                        }
-                    }
-                }
-                let comments = split_comments(output);
-                for comment in comments {
-                    let _ = issues_client
-                        .create_comment(github_issue_number, comment)
-                        .await
-                        .map_err(|e| {
-                            println!("Could not create comment: {:?}", e);
-                            e
-                        });
-                }
-            }
-        }
-    }
-
-    match overall_success {
-        true => Ok(SummariesResult {}),
-        false => anyhow::bail!("Required test failed"),
-    }
-}
+//     match overall_success {
+//         true => Ok(SummariesResult {}),
+//         false => anyhow::bail!("Required test failed"),
+//     }
+// }
 
 fn split_comments(comment: String) -> Vec<String> {
     let sep_start = "Continued from previous comment.\n";
@@ -596,8 +528,15 @@ pub async fn summaries(
     if options.check_changed_outcome.clone() != RunOutcome::Success {
         anyhow::bail!("Ci error, please check `check_workspace` job and ping devops ");
     }
-    match options.run_type.clone() {
-        RunType::Checks => checks_summaries(options, working_directory).await,
-        RunType::Publishing => publishing_summaries(options, working_directory).await,
-    }
+    let run = match options.run_type {
+        RunTypeOption::Publishing => RunType::Publishing(Run::<PublishingJobType, PublishingRunOutput>::load(&working_directory)?),
+        RunTypeOption::Checks => RunType::Checks(Run::<CheckJobType, CheckRunOutput>::load(&working_directory)?),
+    };
+    println!("Got map: {:#?}", run);
+    Ok(SummariesResult {})
+
+    // match options.run_type.clone() {
+    //     RunTypeOption::Checks => checks_summaries(options, working_directory).await,
+    //     RunTypeOption::Publishing => publishing_summaries(options, working_directory).await,
+    // }
 }

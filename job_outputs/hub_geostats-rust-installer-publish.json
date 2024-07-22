@@ -1,0 +1,16 @@
+{
+  "name": "hub_geostats",
+  "start_time": "",
+  "end_time": "1721554533000",
+  "working_directory": "hub_geostats",
+  "type": "rust-installer-publish",
+  "server_url": "https://github.com",
+  "repository": "ForesightMiningSoftwareCorporation/orica_libs",
+  "run_id": "10027182341",
+  "run_attempt": "3",
+  "actor": "loispostula",
+  "event_name": "workflow_dispatch",
+  "outputs": {
+    "released": true
+  }
+}
