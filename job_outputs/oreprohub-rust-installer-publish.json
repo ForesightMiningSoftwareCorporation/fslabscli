@@ -1,0 +1,16 @@
+{
+  "name": "oreprohub",
+  "start_time": "",
+  "end_time": "1721554530000",
+  "working_directory": "hub_launcher",
+  "type": "rust-installer-publish",
+  "server_url": "https://github.com",
+  "repository": "ForesightMiningSoftwareCorporation/orica_libs",
+  "run_id": "10027182341",
+  "run_attempt": "3",
+  "actor": "loispostula",
+  "event_name": "workflow_dispatch",
+  "outputs": {
+    "released": true
+  }
+}
