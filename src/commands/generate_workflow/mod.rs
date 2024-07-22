@@ -62,7 +62,7 @@ pub struct Options {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
-    #[arg(long, default_value = "v3.0.0")]
+    #[arg(long, default_value = "v3.0.1")]
     build_workflow_version: String,
     #[arg(long)]
     fslabscli_version: Option<String>,
@@ -718,6 +718,7 @@ pub async fn generate_workflow(
             }
             if member.publish_detail.cargo.publish {
                 member_workflows.push(Box::new(PublishRustRegistryWorkflow::new(
+                    member_key.clone(),
                     working_directory.clone(),
                     &dynamic_value_base,
                 )));
