@@ -48,7 +48,7 @@ else
   CHECK_CHANGED=('--check-changed' '--changed-base-ref' "origin/${BASE_REF}" '--changed-head-ref' "${HEAD_REF}")
   git fetch origin ${BASE_REF} --depth 1
 fi
-workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ secrets.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ secrets.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}")
+workspace=$(fslabscli check-workspace --json --check-publish "${CHECK_CHANGED[@]}" --binary-store-storage-account ${{ vars.BINARY_STORE_STORAGE_ACCOUNT }} --binary-store-container-name ${{ vars.BINARY_STORE_CONTAINER_NAME }} --binary-store-access-key ${{ secrets.BINARY_STORE_ACCESS_KEY }} --cargo-default-publish --cargo-registry foresight-mining-software-corporation --cargo-registry-url https://shipyard.rs/api/v1/shipyard/krates/by-name/ --cargo-registry-user-agent "shipyard ${{ secrets.CARGO_PRIVATE_REGISTRY_TOKEN }}")
 if [ $? -ne 0 ]; then
   echo "Could not check workspace"
   exit 1
@@ -648,13 +648,26 @@ pub async fn generate_workflow(
             if let Some(package_name) = dependency.package.clone() {
                 testing_requirements.push(format!("test_{}", package_name));
                 if dependency.publishable {
-                    let publishers = vec!["docker", "cargo", "npm_napi", "binary"];
-                    for publisher in publishers {
-                        if let Some(publish) = dependency.publishable_details.get(publisher) {
-                            if *publish {
-                                publishing_requirements
-                                    .push(format!("publish_{}_{}", publisher, package_name,));
-                            }
+                    if let Some(dependency_package) = members.0.get(&package_name) {
+                        if dependency_package.publish_detail.binary.publish {
+                            publishing_requirements
+                                .push(format!("publish_rust_binary_{}", package_name,));
+                        }
+                        if dependency_package.publish_detail.binary.installer.publish {
+                            publishing_requirements
+                                .push(format!("publish_rust_installer_{}", package_name,));
+                        }
+                        if dependency_package.publish_detail.cargo.publish {
+                            publishing_requirements
+                                .push(format!("publish_rust_registry_{}", package_name,));
+                        }
+                        if dependency_package.publish_detail.docker.publish {
+                            publishing_requirements
+                                .push(format!("publish_docker_{}", package_name,));
+                        }
+                        if dependency_package.publish_detail.npm_napi.publish {
+                            publishing_requirements
+                                .push(format!("publish_npm_napi_{}", package_name,));
                         }
                     }
                 }

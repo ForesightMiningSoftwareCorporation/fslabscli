@@ -334,6 +334,11 @@ impl Result {
         self.publish_detail.ci_runner =
             Some(format!("rust-{}-scale-set", toolchain.replace('.', "-")));
     }
+
+    pub fn update_toolchain(&mut self, toolchain: &str) {
+        self.toolchain = toolchain.to_string();
+    }
+
     pub async fn update_runtime_information(
         &mut self,
         release_channel: Option<&str>,
@@ -344,6 +349,7 @@ impl Result {
     ) -> anyhow::Result<()> {
         self.update_release_channel(release_channel);
         self.update_ci_runner(toolchain);
+        self.update_toolchain(toolchain);
 
         if self.publish_detail.binary.publish {
             let rc_version = match self.publish_detail.release_channel {
@@ -753,98 +759,6 @@ pub async fn check_workspace(
 
     let package_keys: Vec<String> = packages.keys().cloned().collect();
 
-    if options.progress {
-        println!(
-            "{} {}Resolving packages dependencies...",
-            style("[3/9]").bold().dim(),
-            TRUCK
-        );
-    }
-    let mut pb: Option<ProgressBar> = None;
-    if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let publish_status: HashMap<String, bool> = packages
-        .clone()
-        .into_iter()
-        .map(|(k, v)| (k, v.publish))
-        .collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get_mut(&package_key) {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            package.dependencies.retain(|d| {
-                d.package
-                    .as_ref()
-                    .map_or(false, |p| package_keys.contains(p))
-            });
-            for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package {
-                    if let Some(dep_p) = publish_status.get(package_name) {
-                        dep.publishable = *dep_p;
-                    }
-                }
-            }
-        }
-    }
-
-    // 4 Feed Dependent
-    if options.progress {
-        println!(
-            "{} {}Feeding packages dependant...",
-            style("[4/9]").bold().dim(),
-            TRUCK
-        );
-    }
-
-    if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get(&package_key).cloned() {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            // for each dependency we need to edit it and add ourself as a dependeant
-            for dependency in package.dependencies.clone() {
-                if let Some(package_name) = dependency.package {
-                    if let Some(dependant) = packages.get_mut(&package_name) {
-                        dependant.dependant.push(ResultDependency {
-                            package: Some(package.package.clone()),
-                            version: package.version.clone(),
-                            path: Some(package.path.clone()),
-                            publishable: package.publish,
-                            publishable_details: HashMap::from([
-                                ("docker".to_string(), package.publish_detail.docker.publish),
-                                ("cargo".to_string(), package.publish_detail.cargo.publish),
-                                (
-                                    "npm_napi".to_string(),
-                                    package.publish_detail.npm_napi.publish,
-                                ),
-                                ("binary".to_string(), package.publish_detail.binary.publish),
-                            ]),
-                            guid_suffix: None,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
     // 5. Compute Runtime information
     if options.progress {
         println!(
@@ -854,6 +768,7 @@ pub async fn check_workspace(
         );
     }
 
+    let mut pb: Option<ProgressBar> = None;
     if options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
@@ -986,8 +901,98 @@ pub async fn check_workspace(
 
     if options.progress {
         println!(
+            "{} {}Resolving packages dependencies...",
+            style("[3/9]").bold().dim(),
+            TRUCK
+        );
+    }
+    let mut pb: Option<ProgressBar> = None;
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    let publish_status: HashMap<String, bool> = packages
+        .clone()
+        .into_iter()
+        .map(|(k, v)| (k, v.publish))
+        .collect();
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get_mut(&package_key) {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            package.dependencies.retain(|d| {
+                d.package
+                    .as_ref()
+                    .map_or(false, |p| package_keys.contains(p))
+            });
+            for dep in &mut package.dependencies {
+                if let Some(package_name) = &dep.package {
+                    if let Some(dep_p) = publish_status.get(package_name) {
+                        dep.publishable = *dep_p;
+                    }
+                }
+            }
+        }
+    }
+    // 4 Feed Dependent
+    if options.progress {
+        println!(
+            "{} {}Feeding packages dependant...",
+            style("[7/9]").bold().dim(),
+            TRUCK
+        );
+    }
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get(&package_key).cloned() {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            // for each dependency we need to edit it and add ourself as a dependeant
+            for dependency in package.dependencies.clone() {
+                if let Some(package_name) = dependency.package {
+                    if let Some(dependant) = packages.get_mut(&package_name) {
+                        dependant.dependant.push(ResultDependency {
+                            package: Some(package.package.clone()),
+                            version: package.version.clone(),
+                            path: Some(package.path.clone()),
+                            publishable: package.publish,
+                            publishable_details: HashMap::from([
+                                ("docker".to_string(), package.publish_detail.docker.publish),
+                                ("cargo".to_string(), package.publish_detail.cargo.publish),
+                                (
+                                    "npm_napi".to_string(),
+                                    package.publish_detail.npm_napi.publish,
+                                ),
+                                ("binary".to_string(), package.publish_detail.binary.publish),
+                            ]),
+                            guid_suffix: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if options.progress {
+        println!(
             "{} {}Checking if packages changed...",
-            style("[6/7]").bold().dim(),
+            style("[8/9]").bold().dim(),
             TRUCK
         );
     }
@@ -1081,7 +1086,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Marking packages dependency as changed...",
-            style("[7/7]").bold().dim(),
+            style("[9/9]").bold().dim(),
             TRUCK
         );
     }
