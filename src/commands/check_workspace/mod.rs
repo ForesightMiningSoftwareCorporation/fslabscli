@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_value;
 use serde_yaml::Value;
 use strum_macros::EnumString;
-use toml::Value as TomlValue;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
@@ -216,36 +215,11 @@ fn get_blob_name(
     )
 }
 
-fn get_info_from_cargo_toml(package_root: &Path) -> Option<(String, String)> {
-    let cargo_toml = package_root.join("Cargo.toml");
-    if let Ok(content) = fs::read_to_string(cargo_toml) {
-        let parsed_toml: Option<TomlValue> = content.parse().ok();
-        if let Some(version) = parsed_toml
-            .as_ref()
-            .and_then(|value| value.get("package"))
-            .and_then(|package| package.get("version"))
-            .and_then(|version| version.as_str())
-        {
-            if let Some(name) = parsed_toml
-                .as_ref()
-                .and_then(|value| value.get("package"))
-                .and_then(|package| package.get("name"))
-                .and_then(|name| name.as_str())
-            {
-                return Some((name.to_string(), version.to_string()));
-            }
-        }
-    }
-    None
-}
-
 impl Result {
     pub async fn new(
         workspace: String,
         package: Package,
         root_dir: PathBuf,
-        release_channel: Option<String>,
-        object_store: &Option<BinaryStore>,
     ) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
@@ -253,8 +227,6 @@ impl Result {
             .parent()
             .unwrap()
             .to_path_buf();
-
-        let toolchain = get_toolchain(&root_dir).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
 
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
@@ -311,15 +283,31 @@ impl Result {
         if path.to_string_lossy().is_empty() {
             path = PathBuf::from(".");
         }
+
+        // Deduct version based on if it's nightly or not
+        //
+        Ok(Self {
+            workspace,
+            package: package.name,
+            version: package.version.to_string(),
+            path,
+            publish_detail: publish,
+            test_detail: metadata.fslabs.test.unwrap_or_default(),
+            dependencies,
+            ..Default::default()
+        })
+    }
+
+    pub fn update_release_channel(&mut self, release_channel: Option<&str>) {
         // Deduct release channel
         let release_channel: ReleaseChannel = match release_channel {
-            Some(r) => ReleaseChannel::from_str(&r).unwrap_or_default(),
+            Some(r) => ReleaseChannel::from_str(r).unwrap_or_default(),
             None => {
                 // Parse from the environment
                 std::env::var("GITHUB_REF")
                     .map(|r| {
                         // Regarding installer and launcher, we need to check the tag of their counterpart
-                        let mut check_key = package.name.clone();
+                        let mut check_key = self.package.clone();
                         if check_key.ends_with("_launcher") {
                             check_key = check_key.replace("_launcher", "");
                         }
@@ -339,93 +327,157 @@ impl Result {
                     .unwrap_or_default()
             }
         };
-        publish.release_channel = release_channel.clone();
-        publish.ci_runner = Some(format!("rust-{}-scale-set", toolchain.replace('.', "-")));
+        self.publish_detail.release_channel = release_channel.clone();
+    }
 
-        // Deduct version based on if it's nightly or not
-        //
-        let now = Utc::now().date_naive();
-        let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
-        let timestamp = (now - epoch).num_days();
-        if publish.binary.publish {
-            let rc_version = match release_channel {
+    pub fn update_ci_runner(&mut self, toolchain: &str) {
+        self.publish_detail.ci_runner =
+            Some(format!("rust-{}-scale-set", toolchain.replace('.', "-")));
+    }
+    pub async fn update_runtime_information(
+        &mut self,
+        release_channel: Option<&str>,
+        toolchain: &str,
+        version_timestamp: &str,
+        package_versions: &HashMap<String, String>,
+        object_store: &Option<BinaryStore>,
+    ) -> anyhow::Result<()> {
+        self.update_release_channel(release_channel);
+        self.update_ci_runner(toolchain);
+
+        if self.publish_detail.binary.publish {
+            let rc_version = match self.publish_detail.release_channel {
                 ReleaseChannel::Nightly => {
                     // Nightly version should be current date
-                    if package.name.ends_with("_launcher") {
-                        package.version.to_string()
+                    if self.package.ends_with("_launcher") {
+                        self.version.to_string()
                     } else {
-                        format!("{}.{}", package.version, timestamp)
+                        format!("{}.{}", self.version, version_timestamp)
                     }
                 }
-                _ => package.version.to_string(),
+                _ => self.version.to_string(),
             };
-            publish.binary.rc_version = Some(rc_version.clone());
-            publish.binary.name = match release_channel {
-                ReleaseChannel::Nightly => format!("{} Nightly", publish.binary.name),
-                ReleaseChannel::Alpha => format!("{} Alpha", publish.binary.name),
-                ReleaseChannel::Beta => format!("{} Beta", publish.binary.name),
-                ReleaseChannel::Prod => publish.binary.name.clone(),
+            self.publish_detail.binary.rc_version = Some(rc_version.clone());
+            self.publish_detail.binary.name = match self.publish_detail.release_channel {
+                ReleaseChannel::Nightly => format!("{} Nightly", self.publish_detail.binary.name),
+                ReleaseChannel::Alpha => format!("{} Alpha", self.publish_detail.binary.name),
+                ReleaseChannel::Beta => format!("{} Beta", self.publish_detail.binary.name),
+                ReleaseChannel::Prod => self.publish_detail.binary.name.clone(),
             };
-            publish.binary.fallback_name = Some(publish.binary.name.replace(' ', "_"));
+            self.publish_detail.binary.fallback_name =
+                Some(self.publish_detail.binary.name.replace(' ', "_"));
 
             // Compute blob names
-            let (package_blob_dir, package_blob_name) =
-                get_blob_name(&package.name, &rc_version, &toolchain, &release_channel);
+            let (package_blob_dir, package_blob_name) = get_blob_name(
+                &self.package,
+                &rc_version,
+                toolchain,
+                &self.publish_detail.release_channel,
+            );
 
-            publish.binary.blob_dir = Some(package_blob_dir);
-            publish.binary.blob_name = Some(package_blob_name);
-            if publish.binary.installer.publish {
+            self.publish_detail.binary.blob_dir = Some(package_blob_dir);
+            self.publish_detail.binary.blob_name = Some(package_blob_name);
+            if self.publish_detail.binary.installer.publish {
                 // Expiry
                 let now = Utc::now();
                 let future = now + Duration::hours(24);
-                publish.binary.installer.sas_expiry = Some(format!("{}", future.format("%FT%TZ")));
+                self.publish_detail.binary.installer.sas_expiry =
+                    Some(format!("{}", future.format("%FT%TZ")));
                 //  Get Guid Prefix and Upgrade code
-                let (upgrade_code, guid_prefix) = match release_channel {
+                let (upgrade_code, guid_prefix) = match self.publish_detail.release_channel {
                     ReleaseChannel::Nightly => (
-                        publish.binary.installer.nightly.upgrade_code.clone(),
-                        publish.binary.installer.nightly.guid_prefix.clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .nightly
+                            .upgrade_code
+                            .clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .nightly
+                            .guid_prefix
+                            .clone(),
                     ),
                     ReleaseChannel::Alpha => (
-                        publish.binary.installer.alpha.upgrade_code.clone(),
-                        publish.binary.installer.alpha.guid_prefix.clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .alpha
+                            .upgrade_code
+                            .clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .alpha
+                            .guid_prefix
+                            .clone(),
                     ),
                     ReleaseChannel::Beta => (
-                        publish.binary.installer.beta.upgrade_code.clone(),
-                        publish.binary.installer.beta.guid_prefix.clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .beta
+                            .upgrade_code
+                            .clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .beta
+                            .guid_prefix
+                            .clone(),
                     ),
                     ReleaseChannel::Prod => (
-                        publish.binary.installer.prod.upgrade_code.clone(),
-                        publish.binary.installer.prod.guid_prefix.clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .prod
+                            .upgrade_code
+                            .clone(),
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .prod
+                            .guid_prefix
+                            .clone(),
                     ),
                 };
 
-                publish.binary.installer.upgrade_code = upgrade_code;
-                publish.binary.installer.guid_prefix = guid_prefix;
+                self.publish_detail.binary.installer.upgrade_code = upgrade_code;
+                self.publish_detail.binary.installer.guid_prefix = guid_prefix;
 
                 let (installer_blob_dir, _) = get_blob_name(
-                    format!("{}_installer", package.name).as_ref(),
+                    format!("{}_installer", self.package).as_ref(),
                     &rc_version,
-                    &toolchain,
-                    &release_channel,
+                    toolchain,
+                    &self.publish_detail.release_channel,
                 );
-                publish.binary.installer.installer_blob_dir = Some(installer_blob_dir);
-                if let Some((launcher_name, launcher_version)) = get_info_from_cargo_toml(
-                    &root_dir.join(&path).join(&publish.binary.launcher.path),
-                ) {
+                self.publish_detail.binary.installer.installer_blob_dir = Some(installer_blob_dir);
+                let launcher_name = format!(
+                    "{}{}{}",
+                    self.publish_detail.binary.launcher.prefix,
+                    self.package,
+                    self.publish_detail.binary.launcher.suffix
+                );
+                if let Some(launcher_version) = package_versions.get(&launcher_name) {
                     let (launcher_blob_dir, launcher_name) = get_blob_name(
                         &launcher_name,
-                        &launcher_version,
-                        &toolchain,
-                        &release_channel,
+                        launcher_version,
+                        toolchain,
+                        &self.publish_detail.release_channel,
                     );
-                    publish.binary.installer.launcher_blob_dir = Some(launcher_blob_dir);
-                    publish.binary.installer.launcher_blob_name = Some(launcher_name);
-                    if let Some(ref fallback_name) = publish.binary.fallback_name {
-                        publish.binary.installer.installer_blob_name = Some(
+                    self.publish_detail.binary.installer.launcher_blob_dir =
+                        Some(launcher_blob_dir);
+                    self.publish_detail.binary.installer.launcher_blob_name = Some(launcher_name);
+                    if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
+                        self.publish_detail.binary.installer.installer_blob_name = Some(
                             format!("{}.{}.{}.msi", fallback_name, launcher_version, rc_version)
                                 .to_lowercase(),
                         );
-                        publish.binary.installer.installer_blob_signed_name = Some(
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .installer_blob_signed_name = Some(
                             format!(
                                 "{}.{}.{}-signed.msi",
                                 fallback_name, launcher_version, rc_version
@@ -435,16 +487,30 @@ impl Result {
                     }
                 }
                 // subapps
-                if let Some(store) = object_store {
-                    let mut lines: Vec<String> = vec![];
-                    for (s, v) in &publish.binary.installer.sub_apps {
-                        let mut suffix = "-signed.exe".to_string();
-                        if release_channel == ReleaseChannel::Nightly {
-                            //need to add the nightly epoch to the suffix
-                            suffix = format!("{}{}", timestamp, suffix);
+                let mut lines: Vec<String> = vec![];
+                for (s, v) in &self.publish_detail.binary.installer.sub_apps {
+                    let sub_app_full_blob_name: String;
+                    if self.publish_detail.release_channel == ReleaseChannel::Nightly {
+                        //need to add the nightly epoch to the suffix
+                        if let Some(subapp_version) = package_versions.get(s) {
+                            let (subapp_dir, subapp_name) = get_blob_name(
+                                s,
+                                &format!("{}.{}", subapp_version, version_timestamp),
+                                toolchain,
+                                &self.publish_detail.release_channel,
+                            );
+                            sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                        } else {
+                            continue;
                         }
-                        let (sub_app_dir, sub_app_name) =
-                            get_blob_name(s, &v.version, &toolchain, &release_channel);
+                    } else if let Some(store) = object_store {
+                        let suffix = "-signed.exe".to_string();
+                        let (sub_app_dir, sub_app_name) = get_blob_name(
+                            s,
+                            &v.version,
+                            toolchain,
+                            &self.publish_detail.release_channel,
+                        );
                         // we need to remove the `-signed.exe` suffix, we don't need it here
                         let sub_app_name = sub_app_name
                             .strip_suffix(&"-signed.exe")
@@ -468,25 +534,22 @@ impl Result {
                         });
                         candidates.reverse();
                         if let Some(c) = candidates.first() {
-                            lines.push(format!("az storage blob download --container-name orica-cont-prod-update-001 --name {} --file target/x86_64-pc-windows-msvc/release/{}.exe", c, s));
+                            sub_app_full_blob_name = c.to_string();
+                        } else {
+                            continue;
                         }
+                    } else {
+                        continue;
                     }
-                    publish.binary.installer.sub_apps_download_script = Some(lines.join("\n"));
+                    lines.push(format!("az storage blob download --container-name orica-cont-prod-update-001 --name {} --file target/x86_64-pc-windows-msvc/release/{}.exe", sub_app_full_blob_name, s));
                 }
+                self.publish_detail
+                    .binary
+                    .installer
+                    .sub_apps_download_script = Some(lines.join("\n"));
             }
         }
-
-        Ok(Self {
-            workspace,
-            package: package.name,
-            version: package.version.to_string(),
-            path,
-            publish_detail: publish,
-            test_detail: metadata.fslabs.test.unwrap_or_default(),
-            dependencies,
-            toolchain,
-            ..Default::default()
-        })
+        Ok(())
     }
 
     pub async fn check_publishable(
@@ -625,6 +688,12 @@ pub async fn check_workspace(
             .with_context(|| format!("Failed to get absolute path from {:?}", working_directory))?,
     };
 
+    let toolchain =
+        get_toolchain(&working_directory).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
+    let now = Utc::now().date_naive();
+    let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
+    let timestamp = format!("{}", (now - epoch).num_days());
+
     let binary_store = BinaryStore::new(
         options.binary_store_storage_account,
         options.binary_store_container_name,
@@ -635,7 +704,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/7]").bold().dim(),
+            style("[1/9]").bold().dim(),
             LOOKING_GLASS
         );
     }
@@ -646,7 +715,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/7]").bold().dim(),
+            style("[2/9]").bold().dim(),
             TRUCK
         );
     }
@@ -662,8 +731,6 @@ pub async fn check_workspace(
                     workspace_name.to_string_lossy().to_string(),
                     package.clone(),
                     working_directory.clone(),
-                    options.release_channel.clone(),
-                    &binary_store,
                 )
                 .await
                 {
@@ -683,16 +750,146 @@ pub async fn check_workspace(
             }
         }
     }
-    if options.progress {
-        println!(
-            "{} {}Checking published status...",
-            style("[3/7]").bold().dim(),
-            PAPER
-        );
-    }
 
     let package_keys: Vec<String> = packages.keys().cloned().collect();
 
+    if options.progress {
+        println!(
+            "{} {}Resolving packages dependencies...",
+            style("[3/9]").bold().dim(),
+            TRUCK
+        );
+    }
+    let mut pb: Option<ProgressBar> = None;
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    let publish_status: HashMap<String, bool> = packages
+        .clone()
+        .into_iter()
+        .map(|(k, v)| (k, v.publish))
+        .collect();
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get_mut(&package_key) {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            package.dependencies.retain(|d| {
+                d.package
+                    .as_ref()
+                    .map_or(false, |p| package_keys.contains(p))
+            });
+            for dep in &mut package.dependencies {
+                if let Some(package_name) = &dep.package {
+                    if let Some(dep_p) = publish_status.get(package_name) {
+                        dep.publishable = *dep_p;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4 Feed Dependent
+    if options.progress {
+        println!(
+            "{} {}Feeding packages dependant...",
+            style("[4/9]").bold().dim(),
+            TRUCK
+        );
+    }
+
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get(&package_key).cloned() {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            // for each dependency we need to edit it and add ourself as a dependeant
+            for dependency in package.dependencies.clone() {
+                if let Some(package_name) = dependency.package {
+                    if let Some(dependant) = packages.get_mut(&package_name) {
+                        dependant.dependant.push(ResultDependency {
+                            package: Some(package.package.clone()),
+                            version: package.version.clone(),
+                            path: Some(package.path.clone()),
+                            publishable: package.publish,
+                            publishable_details: HashMap::from([
+                                ("docker".to_string(), package.publish_detail.docker.publish),
+                                ("cargo".to_string(), package.publish_detail.cargo.publish),
+                                (
+                                    "npm_napi".to_string(),
+                                    package.publish_detail.npm_napi.publish,
+                                ),
+                                ("binary".to_string(), package.publish_detail.binary.publish),
+                            ]),
+                            guid_suffix: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Compute Runtime information
+    if options.progress {
+        println!(
+            "{} {}Compute runtime information...",
+            style("[5/9]").bold().dim(),
+            TRUCK
+        );
+    }
+
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+    let mut package_versions: HashMap<String, String> = HashMap::new();
+    package_versions.extend(packages.iter().map(|(k, v)| (k.clone(), v.version.clone())));
+    for package_key in package_keys.clone() {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        // Loop through all the dependencies, if we don't know of it, skip it
+        if let Some(package) = packages.get_mut(&package_key) {
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} : {}", package.workspace, package.package));
+            }
+            package
+                .update_runtime_information(
+                    options.release_channel.as_deref(),
+                    &toolchain,
+                    &timestamp,
+                    &package_versions,
+                    &binary_store,
+                )
+                .await?;
+        }
+    }
+
+    // Check Release status
+    if options.progress {
+        println!(
+            "{} {}Checking published status...",
+            style("[6/9]").bold().dim(),
+            PAPER
+        );
+    }
     // TODO: switch to an ASYNC_ONCE or something
     let npm = Npm::new(
         options.npm_registry_url.clone(),
@@ -781,97 +978,6 @@ pub async fn check_workspace(
                         if !env_string.starts_with(&format!("refs/tags/{}", check_key)) {
                             package.publish = false;
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    if options.progress {
-        println!(
-            "{} {}Filtering packages dependencies...",
-            style("[4/7]").bold().dim(),
-            TRUCK
-        );
-    }
-    let mut pb: Option<ProgressBar> = None;
-    if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let publish_status: HashMap<String, bool> = packages
-        .clone()
-        .into_iter()
-        .map(|(k, v)| (k, v.publish))
-        .collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get_mut(&package_key) {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            package.dependencies.retain(|d| {
-                d.package
-                    .as_ref()
-                    .map_or(false, |p| package_keys.contains(p))
-            });
-            for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package {
-                    if let Some(dep_p) = publish_status.get(package_name) {
-                        dep.publishable = *dep_p;
-                    }
-                }
-            }
-        }
-    }
-    // 4 Feed Dependent
-    if options.progress {
-        println!(
-            "{} {}Feeding packages dependant...",
-            style("[5/7]").bold().dim(),
-            TRUCK
-        );
-    }
-
-    if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get(&package_key).cloned() {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            // for each dependency we need to edit it and add ourself as a dependeant
-            for dependency in package.dependencies.clone() {
-                if let Some(package_name) = dependency.package {
-                    if let Some(dependant) = packages.get_mut(&package_name) {
-                        dependant.dependant.push(ResultDependency {
-                            package: Some(package.package.clone()),
-                            version: package.version.clone(),
-                            path: Some(package.path.clone()),
-                            publishable: package.publish,
-                            publishable_details: HashMap::from([
-                                ("docker".to_string(), package.publish_detail.docker.publish),
-                                ("cargo".to_string(), package.publish_detail.cargo.publish),
-                                (
-                                    "npm_napi".to_string(),
-                                    package.publish_detail.npm_napi.publish,
-                                ),
-                                ("binary".to_string(), package.publish_detail.binary.publish),
-                            ]),
-                            guid_suffix: None,
-                        });
                     }
                 }
             }

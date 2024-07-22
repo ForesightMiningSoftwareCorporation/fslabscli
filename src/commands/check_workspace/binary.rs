@@ -38,12 +38,18 @@ pub struct PackageMetadataFslabsCiPublishBinary {
 pub struct PackageMetadataFslabsCiPublishBinaryLauncher {
     #[serde(default = "default_launcher_path")]
     pub path: String,
+    #[serde(default = "default_launcher_suffix")]
+    pub suffix: String,
+    #[serde(default = "default_launcher_prefix")]
+    pub prefix: String,
 }
 
 impl Default for PackageMetadataFslabsCiPublishBinaryLauncher {
     fn default() -> Self {
         Self {
             path: default_launcher_path(),
+            prefix: default_launcher_prefix(),
+            suffix: default_launcher_suffix(),
         }
     }
 }
@@ -107,6 +113,14 @@ fn default_launcher_path() -> String {
     "launcher".to_string()
 }
 
+fn default_launcher_suffix() -> String {
+    "_launcher".to_string()
+}
+
+fn default_launcher_prefix() -> String {
+    "".to_string()
+}
+
 fn default_installer_path() -> String {
     "installer".to_string()
 }
@@ -137,7 +151,10 @@ impl PackageMetadataFslabsCiPublishBinary {
             };
         }
         let mut publish_installer = false;
-        if let (Some(blob_dir), Some(blob_name)) = (&self.installer.installer_blob_dir, &self.installer.installer_blob_signed_name) {
+        if let (Some(blob_dir), Some(blob_name)) = (
+            &self.installer.installer_blob_dir,
+            &self.installer.installer_blob_signed_name,
+        ) {
             let blob_path = format!("{}/{}", blob_dir, blob_name);
             match object_store.get_client().head(&Path::from(blob_path)).await {
                 Ok(_) => {}
