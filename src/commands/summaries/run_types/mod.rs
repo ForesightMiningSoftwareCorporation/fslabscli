@@ -60,6 +60,13 @@ where
     }
     fn get_job_success(&self, job: &Job<Self, T>) -> bool;
     fn get_cells(&self, job: &Job<Self, T>, colspan: usize) -> (Vec<SummaryTableCell>, JobResult);
+    async fn github_side_effect(
+        token: &str,
+        event_name: Option<&str>,
+        issue_number: Option<u64>,
+        runs: &IndexMap<String, IndexMap<Self, Job<Self, T>>>,
+        summary: &str,
+    ) -> anyhow::Result<()>;
 }
 pub trait RunTypeOutput {}
 

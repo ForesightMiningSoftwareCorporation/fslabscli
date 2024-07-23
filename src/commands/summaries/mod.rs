@@ -1,4 +1,3 @@
-use std::cmp::min;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::path::PathBuf;
 
@@ -26,7 +25,6 @@ use self::template::{Summary, SummaryTableCell};
 use crate::PrettyPrintable;
 
 mod run_types;
-static GH_MAX_COMMENT_LENGTH: usize = 65536;
 mod template;
 
 #[derive(Debug, Parser)]
@@ -179,14 +177,7 @@ pub struct WorkflowJobInstance {
     pub raw: WorkflowJobInstanceRaw,
 }
 
-pub struct CheckedOutput {
-    pub check_name: String,
-    pub sub_checks: Vec<(String, CheckOutput)>,
-    pub check_success: bool,
-    pub url: Option<String>,
-}
-
-async fn get_workflow_info(
+async fn _get_workflow_info(
     client: &HyperClient<HttpsConnector<HttpConnector>, Empty<Bytes>>,
     url: String,
 ) -> anyhow::Result<WorkflowJobInstance> {
@@ -216,175 +207,6 @@ async fn get_workflow_info(
 //     summaries_dir: PathBuf,
 //     checks_map: HashMap<String, HashMap<JobType, SummaryFile<CheckOutputs>>>,
 // ) -> anyhow::Result<SummariesResult> {
-//     // For each package we need to check if the checks wer a success, and for each check type, generate a report
-//     let mut summary = Summary::new(options.output);
-//     let mut overall_success = true;
-//     let mut failed = 0;
-//     let mut failed_o = 0;
-//     let mut skipped = 0;
-//     let mut cancelled = 0;
-//     let mut succeeded = 0;
-
-//     let https = hyper_rustls::HttpsConnectorBuilder::new()
-//         .with_tls_config(
-//             rustls::ClientConfig::builder()
-//                 .with_native_roots()?
-//                 .with_no_client_auth(),
-//         )
-//         .https_or_http()
-//         .enable_http1()
-//         .build();
-//     let client = HyperClient::builder(TokioExecutor::new()).build(https);
-//     for (package, checks) in checks_map {
-//         let mut success = true;
-
-//         let mut check_outputs: Vec<CheckedOutput> = vec![];
-//         for (check_name, check_summary) in checks {
-//             let mining_bot_url = format!(
-//                 "{}/workflow?run_id={}&working_directory={}&summary_type={}&run_attempt={}",
-//                 options.mining_bot_url.clone(),
-//                 check_summary.run_id.clone(),
-//                 check_summary.working_directory.replace('/', "%2F"),
-//                 check_name,
-//                 check_summary.run_attempt.clone(),
-//             );
-//             let workflow_info = get_workflow_info(&client, mining_bot_url).await;
-//             let base_url: Option<String> =
-//                 workflow_info.as_ref().map(|w| w.raw.html_url.clone()).ok();
-//             let steps = workflow_info.as_ref().map(|w| w.raw.steps.to_vec()).ok();
-//             let mut check_success = true;
-//             let sub_checks: Vec<(String, Option<CheckOutput>)> = vec![
-//                 ("check".to_string(), check_summary.outputs.check.clone()),
-//                 ("clippy".to_string(), check_summary.outputs.clippy.clone()),
-//                 ("doc".to_string(), check_summary.outputs.doc.clone()),
-//                 // ("custom", check_summary.outputs.custom.clone()),
-//                 (
-//                     "deny_advisories".to_string(),
-//                     check_summary.outputs.deny_advisories.clone(),
-//                 ),
-//                 (
-//                     "deny_bans".to_string(),
-//                     check_summary.outputs.deny_bans.clone(),
-//                 ),
-//                 (
-//                     "deny_license".to_string(),
-//                     check_summary.outputs.deny_license.clone(),
-//                 ),
-//                 (
-//                     "deny_sources".to_string(),
-//                     check_summary.outputs.deny_sources.clone(),
-//                 ),
-//                 (
-//                     "dependencies".to_string(),
-//                     check_summary.outputs.dependencies.clone(),
-//                 ),
-//                 ("fmt".to_string(), check_summary.outputs.fmt.clone()),
-//                 ("miri".to_string(), check_summary.outputs.miri.clone()),
-//                 (
-//                     "publish_dryrun".to_string(),
-//                     check_summary.outputs.publish_dryrun.clone(),
-//                 ),
-//                 ("tests".to_string(), check_summary.outputs.tests.clone()),
-//             ];
-//             let mut checked_sub_checks: Vec<(String, CheckOutput)> = vec![];
-//             for (subcheck, check) in sub_checks {
-//                 if let Some(check) = check {
-//                     let mut new_check = check.clone();
-//                     if let (Some(steps), Some(base_url)) = (steps.clone(), base_url.clone()) {
-//                         let step = steps.iter().find(|c| c.name == subcheck.replace('_', "-"));
-//                         if let Some(step) = step {
-//                             new_check.number = Some(step.number);
-//                             new_check.log_url =
-//                                 Some(format!("{}#step:{}:1", base_url, step.number));
-//                         }
-//                     }
-//                     checked_sub_checks.push((subcheck, new_check));
-//                     if check.required {
-//                         check_success &= check.outcome.is_passing();
-//                     }
-//                 }
-//             }
-//             if checked_sub_checks.is_empty() {
-//                 continue;
-//             }
-//             // order sub check by number
-//             checked_sub_checks.sort_by_key(|(n, o)| (o.number, n.clone()));
-//             check_outputs.push(CheckedOutput {
-//                 check_name: check_name.to_string(),
-//                 sub_checks: checked_sub_checks,
-//                 check_success,
-//                 url: base_url,
-//             });
-//             success &= check_success;
-//         }
-//         // #1 Find the lcm between the result to display a nice table
-
-//         overall_success &= success;
-//     }
-
-//     summary.write(true).await?;
-//     if let (
-//         Some(github_token),
-//         Some(github_event_name),
-//         Some(github_issue_number),
-//         Some(github_repo),
-//     ) = (
-//         options.github_token,
-//         options.github_event_name,
-//         options.github_issue_number,
-//         options.github_repo,
-//     ) {
-//         if github_event_name == "pull_request" || github_event_name == "pull_request_target" {
-//             // We have a github token we should try to update the pr
-//             let octocrab = Octocrab::builder().personal_token(github_token).build()?;
-//             if let Some((owner, repo)) = github_repo.split_once('/') {
-//                 let issues_client = octocrab.issues(owner, repo);
-//                 let output = summary.get_content();
-//                 if options.hide_previous_pr_comment {
-//                     // Hide previsous
-//                     let user = octocrab
-//                         .current()
-//                         .user()
-//                         .await
-//                         .map(|u| u.login)
-//                         .unwrap_or_else(|_| "fmsc-bot[bot]".to_string());
-//                     if let Ok(existing_comments) = issues_client
-//                         .list_comments(github_issue_number)
-//                         .send()
-//                         .await
-//                         .map_err(|e| {
-//                             println!("Could not list comments: {:?}", e);
-//                             e
-//                         })
-//                     {
-//                         for existing_comment in existing_comments {
-//                             if existing_comment.user.login != user {
-//                                 continue;
-//                             }
-//                             // Delete all of our comments? Maybe we nmeed to be more clever
-//                             let _ = issues_client
-//                                 .delete_comment(existing_comment.id)
-//                                 .await
-//                                 .map_err(|e| {
-//                                     println!("Could not delete comment: {:?}", e);
-//                                     e
-//                                 });
-//                         }
-//                     }
-//                 }
-//                 let comments = split_comments(output);
-//                 for comment in comments {
-//                     let _ = issues_client
-//                         .create_comment(github_issue_number, comment)
-//                         .await
-//                         .map_err(|e| {
-//                             println!("Could not create comment: {:?}", e);
-//                             e
-//                         });
-//                 }
-//             }
-//         }
-//     }
 
 //     match overall_success {
 //         true => Ok(SummariesResult {}),
@@ -392,35 +214,13 @@ async fn get_workflow_info(
 //     }
 // }
 
-fn split_comments(comment: String) -> Vec<String> {
-    let sep_start = "Continued from previous comment.\n";
-    let sep_end =
-        "\n**Warning**: Output length greater than max comment size. Continued in next comment.";
-    if comment.len() < GH_MAX_COMMENT_LENGTH {
-        return vec![comment];
-    }
-    let max_with_seps: usize = GH_MAX_COMMENT_LENGTH - sep_start.len() - sep_end.len();
-    let mut comments: Vec<String> = vec![];
-    let num_comments: usize = (comment.len() as f64 / max_with_seps as f64).ceil() as usize;
-    for i in 0..num_comments {
-        let up_to = min(comment.len(), (i + 1) * max_with_seps);
-        let portion = &comment[i * max_with_seps..up_to];
-        let mut portion_with_sep = portion.to_string();
-        if i < num_comments - 1 {
-            portion_with_sep.push_str(sep_end);
-        }
-        if i > 0 {
-            portion_with_sep = format!("{}{}", sep_start, portion_with_sep);
-        }
-        comments.push(portion_with_sep)
-    }
-    comments
-}
-
 pub async fn processing_summaries<T, O>(
     working_directory: &PathBuf,
     output: &PathBuf,
     mining_bot_url: &str,
+    github_token: Option<&str>,
+    github_event_name: Option<&str>,
+    github_issue_number: Option<u64>,
 ) -> anyhow::Result<SummariesResult>
 where
     T: JobType<O> + Clone + Ord + Hash + Eq + PartialEq + Debug + DeserializeOwned,
@@ -436,7 +236,7 @@ where
 
     for (package, checks) in &run.jobs {
         let mut success = true;
-        let (header_row, biggest_col) = T::get_headers(&checks)?;
+        let (header_row, biggest_col) = T::get_headers(checks)?;
         let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
         checks.iter().for_each(|(check_type, check)| {
             let colspan = check_type.get_colspan(&check.outputs, biggest_col);
@@ -463,7 +263,6 @@ where
         overall_success &= true;
     }
 
-    let mut messages: Vec<String> = vec![];
     let results = [
         (overall_result.succeeded, "passed"),
         (overall_result.failed, "failed"),
@@ -477,7 +276,7 @@ where
             if *r > 0 {
                 return Some(format!("{} {}", r, l));
             }
-            return None;
+            None
         })
         .collect();
 
@@ -492,7 +291,23 @@ where
     );
     summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
     summary.write(true).await?;
-    Ok(SummariesResult {})
+
+    // GH Side effect
+    if let Some(github_token) = github_token {
+        T::github_side_effect(
+            github_token,
+            github_event_name,
+            github_issue_number,
+            &run.jobs,
+            &summary.get_content(),
+        )
+        .await?;
+    }
+
+    match overall_success {
+        true => Ok(SummariesResult {}),
+        false => anyhow::bail!("Run failed"),
+    }
 }
 
 pub async fn summaries(
@@ -508,6 +323,9 @@ pub async fn summaries(
                 &working_directory,
                 &options.output,
                 &options.mining_bot_url,
+                options.github_token.as_ref().map(String::as_ref),
+                options.github_event_name.as_ref().map(String::as_ref),
+                options.github_issue_number,
             )
             .await
         }
@@ -516,6 +334,9 @@ pub async fn summaries(
                 &working_directory,
                 &options.output,
                 &options.mining_bot_url,
+                options.github_token.as_ref().map(String::as_ref),
+                options.github_event_name.as_ref().map(String::as_ref),
+                options.github_issue_number,
             )
             .await
         }

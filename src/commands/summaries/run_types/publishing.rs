@@ -21,21 +21,21 @@ impl RunTypeOutput for PublishingRunOutput {}
 #[derive(Deserialize, Serialize, Debug, Eq, Hash, PartialEq, Clone, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum PublishingJobType {
-    DockerPublish,
-    NpmNapiPublish,
-    RustBinaryPublish,
-    RustInstallerPublish,
-    RustRegistryPublish,
+    Docker,
+    NpmNapi,
+    RustBinary,
+    RustInstaller,
+    RustRegistry,
 }
 
 impl Display for PublishingJobType {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
-            Self::DockerPublish => write!(f, "docker-publish"),
-            Self::NpmNapiPublish => write!(f, "npm-napi-publish"),
-            Self::RustBinaryPublish => write!(f, "rust-binary-publish"),
-            Self::RustInstallerPublish => write!(f, "rust-installer-publish"),
-            Self::RustRegistryPublish => write!(f, "rust-registry-publish"),
+            Self::Docker => write!(f, "docker-publish"),
+            Self::NpmNapi => write!(f, "npm-napi-publish"),
+            Self::RustBinary => write!(f, "rust-binary-publish"),
+            Self::RustInstaller => write!(f, "rust-installer-publish"),
+            Self::RustRegistry => write!(f, "rust-registry-publish"),
         }
     }
 }
@@ -91,5 +91,15 @@ impl JobType<PublishingRunOutput> for PublishingJobType {
             ],
             job_result,
         )
+    }
+
+    async fn github_side_effect(
+        _token: &str,
+        _event_name: Option<&str>,
+        _issue_number: Option<u64>,
+        _runs: &IndexMap<String, IndexMap<Self, Job<Self, PublishingRunOutput>>>,
+        _summary: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }
