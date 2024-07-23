@@ -1,5 +1,4 @@
 use std::cmp::min;
-use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::path::PathBuf;
 
@@ -17,11 +16,13 @@ use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use strum_macros::EnumString;
 
+use self::run_types::JobResult;
 use self::run_types::{
     checks::{CheckJobType, CheckRunOutput},
     publishing::{PublishingJobType, PublishingRunOutput},
     Run,
 };
+use self::template::{Summary, SummaryTableCell};
 use crate::PrettyPrintable;
 
 mod run_types;
@@ -50,8 +51,6 @@ pub struct Options {
     #[arg(long, default_value_t, value_enum)]
     check_changed_outcome: RunOutcome,
 }
-
-pub type Job<T, O> = HashMap<String, HashMap<T, Run<T, O>>>;
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
 enum RunTypeOption {
@@ -136,7 +135,7 @@ pub struct CheckOutput {
     pub log_url: Option<String>,
 }
 
-fn get_success_emoji(success: bool) -> String {
+pub fn get_success_emoji(success: bool) -> String {
     match success {
         true => "✅".to_string(),
         false => "❌".to_string(),
@@ -215,7 +214,7 @@ async fn get_workflow_info(
 // pub async fn checks_summaries(
 //     options: Box<Options>,
 //     summaries_dir: PathBuf,
-//     checks_map: HashMap<String, HashMap<JobType, SummaryFile<CheckOutputs>>>
+//     checks_map: HashMap<String, HashMap<JobType, SummaryFile<CheckOutputs>>>,
 // ) -> anyhow::Result<SummariesResult> {
 //     // For each package we need to check if the checks wer a success, and for each check type, generate a report
 //     let mut summary = Summary::new(options.output);
@@ -319,98 +318,10 @@ async fn get_workflow_info(
 //             success &= check_success;
 //         }
 //         // #1 Find the lcm between the result to display a nice table
-//         let mut lcm_result: usize = 1;
-//         for checked in check_outputs.iter() {
-//             lcm_result = lcm(lcm_result, checked.sub_checks.len());
-//         }
-//         let header_row: Vec<SummaryTableCell> = vec![
-//             SummaryTableCell::new_header("Category".to_string(), 1),
-//             SummaryTableCell::new_header("Checks".to_string(), lcm_result),
-//         ];
-//         let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
-//         check_outputs.sort_by_key(|c| c.check_name.clone());
-//         for checked in check_outputs.iter() {
-//             let colspan = lcm_result / (checked.sub_checks.len());
-//             let check_cell_name = format!(
-//                 "{} {}",
-//                 get_success_emoji(checked.check_success),
-//                 if let Some(url) = checked.url.clone() {
-//                     summary.link(checked.check_name.to_string(), url)
-//                 } else {
-//                     checked.check_name.to_string()
-//                 }
-//             );
-//             let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
-//             let mut imgs: Vec<String> = vec![];
-//             for (subcheck_name, subcheck) in checked.sub_checks.iter() {
-//                 match subcheck.outcome {
-//                     CheckOutcome::Success => succeeded += 1,
-//                     CheckOutcome::Failure => match subcheck.required {
-//                         true => failed += 1,
-//                         false => failed_o += 1,
-//                     },
-//                     CheckOutcome::Cancelled => cancelled += 1,
-//                     CheckOutcome::Skipped => skipped += 1,
-//                 }
-//                 let subcheck_image = summary.image(
-//                     format!(
-//                         "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
-//                         options.mining_bot_url,
-//                         get_outcome_color(subcheck.outcome, subcheck.required),
-//                         subcheck_name,
-//                         colspan,
-//                     ),
-//                     format!("{}", subcheck.outcome),
-//                     subcheck_name.to_string(),
-//                     None,
-//                     None,
-//                 );
-//                 let subcheck_cell = match subcheck.log_url.clone() {
-//                     Some(u) => summary.link(subcheck_image, u),
-//                     None => subcheck_image,
-//                 };
-//                 imgs.push(subcheck_cell);
-//             }
-//             row.push(SummaryTableCell::new(imgs.join(""), 1));
-//             rows.push(row);
-//         }
 
-//         summary.add_content(
-//             summary.detail(
-//                 summary.heading(
-//                     format!("{} - {}", package, get_success_emoji(success)),
-//                     Some(2),
-//                 ),
-//                 summary.table(rows),
-//                 !success,
-//             ),
-//             true,
-//         );
 //         overall_success &= success;
 //     }
 
-//     let mut messages: Vec<String> = vec![];
-//     if succeeded > 0 {
-//         messages.push(format!("{} passed", succeeded))
-//     }
-//     if failed > 0 {
-//         messages.push(format!("{} failed", failed))
-//     }
-//     if failed_o > 0 {
-//         messages.push(format!("{} failed (non required)", failed_o))
-//     }
-//     if cancelled > 0 {
-//         messages.push(format!("{} cancelled", cancelled))
-//     }
-//     if skipped > 0 {
-//         messages.push(format!("{} skipped", skipped))
-//     }
-
-//     let icon_svg = format!(
-//         "{}/svg/tests.svg?passed={}&failed={}&failed_o={}&skipped={}&cancelled={}",
-//         options.mining_bot_url, succeeded, failed, failed_o, skipped, cancelled
-//     );
-//     summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
 //     summary.write(true).await?;
 //     if let (
 //         Some(github_token),
@@ -506,20 +417,81 @@ fn split_comments(comment: String) -> Vec<String> {
     comments
 }
 
-pub fn processing_summaries<T, O>(working_directory: &PathBuf) -> anyhow::Result<SummariesResult>
+pub async fn processing_summaries<T, O>(
+    working_directory: &PathBuf,
+    output: &PathBuf,
+    mining_bot_url: &str,
+) -> anyhow::Result<SummariesResult>
 where
-    T: JobType + Clone + Hash + Eq + PartialEq + Debug + DeserializeOwned,
+    T: JobType<O> + Clone + Ord + Hash + Eq + PartialEq + Debug + DeserializeOwned,
     O: RunTypeOutput + Debug + DeserializeOwned,
 {
+    let mut summary = Summary::new(output);
     // Load outputs
     let run = Run::<T, O>::new(working_directory)?;
     // Generate GH Summary table
-    // get headers
-    let headers = run.get_headers();
-    println!("Got headers: {:#?}", headers);
-    for (package, checks) in run.jobs {
-        println!("Package: {} -- {:#?}", package, checks);
+
+    let mut overall_success = true;
+    let mut overall_result = JobResult::new();
+
+    for (package, checks) in &run.jobs {
+        let mut success = true;
+        let (header_row, biggest_col) = T::get_headers(&checks)?;
+        let mut rows: Vec<Vec<SummaryTableCell>> = vec![header_row];
+        checks.iter().for_each(|(check_type, check)| {
+            let colspan = check_type.get_colspan(&check.outputs, biggest_col);
+            let (check_cell_name, check_success) = check_type.get_cell_name(check);
+            success &= check_success;
+            let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
+            let (cells, job_result) = check_type.get_cells(check, colspan);
+            overall_result.merge(&job_result);
+            row.extend(cells);
+            rows.push(row);
+        });
+
+        summary.add_content(
+            Summary::detail(
+                Summary::heading(
+                    format!("{} - {}", package, get_success_emoji(success)),
+                    Some(2),
+                ),
+                Summary::table(rows),
+                !success,
+            ),
+            true,
+        );
+        overall_success &= true;
     }
+
+    let mut messages: Vec<String> = vec![];
+    let results = [
+        (overall_result.succeeded, "passed"),
+        (overall_result.failed, "failed"),
+        (overall_result.failed_o, "failed (non required)"),
+        (overall_result.cancelled, "cancelled"),
+        (overall_result.skipped, "skipped"),
+    ];
+    let messages: Vec<String> = results
+        .iter()
+        .filter_map(|(r, l)| {
+            if *r > 0 {
+                return Some(format!("{} {}", r, l));
+            }
+            return None;
+        })
+        .collect();
+
+    let icon_svg = format!(
+        "{}/svg/tests.svg?passed={}&failed={}&failed_o={}&skipped={}&cancelled={}",
+        mining_bot_url,
+        overall_result.succeeded,
+        overall_result.failed,
+        overall_result.failed_o,
+        overall_result.skipped,
+        overall_result.cancelled
+    );
+    summary.prepend_content(format!("![{}]({})", messages.join(", "), icon_svg), true);
+    summary.write(true).await?;
     Ok(SummariesResult {})
 }
 
@@ -532,15 +504,20 @@ pub async fn summaries(
     }
     match options.run_type {
         RunTypeOption::Publishing => {
-            processing_summaries::<PublishingJobType, PublishingRunOutput>(&working_directory)
+            processing_summaries::<PublishingJobType, PublishingRunOutput>(
+                &working_directory,
+                &options.output,
+                &options.mining_bot_url,
+            )
+            .await
         }
         RunTypeOption::Checks => {
-            processing_summaries::<CheckJobType, CheckRunOutput>(&working_directory)
+            processing_summaries::<CheckJobType, CheckRunOutput>(
+                &working_directory,
+                &options.output,
+                &options.mining_bot_url,
+            )
+            .await
         }
     }
-
-    // match options.run_type.clone() {
-    //     RunTypeOption::Checks => checks_summaries(options, working_directory).await,
-    //     RunTypeOption::Publishing => publishing_summaries(options, working_directory).await,
-    // }
 }
