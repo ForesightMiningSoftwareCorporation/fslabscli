@@ -5,14 +5,18 @@ use std::fs;
 use std::hash::Hash;
 use std::path::PathBuf;
 
+use super::template::SummaryTableCell;
+
 pub mod checks;
 pub mod publishing;
 
-pub trait JobType {}
+pub trait JobType<T: RunTypeOutput> {
+    fn get_headers(runs: HashMap<Self, Job<Self, T>>) -> anyhow::Result<Vec<SummaryTableCell>>;
+}
 pub trait RunTypeOutput {}
 
 #[derive(Deserialize, Debug)]
-pub struct Run<T: JobType, O: RunTypeOutput> {
+pub struct Job<T: JobType<O>, O: RunTypeOutput> {
     pub name: String,
     pub start_time: String,
     pub end_time: String,
@@ -28,16 +32,17 @@ pub struct Run<T: JobType, O: RunTypeOutput> {
     pub outputs: O,
 }
 
+pub struct Run<T: JobType<O>, O: RunTypeOutput> {
+    pub jobs: HashMap<String, HashMap<T, Job<T, O>>>,
+}
+
 impl<T, O> Run<T, O>
 where
-    T: JobType + Clone + Hash + Eq + PartialEq,
-    O: RunTypeOutput,
+    T: JobType<O> + Clone + Hash + Eq + PartialEq + DeserializeOwned,
+    O: RunTypeOutput + DeserializeOwned,
 {
-    pub fn load(working_directory: &PathBuf) -> anyhow::Result<HashMap<String, HashMap<T, Self>>>
-    where
-        Self: Sized + DeserializeOwned,
-    {
-        let mut summaries: Vec<Self> = vec![];
+    pub fn new(working_directory: &PathBuf) -> anyhow::Result<Self> {
+        let mut summaries: Vec<Job<T, O>> = vec![];
         // Read the directory
         let dir = fs::read_dir(working_directory)?;
 
@@ -51,16 +56,20 @@ where
         // Deserialize each JSON file and collect into vector
         for file_path in json_files {
             let file_content = fs::read_to_string(&file_path)?;
-            summaries.push(serde_json::from_str::<Self>(&file_content)?);
+            summaries.push(serde_json::from_str::<Job<T, O>>(&file_content)?);
         }
 
         // We have a list of file we need to get to a HashMap<Package, HashMap<CheckType, Summary>>
         // load all files as ChecksSummaries
-        let mut checks_map = HashMap::<String, HashMap<T, Self>>::new();
-        for summary in summaries {
-            let inner_map = checks_map.entry(summary.name.clone()).or_default();
-            inner_map.insert(summary.job_type.clone(), summary);
+        let mut jobs = HashMap::<String, HashMap<T, Job<T, O>>>::new();
+        for job in summaries {
+            let inner_map = jobs.entry(job.name.clone()).or_default();
+            inner_map.insert(job.job_type.clone(), job);
         }
-        Ok(checks_map)
+        Ok(Run { jobs })
+    }
+
+    pub fn get_headers(&self, package: &str) -> Option<Vec<SummaryTableCell>> {
+        self.jobs.get(package).map(|runs| T::get_headers(runs))
     }
 }

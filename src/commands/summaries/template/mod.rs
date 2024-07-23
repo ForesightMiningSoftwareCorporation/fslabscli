@@ -1,6 +1,7 @@
 use std::io::prelude::*;
 use std::{collections::HashMap, fs::OpenOptions, path::PathBuf};
 
+#[derive(Debug)]
 pub struct SummaryTableCell {
     pub header: bool,
     pub data: String,

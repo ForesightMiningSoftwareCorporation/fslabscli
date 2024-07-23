@@ -10,6 +10,7 @@ use super::{JobType, RunTypeOutput};
 #[serde(rename_all = "kebab-case")]
 pub struct PublishingRunOutput {
     pub released: Option<bool>,
+    pub version: Option<String>,
 }
 
 impl RunTypeOutput for PublishingRunOutput {}

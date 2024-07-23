@@ -1,7 +1,6 @@
 use std::cmp::min;
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::fs;
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -9,30 +8,25 @@ use http_body_util::BodyExt;
 use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request};
-use hyper_rustls::ConfigBuilderExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
-use hyper_util::rt::TokioExecutor;
-use num::integer::lcm;
-use octocrab::Octocrab;
-use serde::{Deserialize, Serialize};
+use run_types::{JobType, RunTypeOutput};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 use strum_macros::EnumString;
-use template::Summary;
 
-use crate::commands::summaries::template::SummaryTableCell;
 use self::run_types::{
-    Run,
     checks::{CheckJobType, CheckRunOutput},
-    publishing::{PublishingJobType,  PublishingRunOutput}
+    publishing::{PublishingJobType, PublishingRunOutput},
+    Run,
 };
 use crate::PrettyPrintable;
 
-mod template;
 mod run_types;
-
 static GH_MAX_COMMENT_LENGTH: usize = 65536;
+mod template;
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate summary of github run.")]
@@ -66,12 +60,12 @@ enum RunTypeOption {
     Publishing,
 }
 
-#[derive(EnumString, Debug)]
+#[derive(clap::ValueEnum, EnumString, Debug, Clone, Default)]
 enum RunType {
-    Checks(Job<CheckJobType, CheckRunOutput>),
-    Publishing(Job<PublishingJobType, PublishingRunOutput>),
+    #[default]
+    Checks,
+    Publishing,
 }
-
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, PartialEq)]
 enum RunOutcome {
@@ -95,7 +89,6 @@ impl PrettyPrintable for SummariesResult {
         format!("{}", self)
     }
 }
-
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
@@ -142,7 +135,6 @@ pub struct CheckOutput {
     pub number: Option<usize>,
     pub log_url: Option<String>,
 }
-
 
 fn get_success_emoji(success: bool) -> String {
     match success {
@@ -514,10 +506,20 @@ fn split_comments(comment: String) -> Vec<String> {
     comments
 }
 
-pub async fn publishing_summaries(
-    _options: Box<Options>,
-    _summaries_directory: PathBuf,
-) -> anyhow::Result<SummariesResult> {
+pub fn processing_summaries<T, O>(working_directory: &PathBuf) -> anyhow::Result<SummariesResult>
+where
+    T: JobType + Clone + Hash + Eq + PartialEq + Debug + DeserializeOwned,
+    O: RunTypeOutput + Debug + DeserializeOwned,
+{
+    // Load outputs
+    let run = Run::<T, O>::new(working_directory)?;
+    // Generate GH Summary table
+    // get headers
+    let headers = run.get_headers();
+    println!("Got headers: {:#?}", headers);
+    for (package, checks) in run.jobs {
+        println!("Package: {} -- {:#?}", package, checks);
+    }
     Ok(SummariesResult {})
 }
 
@@ -528,12 +530,14 @@ pub async fn summaries(
     if options.check_changed_outcome.clone() != RunOutcome::Success {
         anyhow::bail!("Ci error, please check `check_workspace` job and ping devops ");
     }
-    let run = match options.run_type {
-        RunTypeOption::Publishing => RunType::Publishing(Run::<PublishingJobType, PublishingRunOutput>::load(&working_directory)?),
-        RunTypeOption::Checks => RunType::Checks(Run::<CheckJobType, CheckRunOutput>::load(&working_directory)?),
-    };
-    println!("Got map: {:#?}", run);
-    Ok(SummariesResult {})
+    match options.run_type {
+        RunTypeOption::Publishing => {
+            processing_summaries::<PublishingJobType, PublishingRunOutput>(&working_directory)
+        }
+        RunTypeOption::Checks => {
+            processing_summaries::<CheckJobType, CheckRunOutput>(&working_directory)
+        }
+    }
 
     // match options.run_type.clone() {
     //     RunTypeOption::Checks => checks_summaries(options, working_directory).await,
