@@ -28,14 +28,14 @@ impl SummaryTableCell {
     }
 }
 
-pub struct Summary {
+pub struct Summary<'a> {
     pub buffer: String,
-    pub file_path: PathBuf,
+    pub file_path: &'a PathBuf,
 }
 
 #[allow(dead_code)]
-impl Summary {
-    pub fn new(file_path: PathBuf) -> Self {
+impl<'a> Summary<'a> {
+    pub fn new(file_path: &'a PathBuf) -> Self {
         Self {
             buffer: String::new(),
             file_path,
@@ -43,7 +43,6 @@ impl Summary {
     }
 
     fn wrap(
-        &self,
         tag: String,
         content: Option<String>,
         attrs: Option<HashMap<String, String>>,
@@ -108,29 +107,29 @@ impl Summary {
         self.buffer = format!("{}{}", prepend, self.buffer);
     }
 
-    pub fn code_block(&self, code: String, lang: Option<String>) -> String {
+    pub fn code_block(code: String, lang: Option<String>) -> String {
         let attrs = lang.map(|l| HashMap::from([("lang".to_string(), l)]));
-        self.wrap(
+        Self::wrap(
             "pre".to_string(),
-            Some(self.wrap("code".to_string(), Some(code), None, true)),
+            Some(Self::wrap("code".to_string(), Some(code), None, true)),
             attrs,
             true,
         )
     }
 
-    pub fn list(&mut self, items: Vec<String>, ordered: bool) -> String {
+    pub fn list(items: Vec<String>, ordered: bool) -> String {
         let tag = match ordered {
             true => "ol".to_string(),
             false => "ul".to_string(),
         };
         let list_items = items
             .iter()
-            .map(|i| self.wrap("li".to_string(), Some(i.clone()), None, false))
+            .map(|i| Self::wrap("li".to_string(), Some(i.clone()), None, false))
             .collect();
-        self.wrap(tag, Some(list_items), None, true)
+        Self::wrap(tag, Some(list_items), None, true)
     }
 
-    pub fn table(&self, rows: Vec<Vec<SummaryTableCell>>) -> String {
+    pub fn table(rows: Vec<Vec<SummaryTableCell>>) -> String {
         let table_body = rows
             .iter()
             .map(|row| {
@@ -151,27 +150,27 @@ impl Summary {
                                 format!("{}", cell.rowspan.unwrap_or(1)),
                             ),
                         ]);
-                        self.wrap(tag, Some(cell.data.to_string()), Some(attrs), false)
+                        Self::wrap(tag, Some(cell.data.to_string()), Some(attrs), false)
                     })
                     .collect::<Vec<String>>()
                     .join("\n");
-                self.wrap("tr".to_string(), Some(row_string), None, false)
+                Self::wrap("tr".to_string(), Some(row_string), None, false)
             })
             .collect::<Vec<String>>()
             .join("\n");
-        self.wrap("table".to_string(), Some(table_body), None, true)
+        Self::wrap("table".to_string(), Some(table_body), None, true)
     }
 
-    pub fn detail(&self, label: String, content: String, open: bool) -> String {
+    pub fn detail(label: String, content: String, open: bool) -> String {
         let attrs = match open {
             true => Some(HashMap::from([("open".to_string(), "".to_string())])),
             false => None,
         };
-        self.wrap(
+        Self::wrap(
             "details".to_string(),
             Some(format!(
                 "{}\n{}",
-                self.wrap("summary".to_string(), Some(label), None, true),
+                Self::wrap("summary".to_string(), Some(label), None, true),
                 content
             )),
             attrs,
@@ -180,7 +179,6 @@ impl Summary {
     }
 
     pub fn image(
-        &self,
         src: String,
         alt: String,
         title: String,
@@ -198,29 +196,29 @@ impl Summary {
         if let Some(height) = height {
             attrs.insert("height".to_string(), height);
         }
-        self.wrap("img".to_string(), None, Some(attrs), false)
+        Self::wrap("img".to_string(), None, Some(attrs), false)
     }
 
-    pub fn heading(&self, text: String, level: Option<usize>) -> String {
+    pub fn heading(text: String, level: Option<usize>) -> String {
         let tag = format!("h{}", level.unwrap_or(1));
-        self.wrap(tag, Some(text), None, false)
+        Self::wrap(tag, Some(text), None, false)
     }
 
-    pub fn separator(&self) -> String {
-        self.wrap("hr".to_string(), None, None, false)
+    pub fn separator() -> String {
+        Self::wrap("hr".to_string(), None, None, false)
     }
 
-    pub fn line_break(&self) -> String {
-        self.wrap("hr".to_string(), None, None, false)
+    pub fn line_break() -> String {
+        Self::wrap("hr".to_string(), None, None, false)
     }
 
-    pub fn quote(&self, text: String, cite: Option<String>) -> String {
+    pub fn quote(text: String, cite: Option<String>) -> String {
         let attrs = cite.map(|c| HashMap::from([("cite".to_string(), c)]));
-        self.wrap("blockquote".to_string(), Some(text), attrs, false)
+        Self::wrap("blockquote".to_string(), Some(text), attrs, false)
     }
 
-    pub fn link(&self, text: String, href: String) -> String {
-        self.wrap(
+    pub fn link(text: String, href: String) -> String {
+        Self::wrap(
             "a".to_string(),
             Some(text),
             Some(HashMap::from([("href".to_string(), href)])),
@@ -228,11 +226,11 @@ impl Summary {
         )
     }
 
-    pub fn p(&self, text: String) -> String {
-        self.wrap("p".to_string(), Some(text), None, false)
+    pub fn p(text: String) -> String {
+        Self::wrap("p".to_string(), Some(text), None, false)
     }
 
-    pub fn div(&self, content: String, attrs: HashMap<String, String>) -> String {
-        self.wrap("div".to_string(), Some(content), Some(attrs), false)
+    pub fn div(content: String, attrs: HashMap<String, String>) -> String {
+        Self::wrap("div".to_string(), Some(content), Some(attrs), false)
     }
 }

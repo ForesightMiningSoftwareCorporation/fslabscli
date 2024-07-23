@@ -1,17 +1,65 @@
 use anyhow;
+use indexmap::IndexMap;
 use serde::{de::DeserializeOwned, Deserialize};
-use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
 use std::path::PathBuf;
+
+use crate::commands::summaries::get_success_emoji;
 
 use super::template::SummaryTableCell;
 
 pub mod checks;
 pub mod publishing;
 
-pub trait JobType<T: RunTypeOutput> {
-    fn get_headers(runs: HashMap<Self, Job<Self, T>>) -> anyhow::Result<Vec<SummaryTableCell>>;
+pub struct JobResult {
+    pub failed: usize,
+    pub failed_o: usize,
+    pub skipped: usize,
+    pub cancelled: usize,
+    pub succeeded: usize,
+}
+
+impl JobResult {
+    pub fn new() -> Self {
+        Self {
+            failed: 0,
+            failed_o: 0,
+            skipped: 0,
+            cancelled: 0,
+            succeeded: 0,
+        }
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.failed += other.failed;
+        self.failed_o += other.failed_o;
+        self.skipped += other.skipped;
+        self.cancelled += other.cancelled;
+        self.succeeded += other.succeeded;
+    }
+}
+pub trait JobType<T>
+where
+    Self: Sized + Display,
+    T: RunTypeOutput,
+{
+    fn get_headers(
+        runs: &IndexMap<Self, Job<Self, T>>,
+    ) -> anyhow::Result<(Vec<SummaryTableCell>, usize)>;
+    fn get_colspan(&self, _outputs: &T, _max_colspan: usize) -> usize {
+        1
+    }
+    fn get_cell_name(&self, job: &Job<Self, T>) -> (String, bool) {
+        let success = self.get_job_success(job);
+        (
+            format!("{} - {}", get_success_emoji(success), self),
+            success,
+        )
+    }
+    fn get_job_success(&self, job: &Job<Self, T>) -> bool;
+    fn get_cells(&self, job: &Job<Self, T>, colspan: usize) -> (Vec<SummaryTableCell>, JobResult);
 }
 pub trait RunTypeOutput {}
 
@@ -33,12 +81,12 @@ pub struct Job<T: JobType<O>, O: RunTypeOutput> {
 }
 
 pub struct Run<T: JobType<O>, O: RunTypeOutput> {
-    pub jobs: HashMap<String, HashMap<T, Job<T, O>>>,
+    pub jobs: IndexMap<String, IndexMap<T, Job<T, O>>>,
 }
 
 impl<T, O> Run<T, O>
 where
-    T: JobType<O> + Clone + Hash + Eq + PartialEq + DeserializeOwned,
+    T: JobType<O> + Clone + Ord + Hash + Eq + PartialEq + DeserializeOwned,
     O: RunTypeOutput + DeserializeOwned,
 {
     pub fn new(working_directory: &PathBuf) -> anyhow::Result<Self> {
@@ -61,15 +109,18 @@ where
 
         // We have a list of file we need to get to a HashMap<Package, HashMap<CheckType, Summary>>
         // load all files as ChecksSummaries
-        let mut jobs = HashMap::<String, HashMap<T, Job<T, O>>>::new();
+        let mut jobs = IndexMap::<String, IndexMap<T, Job<T, O>>>::new();
         for job in summaries {
             let inner_map = jobs.entry(job.name.clone()).or_default();
             inner_map.insert(job.job_type.clone(), job);
         }
+        // Sort the sub keys
+        let _ = jobs.iter_mut().map(|(_, checks)| {
+            checks.sort_keys();
+        });
+        // Sort the main keys
+        jobs.sort_keys();
+        // Sort the keys
         Ok(Run { jobs })
-    }
-
-    pub fn get_headers(&self, package: &str) -> Option<Vec<SummaryTableCell>> {
-        self.jobs.get(package).map(|runs| T::get_headers(runs))
     }
 }

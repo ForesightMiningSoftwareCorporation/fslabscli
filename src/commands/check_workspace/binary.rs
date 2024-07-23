@@ -156,7 +156,7 @@ impl PackageMetadataFslabsCiPublishBinary {
             match object_store.get_client().head(&Path::from(blob_path)).await {
                 Ok(_) => {}
                 Err(_) => {
-                    publish = true;
+                    publish_installer = true;
                 }
             };
         }
