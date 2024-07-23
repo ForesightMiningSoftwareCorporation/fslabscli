@@ -62,7 +62,7 @@ pub struct Options {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
-    #[arg(long, default_value = "v3.0.1")]
+    #[arg(long, default_value = "v3.0.2")]
     build_workflow_version: String,
     #[arg(long)]
     fslabscli_version: Option<String>,
