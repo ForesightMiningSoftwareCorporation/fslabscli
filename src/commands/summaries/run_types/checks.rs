@@ -1,7 +1,11 @@
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::{
+    cmp::min,
+    fmt::{Display, Formatter, Result as FmtResult},
+};
 
 use indexmap::IndexMap;
 use num::integer::lcm;
+use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::summaries::{
@@ -13,11 +17,31 @@ use crate::commands::summaries::{
 
 use super::{Job, JobType, RunTypeOutput};
 
-pub struct CheckedOutput {
-    pub check_name: String,
-    pub sub_checks: Vec<(String, CheckOutput)>,
-    pub check_success: bool,
-    pub url: Option<String>,
+static GH_MAX_COMMENT_LENGTH: usize = 65536;
+
+fn split_comments(comment: String) -> Vec<String> {
+    let sep_start = "Continued from previous comment.\n";
+    let sep_end =
+        "\n**Warning**: Output length greater than max comment size. Continued in next comment.";
+    if comment.len() < GH_MAX_COMMENT_LENGTH {
+        return vec![comment];
+    }
+    let max_with_seps: usize = GH_MAX_COMMENT_LENGTH - sep_start.len() - sep_end.len();
+    let mut comments: Vec<String> = vec![];
+    let num_comments: usize = (comment.len() as f64 / max_with_seps as f64).ceil() as usize;
+    for i in 0..num_comments {
+        let up_to = min(comment.len(), (i + 1) * max_with_seps);
+        let portion = &comment[i * max_with_seps..up_to];
+        let mut portion_with_sep = portion.to_string();
+        if i < num_comments - 1 {
+            portion_with_sep.push_str(sep_end);
+        }
+        if i > 0 {
+            portion_with_sep = format!("{}{}", sep_start, portion_with_sep);
+        }
+        comments.push(portion_with_sep)
+    }
+    comments
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -128,10 +152,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
             .outputs
             .as_vec()
             .iter()
-            .filter_map(|(t, c)| match c {
-                Some(c) => Some((t, c)),
-                None => None,
-            })
+            .filter_map(|(t, c)| c.as_ref().map(|c| (t, c)))
             .map(|(n, c)| {
                 match c.outcome {
                     CheckOutcome::Success => {
@@ -156,7 +177,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
                 let subcheck_image = Summary::image(
                     format!(
                         "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
-                        "".to_string(), //options.mining_bot_url, //TODO find a way to share it
+                        "", //options.mining_bot_url, //TODO find a way to share it
                         get_outcome_color(c.outcome, c.required),
                         n,
                         colspan,
@@ -173,5 +194,77 @@ impl JobType<CheckRunOutput> for CheckJobType {
             })
             .collect();
         (vec![SummaryTableCell::new(imgs.join(""), 1)], job_result)
+    }
+
+    async fn github_side_effect(
+        token: &str,
+        event_name: Option<&str>,
+        issue_number: Option<u64>,
+        runs: &IndexMap<String, IndexMap<Self, Job<Self, CheckRunOutput>>>,
+        summary: &str,
+    ) -> anyhow::Result<()> {
+        let Some(event_name) = event_name else {
+            return Ok(());
+        };
+        let Some(issue_number) = issue_number else {
+            return Ok(());
+        };
+        // Let's get the repo from the job
+        let Some(repository) = runs
+            .first()
+            .and_then(|(_, j)| j.first().map(|(_, c)| &c.repository))
+        else {
+            return Ok(());
+        };
+        if event_name == "pull_request" || event_name == "pull_request_target" {
+            // We have a github token we should try to update the pr
+            let octocrab = Octocrab::builder()
+                .personal_token(token.to_string())
+                .build()?;
+            if let Some((owner, repo)) = repository.split_once('/') {
+                let issues_client = octocrab.issues(owner, repo);
+                // Hide previsous
+                let user = octocrab
+                    .current()
+                    .user()
+                    .await
+                    .map(|u| u.login)
+                    .unwrap_or_else(|_| "fmsc-bot[bot]".to_string());
+                if let Ok(existing_comments) = issues_client
+                    .list_comments(issue_number)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        println!("Could not list comments: {:?}", e);
+                        e
+                    })
+                {
+                    for existing_comment in existing_comments {
+                        if existing_comment.user.login != user {
+                            continue;
+                        }
+                        // Delete all of our comments? Maybe we nmeed to be more clever
+                        let _ = issues_client
+                            .delete_comment(existing_comment.id)
+                            .await
+                            .map_err(|e| {
+                                println!("Could not delete comment: {:?}", e);
+                                e
+                            });
+                    }
+                }
+                let comments = split_comments(summary.to_string());
+                for comment in comments {
+                    let _ = issues_client
+                        .create_comment(issue_number, comment)
+                        .await
+                        .map_err(|e| {
+                            println!("Could not create comment: {:?}", e);
+                            e
+                        });
+                }
+            }
+        }
+        Ok(())
     }
 }
