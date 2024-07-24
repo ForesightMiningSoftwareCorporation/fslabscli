@@ -34,7 +34,7 @@ pub struct Options {
     run_type: RunTypeOption,
     #[arg(long, env = "GITHUB_STEP_SUMMARY")]
     output: PathBuf,
-    #[arg(long)]
+    #[arg(long, env = "GITHUB_TOKEN")]
     github_token: Option<String>,
     #[arg(long)]
     github_event_name: Option<String>,
@@ -243,7 +243,7 @@ where
             let (check_cell_name, check_success) = check_type.get_cell_name(check);
             success &= check_success;
             let mut row: Vec<SummaryTableCell> = vec![SummaryTableCell::new(check_cell_name, 1)];
-            let (cells, job_result) = check_type.get_cells(check, colspan);
+            let (cells, job_result) = check_type.get_cells(check, colspan, mining_bot_url);
             overall_result.merge(&job_result);
             row.extend(cells);
             rows.push(row);

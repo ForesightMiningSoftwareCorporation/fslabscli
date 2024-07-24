@@ -146,6 +146,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
         &self,
         job: &Job<Self, CheckRunOutput>,
         colspan: usize,
+        mining_bot_url: &str,
     ) -> (Vec<SummaryTableCell>, JobResult) {
         let mut job_result = JobResult::new();
         let imgs: Vec<String> = job
@@ -177,7 +178,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
                 let subcheck_image = Summary::image(
                     format!(
                         "{}/svg/rectangle.svg?fill={}&text={}&colspan={}",
-                        "", //options.mining_bot_url, //TODO find a way to share it
+                        mining_bot_url, //TODO find a way to share it
                         get_outcome_color(c.outcome, c.required),
                         n,
                         colspan,
