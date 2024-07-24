@@ -1,12 +1,14 @@
+use crate::commands::summaries::get_success_emoji;
 use anyhow;
+use chrono::{DateTime, Utc};
+use core::fmt;
 use indexmap::IndexMap;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::{self, Visitor};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer};
 use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;
 use std::path::PathBuf;
-
-use crate::commands::summaries::get_success_emoji;
 
 use super::template::SummaryTableCell;
 
@@ -70,11 +72,60 @@ where
 }
 pub trait RunTypeOutput {}
 
+/// Deserialize an `Option<T>` from a string using `FromStr`
+pub fn deserialize_job_timestamp<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TimeStampVisitor;
+
+    impl<'de> Visitor<'de> for TimeStampVisitor {
+        type Value = Option<DateTime<Utc>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a unix timestamp in milliseconds, empty string or none")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value
+                    .parse::<i64>()
+                    .map(|ts| DateTime::from_timestamp_millis(ts))
+                    .map_err(de::Error::custom)
+            }
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(self)
+        }
+
+        // handles the `null` case
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_option(TimeStampVisitor)
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Job<T: JobType<O>, O: RunTypeOutput> {
     pub name: String,
-    pub start_time: String,
-    pub end_time: String,
+    #[serde(deserialize_with = "deserialize_job_timestamp")]
+    pub start_time: Option<DateTime<Utc>>,
+    #[serde(deserialize_with = "deserialize_job_timestamp")]
+    pub end_time: Option<DateTime<Utc>>,
     pub working_directory: String,
     #[serde(rename = "type")]
     pub job_type: T,
