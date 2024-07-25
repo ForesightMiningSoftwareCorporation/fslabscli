@@ -62,10 +62,10 @@ pub struct Options {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_depends_on_template_jobs: bool,
-    #[arg(long, default_value = "v3.0.2")]
+    #[arg(long, default_value = "v3.1.0")]
     build_workflow_version: String,
-    #[arg(long)]
-    fslabscli_version: Option<String>,
+    #[arg(long, default_value = "2.1.1")]
+    fslabscli_version: String,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
     #[arg(long, default_value = "standard")]
@@ -466,7 +466,7 @@ fn get_test_triggers() -> IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerP
 fn get_check_workspace_job(
     members: &Members,
     required_jobs: Vec<String>,
-    fslabscli_version: Option<String>,
+    fslabscli_version: &str,
 ) -> GithubWorkflowJob {
     // For each package published to docker, we need to login to the registry in order to check if the package needs publishing
     let docker_steps: Vec<GithubWorkflowJobSteps> = members
@@ -526,9 +526,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
         "token".to_string(),
         "${{ secrets.GITHUB_TOKEN }}".to_string(),
     )]);
-    if let Some(v) = fslabscli_version {
-        install_fslabscli_args.insert("version".to_string(), v);
-    }
+    install_fslabscli_args.insert("version".to_string(), fslabscli_version.to_string());
     let steps = vec![
         GithubWorkflowJobSteps {
             name: Some("Install FSLABScli".to_string()),
@@ -615,7 +613,7 @@ pub async fn generate_workflow(
     let check_workspace_job = get_check_workspace_job(
         &members,
         test_workflow.jobs.keys().cloned().collect(),
-        options.fslabscli_version,
+        &options.fslabscli_version,
     );
     test_workflow
         .jobs
@@ -819,6 +817,7 @@ pub async fn generate_workflow(
             IndexMap::from([
                 ("run_type".to_string(), "checks".into()),
                 ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
+                ("fslabscli_version".to_string(), options.fslabscli_version.clone().into())
             ])
         ),
         secrets: Some(GithubWorkflowJobSecret {
@@ -844,6 +843,7 @@ pub async fn generate_workflow(
             IndexMap::from([
                 ("run_type".to_string(), "publishing".into()),
                 ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
+                ("fslabscli_version".to_string(), options.fslabscli_version.clone().into())
             ])
         ),
         secrets: Some(GithubWorkflowJobSecret {

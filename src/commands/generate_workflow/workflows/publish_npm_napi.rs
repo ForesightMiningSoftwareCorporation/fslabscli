@@ -43,10 +43,7 @@ impl PublishNpmNapiWorkflow {
             inputs: PublishNpmNapiWorkflowInputs {
                 package,
                 working_directory,
-                version: format!(
-                    "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.version"
-                ),
+                version: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
             },
             _outputs: None,
         }

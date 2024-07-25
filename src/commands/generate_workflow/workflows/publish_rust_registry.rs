@@ -72,10 +72,7 @@ impl PublishRustRegistryWorkflow {
             inputs: PublishRustRegistryWorkflowInputs {
                 package,
                 working_directory,
-                version: format!(
-                    "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.version"
-                ),
+                version: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
                 additional_args: format!(
                     "${{{{ {}.{}) }}}}",

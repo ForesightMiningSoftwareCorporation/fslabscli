@@ -277,8 +277,13 @@ impl JobType<PublishingRunOutput> for PublishingJobType {
                 {
                     if let Some(page) = artifacts.value {
                         for artifact in page {
-                            if artifact.name.starts_with("release-binaries-signed")
-                                || artifact.name.starts_with("release-installer-signed")
+                            if artifact
+                                .name
+                                .starts_with(&format!("release-binaries-signed-{}", package_name))
+                                || artifact.name.starts_with(&format!(
+                                    "release-installer-signed-{}",
+                                    package_name
+                                ))
                             {
                                 // Download zip
                                 if let Ok(data) = actions

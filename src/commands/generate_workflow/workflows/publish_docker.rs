@@ -76,10 +76,7 @@ impl PublishDockerWorkflow {
                 context,
                 dockerfile,
                 registry,
-                version: format!(
-                    "${{{{ {}.{}) }}}}",
-                    dynamic_value_base, "publish_detail.version"
-                ),
+                version: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "version"),
                 toolchain: format!("${{{{ {}.{}) }}}}", dynamic_value_base, "toolchain"),
             },
             _outputs: None,
