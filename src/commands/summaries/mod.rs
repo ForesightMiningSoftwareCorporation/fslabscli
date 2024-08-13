@@ -260,7 +260,7 @@ where
             ),
             true,
         );
-        overall_success &= true;
+        overall_success &= success;
     }
 
     let results = [
