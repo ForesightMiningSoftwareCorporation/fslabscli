@@ -8,8 +8,8 @@ description = "Command line interface for helping FSLABS ci"
 license = "MIT OR Apache-2.0"
 publish = ["foresight-mining-software-corporation"]
 
-[patch.crates-io]
-octocrab = { path = "../octocrab" }
+#[patch.crates-io]
+#octocrab = { path = "../octocrab" }
 [dependencies]
 base64 = "0.21"
 clap = { version = "4.5.0", features = ["derive", "env"] }
@@ -41,7 +41,7 @@ quick-xml = {version = "0.35.0", features = ["serialize"] }
 url = "2.5.0"
 itertools = "0.12"
 num = "0.4.1"
-octocrab = "0.38"
+octocrab = "0.39"
 ignore = "0.4.22"
 object_store = { version = "0.9.1", features = ["azure"]}
 toml = "0.8.12"

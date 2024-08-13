@@ -9,6 +9,9 @@ use log4rs::encode::pattern::PatternEncoder;
 use serde::Serialize;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
+use crate::commands::download_artifacts::{
+    download_artifacts, Options as DownloadArtifactsOptions,
+};
 use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
@@ -54,6 +57,7 @@ enum Commands {
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
     Summaries(Box<SummariesOptions>),
+    DownloadArtifacts(Box<DownloadArtifactsOptions>),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -118,6 +122,9 @@ async fn main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Summaries(options) => summaries(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::DownloadArtifacts(options) => download_artifacts(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
     };
