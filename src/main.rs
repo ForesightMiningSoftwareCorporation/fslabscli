@@ -14,6 +14,7 @@ use crate::commands::download_artifacts::{
 };
 use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
+use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
 
 mod commands;
@@ -58,6 +59,7 @@ enum Commands {
     GenerateWix(Box<GenerateWixOptions>),
     Summaries(Box<SummariesOptions>),
     DownloadArtifacts(Box<DownloadArtifactsOptions>),
+    GithubAppToken(Box<GithubAppTokenOptions>),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -125,6 +127,9 @@ async fn main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DownloadArtifacts(options) => download_artifacts(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::GithubAppToken(options) => github_app_token(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
     };

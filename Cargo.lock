@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -319,6 +319,7 @@ dependencies = [
  "indicatif",
  "indoc",
  "itertools",
+ "jsonwebtoken",
  "log",
  "log4rs",
  "num",

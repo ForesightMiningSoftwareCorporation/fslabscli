@@ -68,7 +68,7 @@ pub async fn download_artifacts(
     )?);
     for artifact in artifacts {
         pb.inc(1);
-        pb.set_message(format!("{}", artifact.name));
+        pb.set_message(artifact.name.to_string());
         let artifact_data = octocrab
             .actions()
             .download_artifact(
@@ -93,7 +93,7 @@ pub async fn download_artifacts(
                     std::fs::create_dir_all(&outpath)?;
                 } else {
                     if let Some(parent) = outpath.parent() {
-                        std::fs::create_dir_all(&parent)?;
+                        std::fs::create_dir_all(parent)?;
                     }
                     let mut outfile = File::create(&outpath)?;
                     io::copy(&mut file, &mut outfile)?;
