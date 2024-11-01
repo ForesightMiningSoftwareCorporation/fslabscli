@@ -19,6 +19,7 @@
       supportedSystems = flake-utils.lib.eachDefaultSystem [
         "aarch64-linux"
         "x86_64-linux"
+        "aarch64-darwin"
       ];
       newBuildTarget =
         {
@@ -43,6 +44,10 @@
 
         "aarch64-linux" = newBuildTarget {
           nixPkgsSystem = "aarch64-unknown-linux-musl";
+        };
+
+        "aarch64-darwin" = newBuildTarget {
+          nixPkgsSystem = "aarch64-apple-darwin";
         };
       };
 
