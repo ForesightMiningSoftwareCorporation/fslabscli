@@ -135,9 +135,9 @@ pub struct Result {
     pub path: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
     pub publish: bool,
-    #[serde(skip_serializing)]
+    // #[serde(skip_serializing)]
     pub dependencies: Vec<ResultDependency>,
-    #[serde(skip_serializing)]
+    // #[serde(skip_serializing)]
     pub dependant: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
