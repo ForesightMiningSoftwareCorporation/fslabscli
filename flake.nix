@@ -4,17 +4,15 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
     fenix = {
-          url = "github:nix-community/fenix";
-          inputs.nixpkgs.follows = "nixpkgs";
-        };
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { self, flake-utils, nixpkgs, crane, fenix }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = (import nixpkgs) {
-          inherit system;
-        };
+        pkgs = (import nixpkgs) { inherit system; };
 
         makePackage = rustTarget:
           args@{ ccPackage, nativeBuildInputs ? [ ], depsBuildBuild ? [ ], ...
@@ -35,7 +33,7 @@
               (fenixToolchain fenixPkgs).clippy
               (fenixToolchain (fenixPkgs.targets).${rustTarget}).rust-std
             ];
-             craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+            craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
           in craneLib.buildPackage {
             src = craneLib.cleanCargoSource ./.;
             strictDeps = true;
@@ -68,29 +66,35 @@
               "link-args=-static -latomic"
             ];
           };
-#          x86_64-pc-windows-gnu = {
-#            ccPackage = pkgs.pkgsCross.mingwW64.stdenv.cc;
-#            CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS =
-#              "-L native=${pkgs.pkgsCross.mingwW64.windows.pthreads}/lib";
-#
-#            depsBuildBuild = with pkgs; [ pkgsCross.mingwW64.windows.pthreads ];
-#          };
+          x86_64-pc-windows-gnu = {
+            ccPackage = pkgs.pkgsCross.mingwW64.stdenv.cc;
+            CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS =
+              "-L native=${pkgs.pkgsCross.mingwW64.windows.pthreads}/lib";
+            depsBuildBuild = with pkgs; [ pkgsCross.mingwW64.windows.pthreads ];
+          };
         };
+        workspaces = [{
+          name = "fslabscli";
+          src = ./.;
+        }];
       in rec {
-        packages =
-          (nixpkgs.lib.mapAttrs (name: value: (makePackage name value)) targets
-            // {
-              release = pkgs.runCommand "release-binaries" { } ''
-                mkdir -p "$out"/bin
-                for pkg in ${
-                  builtins.concatStringsSep " " (map (p: "${p}/bin")
-                    (builtins.attrValues
-                      (builtins.removeAttrs packages [ "release" ])))
-                }; do
-                  cp -r "$pkg"/* "$out"/bin/
-                done
-                (cd "$out"/bin && sha256sum * > sha256.txt)
-              '';
-            });
+        packages = nixpkgs.lib.listToAttrs (nixpkgs.lib.concatMap (workspace:
+          nixpkgs.lib.mapAttrsToList (targetName: targetConfig: {
+            name = "${workspace.name}-${targetName}";
+            value = makePackage targetName
+              (targetConfig // { src = workspace.src; });
+          }) targets) workspaces) // {
+            release = pkgs.runCommand "release-binaries" { } ''
+              mkdir -p "$out"/bin
+              for pkg in ${
+                builtins.concatStringsSep " " (map (p: "${p}/bin")
+                  (builtins.attrValues
+                    (builtins.removeAttrs packages [ "release" ])))
+              }; do
+                cp -r "$pkg"/* "$out"/bin/
+              done
+              (cd "$out"/bin && sha256sum * > sha256.txt)
+            '';
+          };
       });
 }
