@@ -131,15 +131,15 @@ pub struct Job<T: JobType<O>, O: RunTypeOutput> {
     pub start_time: Option<DateTime<Utc>>,
     #[serde(deserialize_with = "deserialize_job_timestamp")]
     pub end_time: Option<DateTime<Utc>>,
-    pub working_directory: String,
+    // pub working_directory: String,
     #[serde(rename = "type")]
     pub job_type: T,
-    pub server_url: String,
+    // pub server_url: String,
     pub repository: String,
     pub run_id: String,
-    pub run_attempt: String,
-    pub actor: String,
-    pub event_name: String,
+    // pub run_attempt: String,
+    // pub actor: String,
+    // pub event_name: String,
     pub outputs: O,
 }
 

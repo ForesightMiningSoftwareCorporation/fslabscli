@@ -3,6 +3,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Parser)]
 #[command(about = "Build and Push a docker image")]
@@ -16,12 +17,12 @@ pub struct Options {
     /// Cache export destination (e.g., type=local,dest=path/to/dir)
     #[arg(long, env = "DOCKER_CACHE_TO")]
     cache_to: Option<String>,
-    /// Build's context is the set of files located in the specified PATH or URL (default Git context)
-    #[arg(long, default_value = ".")]
-    context: String,
-    /// Path to the Dockerfile. (default {context}/Dockerfile)
+    /// Build's context is the set of files located in the specified PATH or URL (default to working directory)
     #[arg(long)]
-    file: Option<String>,
+    context: Option<String>,
+    /// Path to the Dockerfile. (default {context}/Dockerfile)
+    #[arg(long, short = 'f', default_value = "Dockerfile")]
+    file: String,
     /// List of metadata for an image
     #[arg(long)]
     labels: Vec<String>,
@@ -69,8 +70,57 @@ impl PrettyPrintable for DockerBuildPushResult {
 
 pub async fn docker_build_push(
     options: Box<Options>,
-    _working_directory: PathBuf,
+    working_directory: PathBuf,
 ) -> anyhow::Result<DockerBuildPushResult> {
+    let mut build_command = Command::new("docker");
+    build_command.arg("build");
+    build_command.arg("-t").arg(&options.image);
+
+    let context = options.context.map(|c| PathBuf::from(c)).unwrap_or_else(|| working_directory);
+
+    if let Some(cache_from) = &options.cache_from {
+        build_command.arg("--cache-from").arg(cache_from);
+    }
+    if let Some(cache_to) = &options.cache_to {
+        build_command.arg("--cache-to").arg(cache_to);
+    }
+    options.build_args.iter().for_each(|arg| {
+        build_command.arg("--build-arg").arg(arg);
+    });
+    options.secrets.iter().for_each(|arg| {
+        build_command.arg("--secret").arg(arg);
+    });
+
+    build_command.arg("--file").arg( context.join(&options.file));
+
+    build_command.arg(context);
+
+    let output = build_command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("Could not build docker image: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    if options.push {
+        let output = Command::new("docker").arg("push").arg(&options.image).output()?;
+        if !output.status.success() {
+            anyhow::bail!("Could not push docker image: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    for additional_tag in options.additional_tags {
+        let output = Command::new("docker").arg("tag").arg(&options.image).arg(&additional_tag).output()?;
+        if !output.status.success() {
+            anyhow::bail!("Could not tag docker image: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        if options.push {
+            let output = Command::new("docker").arg("push").arg(&additional_tag).output()?;
+            if !output.status.success() {
+                anyhow::bail!("Could not push docker image: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+    }
+
     Ok(DockerBuildPushResult {
         image_id: "".to_string(),
         digest: "".to_string(),
