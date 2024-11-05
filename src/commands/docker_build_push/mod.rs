@@ -91,32 +91,30 @@ pub async fn docker_build_push(
         build_command.arg("--secret").arg(arg);
     });
 
-    build_command.arg("--file").arg( context.join(&options.file));
+    build_command.arg("--file").arg(context.join(&options.file));
 
     build_command.arg(context);
 
-    let output = build_command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("Could not build docker image: {}", String::from_utf8_lossy(&output.stderr));
+    let status = build_command
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("Could not build docker image");
     }
     if options.push {
-        let output = Command::new("docker").arg("push").arg(&options.image).output()?;
-        if !output.status.success() {
-            anyhow::bail!("Could not push docker image: {}", String::from_utf8_lossy(&output.stderr));
+        let status = Command::new("docker").arg("push").arg(&options.image).status()?;
+        if !status.success() {
+            anyhow::bail!("Could not push docker image",);
         }
     }
     for additional_tag in options.additional_tags {
-        let output = Command::new("docker").arg("tag").arg(&options.image).arg(&additional_tag).output()?;
-        if !output.status.success() {
-            anyhow::bail!("Could not tag docker image: {}", String::from_utf8_lossy(&output.stderr));
+        let status = Command::new("docker").arg("tag").arg(&options.image).arg(&additional_tag).status()?;
+        if !status.success() {
+            anyhow::bail!("Could not tag docker image");
         }
         if options.push {
-            let output = Command::new("docker").arg("push").arg(&additional_tag).output()?;
-            if !output.status.success() {
-                anyhow::bail!("Could not push docker image: {}", String::from_utf8_lossy(&output.stderr));
+            let status = Command::new("docker").arg("push").arg(&additional_tag).status()?;
+            if !status.success() {
+                anyhow::bail!("Could not push docker image");
             }
         }
     }
