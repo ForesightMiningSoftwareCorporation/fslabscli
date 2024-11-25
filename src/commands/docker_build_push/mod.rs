@@ -3,7 +3,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Debug, Parser)]
 #[command(about = "Build and Push a docker image")]
@@ -44,7 +44,6 @@ pub struct Options {
     additional_tags: Vec<String>,
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct DockerBuildPushResult {
     /// Image ID
@@ -76,7 +75,10 @@ pub async fn docker_build_push(
     build_command.arg("build");
     build_command.arg("-t").arg(&options.image);
 
-    let context = options.context.map(|c| PathBuf::from(c)).unwrap_or_else(|| working_directory);
+    let context = options
+        .context
+        .map(PathBuf::from)
+        .unwrap_or_else(|| working_directory);
 
     if let Some(cache_from) = &options.cache_from {
         build_command.arg("--cache-from").arg(cache_from);
@@ -95,24 +97,33 @@ pub async fn docker_build_push(
 
     build_command.arg(context);
 
-    let status = build_command
-        .status()?;
+    let status = build_command.status()?;
     if !status.success() {
         anyhow::bail!("Could not build docker image");
     }
     if options.push {
-        let status = Command::new("docker").arg("push").arg(&options.image).status()?;
+        let status = Command::new("docker")
+            .arg("push")
+            .arg(&options.image)
+            .status()?;
         if !status.success() {
             anyhow::bail!("Could not push docker image",);
         }
     }
     for additional_tag in options.additional_tags {
-        let status = Command::new("docker").arg("tag").arg(&options.image).arg(&additional_tag).status()?;
+        let status = Command::new("docker")
+            .arg("tag")
+            .arg(&options.image)
+            .arg(&additional_tag)
+            .status()?;
         if !status.success() {
             anyhow::bail!("Could not tag docker image");
         }
         if options.push {
-            let status = Command::new("docker").arg("push").arg(&additional_tag).status()?;
+            let status = Command::new("docker")
+                .arg("push")
+                .arg(&additional_tag)
+                .status()?;
             if !status.success() {
                 anyhow::bail!("Could not push docker image");
             }

@@ -9,6 +9,7 @@ use log4rs::encode::pattern::PatternEncoder;
 use serde::Serialize;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
+use crate::commands::docker_build_push::{docker_build_push, Options as DockerBuildPushOptions};
 use crate::commands::download_artifacts::{
     download_artifacts, Options as DownloadArtifactsOptions,
 };
@@ -16,7 +17,6 @@ use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions}
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
-use crate::commands::docker_build_push::{docker_build_push, Options as DockerBuildPushOptions};
 
 mod commands;
 mod utils;
