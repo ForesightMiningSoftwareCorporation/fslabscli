@@ -1,4 +1,5 @@
 use chrono::{prelude::*, Duration};
+use core::result::Result as CoreResult;
 use ignore::WalkBuilder;
 use std::cmp;
 use std::cmp::Ordering;
@@ -19,7 +20,7 @@ use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use object_store::{path::Path as BSPath, ObjectStore};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::from_value;
 use serde_yaml::Value;
 use strum_macros::EnumString;
@@ -55,6 +56,22 @@ pub enum ReleaseChannel {
     Alpha,
     Beta,
     Prod,
+}
+
+// Custom serialization function
+fn serialize_multiline_as_escaped<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> CoreResult<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(ref v) = value {
+        let escaped = v.replace('\n', "\\n");
+        serializer.serialize_some(&escaped)
+    } else {
+        serializer.serialize_none()
+    }
 }
 
 #[derive(Debug, Parser, Default)]
@@ -158,7 +175,7 @@ pub struct PackageMetadataFslabsCiPublish {
     pub binary: PackageMetadataFslabsCiPublishBinary,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_multiline_as_escaped")]
     pub additional_args: Option<String>,
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,

@@ -25,6 +25,8 @@ pub struct Options {
     repo: String,
     #[arg()]
     run_id: u64,
+    #[arg(long, default_value_t = 1)]
+    attempt: u64,
 }
 
 #[derive(Serialize)]
