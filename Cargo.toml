@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fslabscli"
-version = "2.4.1"
+version = "2.4.2"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"

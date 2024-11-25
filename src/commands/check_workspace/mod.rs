@@ -74,6 +74,32 @@ where
     }
 }
 
+// Custom serialization function for `IndexMap<String, Value>`
+fn serialize_indexmap_multiline_as_escaped<S>(
+    map: &Option<IndexMap<String, Value>>,
+    serializer: S,
+) -> CoreResult<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(map) = map {
+        let escaped_map: IndexMap<_, _> = map
+            .iter()
+            .map(|(key, value)| {
+                let escaped_value = match value {
+                    Value::String(s) => Value::String(s.replace('\n', "\\n")),
+                    _ => value.clone(),
+                };
+                (key.clone(), escaped_value)
+            })
+            .collect();
+
+        serializer.serialize_some(&escaped_map)
+    } else {
+        serializer.serialize_none()
+    }
+}
+
 #[derive(Debug, Parser, Default)]
 #[command(about = "Check directory for crates that need to be published.")]
 pub struct Options {
@@ -187,7 +213,7 @@ pub struct PackageMetadataFslabsCiPublish {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiTest {
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_indexmap_multiline_as_escaped")]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::TestWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     pub env: Option<IndexMap<String, String>>,
     pub skip: Option<bool>,
