@@ -2,7 +2,7 @@ use oci_distribution::client::{ClientConfig, ClientProtocol};
 use oci_distribution::errors::{OciDistributionError, OciErrorCode};
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client as DockerClient, Reference};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -222,13 +222,27 @@ impl Docker {
         }
     }
 }
-
+// Custom serialization function for `error`
+fn serialize_error_escaped<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(ref v) = value {
+        let escaped = v
+            .replace('\\', "\\\\") // Escape backslashes
+            .replace('"', "\\\""); // Escape quotes
+        serializer.serialize_some(&escaped)
+    } else {
+        serializer.serialize_none()
+    }
+}
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiPublishDocker {
     pub publish: bool,
     pub repository: Option<String>,
     pub context: Option<String>,
     pub dockerfile: Option<String>,
+    #[serde(default, serialize_with = "serialize_error_escaped")]
     pub error: Option<String>,
 }
 
