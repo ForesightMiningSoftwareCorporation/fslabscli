@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{DependencyKind, MetadataCommand, Package};
+use cargo_metadata::{MetadataCommand, Package};
 use clap::Parser;
 use console::{style, Emoji};
 use futures_util::StreamExt;
@@ -296,7 +296,8 @@ impl Result {
         let dependencies: Vec<ResultDependency> = package
             .dependencies
             .into_iter()
-            .filter(|p| p.kind == DependencyKind::Normal)
+            // Somehow, we now need to put the devedependencies in the tree
+            // .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
                 package: Some(d.name),
                 path: d.path.map(|p| p.into()),
