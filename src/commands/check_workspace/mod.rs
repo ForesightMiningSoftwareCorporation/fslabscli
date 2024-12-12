@@ -259,11 +259,7 @@ fn get_blob_name(
 }
 
 impl Result {
-    pub async fn new(
-        workspace: String,
-        package: Package,
-        root_dir: PathBuf,
-    ) -> anyhow::Result<Self> {
+    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
             .canonicalize()?
@@ -781,9 +777,7 @@ pub async fn check_workspace(
                     workspace_name.to_string_lossy().to_string(),
                     package.clone(),
                     working_directory.clone(),
-                )
-                .await
-                {
+                ) {
                     Ok(package) => {
                         packages.insert(package.package.clone(), package);
                     }
