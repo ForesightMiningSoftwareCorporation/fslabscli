@@ -2,7 +2,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fs::read_dir;
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use indexmap::IndexMap;
@@ -12,7 +12,7 @@ use void::Void;
 
 pub fn get_cargo_roots(root: PathBuf) -> anyhow::Result<Vec<PathBuf>> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if Path::exists(root.join("Cargo.toml").as_path()) {
+    if root.join("Cargo.toml").exists() && !root.join(".skip_ci").exists() {
         roots.push(root);
         return Ok(roots);
     }
@@ -296,5 +296,16 @@ mod tests {
             path.join("subdir_d/subdir_b").to_path_buf(),
         ];
         assert_eq!(roots, expected_results);
+    }
+
+    #[test]
+    fn test_get_cargo_roots_ignores_directory_with_skip_ci_sentinel() {
+        // Create fake directory structure
+        let dir = TempDir::new().expect("Could not create temp dir");
+        let path = dir.path();
+        fs::File::create(dir.path().join("Cargo.toml")).expect("Could not create root Cargo.toml");
+        fs::File::create(dir.path().join(".skip_ci")).expect("Could not create .skip_ci");
+        let roots = get_cargo_roots(path.to_path_buf()).expect("Could not get roots");
+        assert!(roots.is_empty(), "{roots:?}");
     }
 }
