@@ -19,6 +19,7 @@ use crate::commands::github_app_token::{github_app_token, Options as GithubAppTo
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
 
 mod commands;
+mod crate_graph;
 mod utils;
 
 #[derive(Debug, Parser)] // requires `derive` feature
