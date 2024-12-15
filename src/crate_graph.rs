@@ -1,4 +1,5 @@
-use cargo_metadata::{semver::Version, Metadata, MetadataCommand, Package};
+use cargo_metadata::{semver::Version, Metadata, MetadataCommand, Package, PackageId};
+use git2::{DiffDelta, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -95,13 +96,54 @@ impl CrateGraph {
         Ok(())
     }
 
-    #[cfg(test)]
     pub fn workspaces(&self) -> &[Workspace] {
         &self.workspaces
     }
 
     pub fn dependency_graph(&self) -> &DependencyGraph {
         &self.dependencies
+    }
+
+    /// All cargo packages in the repo.
+    pub fn packages(&self) -> impl Iterator<Item = &Package> {
+        self.workspaces()
+            .iter()
+            .flat_map(|w| w.metadata.workspace_packages())
+    }
+
+    /// Determines which packages have changed between `old_rev` and `new_rev`.
+    pub fn changed_packages(&self, old_rev: &str, new_rev: &str) -> anyhow::Result<Vec<PathBuf>> {
+        // Create git diff between revisions.
+        let repository = Repository::open(&self.repo_root)?;
+        let old_commit = repository.revparse_single(old_rev)?;
+        let new_commit = repository.revparse_single(new_rev)?;
+        let old_tree = old_commit.peel_to_tree()?;
+        let new_tree = new_commit.peel_to_tree()?;
+        let diff = repository.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+
+        // Check each package path against each file paths in git diff.
+        let mut changed = Vec::new();
+        for package in self.packages() {
+            let package_path = package_path(&self.repo_root, package).into_owned();
+            let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
+                for delta_path in [delta.old_file().path(), delta.new_file().path()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if delta_path.starts_with(&package_path) {
+                        changed.push(package_path.clone());
+                        return false;
+                    }
+                }
+                true
+            };
+            // Returning early from a callback will propagate an error for some
+            // reason. Ignore it.
+            let _ = diff.foreach(&mut file_cb, None, None, None);
+        }
+        changed.sort();
+
+        Ok(changed)
     }
 }
 
@@ -165,10 +207,7 @@ impl DependencyGraph {
         for w in workspaces {
             // Create the 1:1 bidirectional map between path and package ID.
             for p in w.metadata.workspace_packages() {
-                let manifest_path = p.manifest_path.as_std_path();
-                let p_dir_path = relative_path(repo_root, manifest_path.parent().unwrap())
-                    .expect("Workspace package manifest must be relative to repo root")
-                    .into_owned();
+                let p_dir_path = package_path(repo_root, p).into_owned();
                 me.path_to_id.insert(p_dir_path.clone(), p.id.clone());
                 me.id_to_path.insert(p.id.clone(), p_dir_path);
                 me.dependencies.insert(p.id.clone(), Default::default());
@@ -222,6 +261,15 @@ impl DependencyGraph {
         closure.sort();
         closure
     }
+}
+
+/// The path to `package`, relative to `repo_root`.
+pub fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path> {
+    relative_path(
+        repo_root,
+        package.manifest_path.as_std_path().parent().unwrap(),
+    )
+    .expect("Workspace package manifest must be relative to repo root")
 }
 
 fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, StripPrefixError> {
@@ -330,6 +378,17 @@ mod tests {
                 PathBuf::from("foo"),
             ]
         );
+    }
+
+    #[test]
+    fn test_detect_changed_packages() {
+        let repo = initialize_repo();
+        let graph = CrateGraph::new(&repo).unwrap();
+
+        // These revision strings rely on an understanding of the test repo's git log.
+        // We know that the most recent revision makes changes to files in foo and bar.
+        let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
+        assert_eq!(changed, [Path::new("bar"), Path::new("foo")]);
     }
 
     fn initialize_repo() -> PathBuf {
