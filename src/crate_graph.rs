@@ -2,6 +2,7 @@ use cargo_metadata::{semver::Version, Metadata, MetadataCommand, Package};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf, StripPrefixError},
 };
 
@@ -10,6 +11,7 @@ use std::{
 pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
+    dependencies: DependencyGraph,
 }
 
 impl CrateGraph {
@@ -31,9 +33,11 @@ impl CrateGraph {
         }
         Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces)?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
+        let dependencies = DependencyGraph::new(&repo_root, &workspaces);
         Ok(Self {
             repo_root,
             workspaces,
+            dependencies,
         })
     }
 
@@ -95,6 +99,10 @@ impl CrateGraph {
     pub fn workspaces(&self) -> &[Workspace] {
         &self.workspaces
     }
+
+    pub fn dependency_graph(&self) -> &DependencyGraph {
+        &self.dependencies
+    }
 }
 
 /// A crate that either:
@@ -135,6 +143,84 @@ impl From<&Package> for PackageKey {
             name: p.name.clone(),
             version: p.version.clone(),
         }
+    }
+}
+
+/// The dependency graph of **local** crates from [`CrateGraph`].
+#[derive(Clone, Debug, Default)]
+pub struct DependencyGraph {
+    path_to_id: HashMap<PathBuf, PackageId>,
+    id_to_path: HashMap<PackageId, PathBuf>,
+
+    /// "KEY depends on VALUE"
+    dependencies: HashMap<PackageId, Vec<PackageId>>,
+    /// "KEY is depended on by VALUE"
+    reverse_dependencies: HashMap<PackageId, Vec<PackageId>>,
+}
+
+impl DependencyGraph {
+    pub fn new(repo_root: &Path, workspaces: &[Workspace]) -> Self {
+        let mut me = Self::default();
+
+        for w in workspaces {
+            // Create the 1:1 bidirectional map between path and package ID.
+            for p in w.metadata.workspace_packages() {
+                let manifest_path = p.manifest_path.as_std_path();
+                let p_dir_path = relative_path(repo_root, manifest_path.parent().unwrap())
+                    .expect("Workspace package manifest must be relative to repo root")
+                    .into_owned();
+                me.path_to_id.insert(p_dir_path.clone(), p.id.clone());
+                me.id_to_path.insert(p.id.clone(), p_dir_path);
+                me.dependencies.insert(p.id.clone(), Default::default());
+                me.reverse_dependencies
+                    .insert(p.id.clone(), Default::default());
+            }
+
+            // Create the M:N bidirectional dependency map between package IDs.
+            let resolve = w.metadata.resolve.as_ref().unwrap();
+            for node in &resolve.nodes {
+                if me.id_to_path.contains_key(&node.id) {
+                    let deps = me.dependencies.get_mut(&node.id).unwrap();
+                    for d in &node.dependencies {
+                        if me.id_to_path.contains_key(d) {
+                            let reverse_deps = me.reverse_dependencies.get_mut(d).unwrap();
+                            deps.push(d.clone());
+                            reverse_deps.push(node.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        me
+    }
+
+    /// Given a set `seed` of **relative** paths to packages into the repo,
+    /// returns the superset of packages that directly or indirectly depend on
+    /// one of the packages in `seed`.
+    ///
+    /// # Panics
+    ///
+    /// If any paths in `seed` are not recognized by the dependency graph.
+    pub fn reverse_closure<'a>(&self, seed: impl IntoIterator<Item = &'a Path>) -> Vec<PathBuf> {
+        let mut closure = HashSet::new();
+        let mut to_visit: Vec<_> = seed
+            .into_iter()
+            .map(|path| self.path_to_id[path].clone())
+            .collect();
+        while let Some(id) = to_visit.pop() {
+            if closure.insert(id.clone()) {
+                for dependant in &self.reverse_dependencies[&id] {
+                    to_visit.push(dependant.clone());
+                }
+            }
+        }
+        let mut closure: Vec<_> = closure
+            .into_iter()
+            .map(|id| self.id_to_path[&id].clone())
+            .collect();
+        closure.sort();
+        closure
     }
 }
 
@@ -227,6 +313,21 @@ mod tests {
                     name: "foo_member1".into(),
                     version: "0.1.0".parse().unwrap(),
                 }
+            ]
+        );
+
+        // nothing depends on foo
+        let closure = graph.dependency_graph().reverse_closure([Path::new("foo")]);
+        assert_eq!(closure, [Path::new("foo")]);
+
+        // foo --> baz/member1 --> bar
+        let closure = graph.dependency_graph().reverse_closure([Path::new("bar")]);
+        assert_eq!(
+            closure,
+            [
+                PathBuf::from("bar"),
+                Path::new("baz").join("baz_member1"),
+                PathBuf::from("foo"),
             ]
         );
     }
