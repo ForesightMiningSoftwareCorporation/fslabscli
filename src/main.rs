@@ -13,6 +13,7 @@ use crate::commands::docker_build_push::{docker_build_push, Options as DockerBui
 use crate::commands::download_artifacts::{
     download_artifacts, Options as DownloadArtifactsOptions,
 };
+use crate::commands::fix_lock_files::{fix_lock_files, Options as CheckLockFilesOptions};
 use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
@@ -55,6 +56,7 @@ enum CargoSubcommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    FixLockFiles(Box<CheckLockFilesOptions>),
     /// Check which crates needs to be published
     CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
@@ -117,6 +119,7 @@ async fn main() {
         .canonicalize()
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
+        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory),
         Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
