@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::Package;
 use clap::Parser;
 use console::{style, Emoji};
 use futures_util::StreamExt;
@@ -27,12 +27,13 @@ use strum_macros::EnumString;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
+use crate::crate_graph::CrateGraph;
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
-use crate::{utils, PrettyPrintable};
+use crate::PrettyPrintable;
 
 mod binary;
 mod cargo;
@@ -754,8 +755,7 @@ pub async fn check_workspace(
             LOOKING_GLASS
         );
     }
-    let roots = utils::get_cargo_roots(path)
-        .with_context(|| format!("Failed to get roots from {:?}", working_directory))?;
+    let crates = CrateGraph::new(&path)?;
     let mut packages: HashMap<String, Result> = HashMap::new();
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
@@ -765,30 +765,23 @@ pub async fn check_workspace(
             TRUCK
         );
     }
-    for root in roots {
-        if let Some(workspace_name) = root.file_name() {
-            let workspace_metadata = MetadataCommand::new()
-                .current_dir(root.clone())
-                .no_deps()
-                .exec()
-                .unwrap();
-            for package in workspace_metadata.packages {
-                match Result::new(
-                    workspace_name.to_string_lossy().to_string(),
-                    package.clone(),
-                    working_directory.clone(),
-                ) {
-                    Ok(package) => {
-                        packages.insert(package.package.clone(), package);
-                    }
-                    Err(e) => {
-                        let error_msg = format!("Could not check package {}: {}", package.name, e);
-                        if options.fail_unit_error {
-                            anyhow::bail!(error_msg)
-                        } else {
-                            log::warn!("{}", error_msg);
-                            continue;
-                        }
+    for workspace in crates.workspaces() {
+        for package in workspace.metadata.workspace_packages() {
+            match Result::new(
+                workspace.path.to_string_lossy().into(),
+                package.clone(),
+                working_directory.clone(),
+            ) {
+                Ok(package) => {
+                    packages.insert(package.package.clone(), package);
+                }
+                Err(e) => {
+                    let error_msg = format!("Could not check package {}: {}", package.name, e);
+                    if options.fail_unit_error {
+                        anyhow::bail!(error_msg)
+                    } else {
+                        log::warn!("{}", error_msg);
+                        continue;
                     }
                 }
             }
