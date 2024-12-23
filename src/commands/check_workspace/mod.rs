@@ -955,8 +955,7 @@ pub async fn check_workspace(
             }
             package.dependencies.retain(|d| {
                 d.package
-                    .as_ref()
-                    .map_or(false, |p| package_keys.contains(p))
+                    .as_ref().is_some_and(|p| package_keys.contains(p))
             });
             for dep in &mut package.dependencies {
                 if let Some(package_name) = &dep.package {
