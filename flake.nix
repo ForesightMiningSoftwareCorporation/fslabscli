@@ -258,7 +258,7 @@
         individualPackages =
           mkRustPackages "aarch64-linux"
           // mkRustPackages "x86_64-linux"
-          # // mkRustPackages "aarch64-darwin"
+          // mkRustPackages "aarch64-darwin"
           // {
             cargo-fslabscli-win64 = mkWin64RustPackage "cargo-fslabscli";
             cargo-fslabscli-win32 = mkWin32RustPackage "cargo-fslabscli";
