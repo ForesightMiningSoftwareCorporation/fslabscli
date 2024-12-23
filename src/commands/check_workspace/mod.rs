@@ -1,6 +1,5 @@
 use chrono::{prelude::*, Duration};
 use core::result::Result as CoreResult;
-use ignore::WalkBuilder;
 use std::cmp;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -11,11 +10,10 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{MetadataCommand, Package};
+use cargo_metadata::Package;
 use clap::Parser;
 use console::{style, Emoji};
 use futures_util::StreamExt;
-use git2::{DiffDelta, DiffOptions, Repository};
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use object_store::{path::Path as BSPath, ObjectStore};
@@ -27,12 +25,13 @@ use strum_macros::EnumString;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
+use crate::crate_graph::CrateGraph;
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
-use crate::{utils, PrettyPrintable};
+use crate::PrettyPrintable;
 
 mod binary;
 mod cargo;
@@ -180,8 +179,6 @@ pub struct Result {
     pub publish: bool,
     // #[serde(skip_serializing)]
     pub dependencies: Vec<ResultDependency>,
-    // #[serde(skip_serializing)]
-    pub dependant: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
     pub perform_test: bool,
@@ -754,8 +751,7 @@ pub async fn check_workspace(
             LOOKING_GLASS
         );
     }
-    let roots = utils::get_cargo_roots(path)
-        .with_context(|| format!("Failed to get roots from {:?}", working_directory))?;
+    let crates = CrateGraph::new(&path)?;
     let mut packages: HashMap<String, Result> = HashMap::new();
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
@@ -765,30 +761,23 @@ pub async fn check_workspace(
             TRUCK
         );
     }
-    for root in roots {
-        if let Some(workspace_name) = root.file_name() {
-            let workspace_metadata = MetadataCommand::new()
-                .current_dir(root.clone())
-                .no_deps()
-                .exec()
-                .unwrap();
-            for package in workspace_metadata.packages {
-                match Result::new(
-                    workspace_name.to_string_lossy().to_string(),
-                    package.clone(),
-                    working_directory.clone(),
-                ) {
-                    Ok(package) => {
-                        packages.insert(package.package.clone(), package);
-                    }
-                    Err(e) => {
-                        let error_msg = format!("Could not check package {}: {}", package.name, e);
-                        if options.fail_unit_error {
-                            anyhow::bail!(error_msg)
-                        } else {
-                            log::warn!("{}", error_msg);
-                            continue;
-                        }
+    for workspace in crates.workspaces() {
+        for package in workspace.metadata.workspace_packages() {
+            match Result::new(
+                workspace.path.to_string_lossy().into(),
+                package.clone(),
+                working_directory.clone(),
+            ) {
+                Ok(package) => {
+                    packages.insert(package.package.clone(), package);
+                }
+                Err(e) => {
+                    let error_msg = format!("Could not check package {}: {}", package.name, e);
+                    if options.fail_unit_error {
+                        anyhow::bail!(error_msg)
+                    } else {
+                        log::warn!("{}", error_msg);
+                        continue;
                     }
                 }
             }
@@ -966,8 +955,7 @@ pub async fn check_workspace(
             }
             package.dependencies.retain(|d| {
                 d.package
-                    .as_ref()
-                    .map_or(false, |p| package_keys.contains(p))
+                    .as_ref().is_some_and(|p| package_keys.contains(p))
             });
             for dep in &mut package.dependencies {
                 if let Some(package_name) = &dep.package {
@@ -978,54 +966,7 @@ pub async fn check_workspace(
             }
         }
     }
-    // 4 Feed Dependent
-    if options.progress {
-        println!(
-            "{} {}Feeding packages dependant...",
-            style("[7/9]").bold().dim(),
-            TRUCK
-        );
-    }
-    if options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
     let package_keys: Vec<String> = packages.keys().cloned().collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get(&package_key).cloned() {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            // for each dependency we need to edit it and add ourself as a dependeant
-            for dependency in package.dependencies.clone() {
-                if let Some(package_name) = dependency.package {
-                    if let Some(dependant) = packages.get_mut(&package_name) {
-                        dependant.dependant.push(ResultDependency {
-                            package: Some(package.package.clone()),
-                            version: package.version.clone(),
-                            path: Some(package.path.clone()),
-                            publishable: package.publish,
-                            publishable_details: HashMap::from([
-                                ("docker".to_string(), package.publish_detail.docker.publish),
-                                ("cargo".to_string(), package.publish_detail.cargo.publish),
-                                (
-                                    "npm_napi".to_string(),
-                                    package.publish_detail.npm_napi.publish,
-                                ),
-                                ("binary".to_string(), package.publish_detail.binary.publish),
-                            ]),
-                            guid_suffix: None,
-                        });
-                    }
-                }
-            }
-        }
-    }
 
     if options.progress {
         println!(
@@ -1035,22 +976,6 @@ pub async fn check_workspace(
         );
     }
     if options.check_changed {
-        // Look for a .fslabscliignore file
-        let walker = WalkBuilder::new(working_directory.clone())
-            .add_custom_ignore_filename(".fslabscliignore")
-            .build();
-
-        let non_ignored_paths: Vec<PathBuf> = walker
-            .filter_map(|t| t.ok())
-            .map(|e| e.into_path())
-            .collect();
-        let repository = Repository::open(working_directory.clone())?;
-        // Get the commits objects based on the head ref and base ref
-        let head_commit = repository.revparse_single(&options.changed_head_ref)?;
-        let base_commit = repository.revparse_single(&options.changed_base_ref)?;
-        // Get the tree for the commits
-        let head_tree = head_commit.peel_to_tree()?;
-        let base_tree = base_commit.peel_to_tree()?;
         if options.progress {
             pb = Some(ProgressBar::new(packages.len() as u64).with_style(
                 ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
@@ -1058,6 +983,13 @@ pub async fn check_workspace(
         }
 
         // Check changed from a git pov
+        let changed_package_paths =
+            crates.changed_packages(&options.changed_base_ref, &options.changed_head_ref)?;
+        // Any packages that transitively depend on changed packages are also considered "changed".
+        let changed_closure = crates
+            .dependency_graph()
+            .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
+
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
                 pb.inc(1);
@@ -1066,96 +998,18 @@ pub async fn check_workspace(
                 if let Some(ref pb) = pb {
                     pb.set_message(format!("{} : {}", package.workspace, package.package));
                 }
+                // TODO: it seems like we never actually set "package.publish"
+                // to true, so I'm not sure this actually does anything.
                 if options.check_publish && package.publish {
                     // mark package as changed
                     package.changed = true;
                     continue;
                 }
-                // let Ok(folder_entry) = head_tree.get_path(package_folder) else {
-                //     continue;
-                // };
-
-                let package_folder = match &package.path.to_string_lossy().to_string() == "." {
-                    true => "".to_string(),
-                    false => package.path.clone().to_string_lossy().to_string(),
-                };
-                let mut diff_options = DiffOptions::new();
-                diff_options.include_unmodified(true);
-                let Ok(diff) = repository.diff_tree_to_tree(
-                    Some(&base_tree),
-                    Some(&head_tree),
-                    Some(&mut diff_options),
-                ) else {
-                    continue;
-                };
-                let check_path = |path: Option<&Path>| -> bool {
-                    match path {
-                        Some(p) => {
-                            if package_folder.is_empty() || p.starts_with(&package_folder) {
-                                let fp = working_directory.join(p);
-                                return non_ignored_paths.iter().any(|r| r == &fp);
-                            }
-                            false
-                        }
-                        None => false,
-                    }
-                };
-                let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
-                    let check_old_file = check_path(delta.old_file().path());
-                    let check_new_file = check_path(delta.new_file().path());
-                    if check_old_file || check_new_file {
-                        let old_oid = delta.old_file().id();
-                        let new_oid = delta.new_file().id();
-                        if old_oid != new_oid {
-                            package.changed = true;
-                            return false;
-                        }
-                    }
-                    true
-                };
-                if diff.foreach(&mut file_cb, None, None, None).is_err() {
-                    continue;
+                if changed_package_paths.contains(&package.path) {
+                    package.changed = true;
+                } else if changed_closure.contains(&package.path) {
+                    package.dependencies_changed = true;
                 }
-            }
-        }
-        // Now that git changes has been checked, we should loop through all package, if it has changed, we should mark
-        // all it's dependant recursively as changed
-    }
-    if options.progress {
-        println!(
-            "{} {}Marking packages dependency as changed...",
-            style("[9/9]").bold().dim(),
-            TRUCK
-        );
-    }
-    if options.check_changed {
-        if options.progress {
-            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-            ));
-        }
-
-        for package_key in package_keys.clone() {
-            if let Some(ref pb) = pb {
-                pb.inc(1);
-            }
-            if let Some(package) = packages.get(&package_key) {
-                if let Some(ref pb) = pb {
-                    pb.set_message(format!("{} : {}", package.workspace, package.package));
-                }
-                if !package.changed {
-                    continue;
-                }
-                if package.dependencies_changed {
-                    // We already treated it's tree
-                    continue;
-                }
-                let dependant: Vec<String> = package
-                    .dependant
-                    .iter()
-                    .filter_map(|p| p.package.clone())
-                    .collect();
-                mark_dependants_as_changed(&mut packages, &dependant);
             }
         }
     }
@@ -1171,22 +1025,4 @@ pub async fn check_workspace(
     }
 
     Ok(Results(packages))
-}
-
-fn mark_dependants_as_changed(all_packages: &mut HashMap<String, Result>, changed: &Vec<String>) {
-    for package_key in changed {
-        if let Some(package) = all_packages.get_mut(package_key) {
-            if package.dependencies_changed {
-                // already treated
-                continue;
-            }
-            package.dependencies_changed = true;
-            let dependant: Vec<String> = package
-                .dependant
-                .iter()
-                .filter_map(|p| p.package.clone())
-                .collect();
-            mark_dependants_as_changed(all_packages, &dependant);
-        }
-    }
 }

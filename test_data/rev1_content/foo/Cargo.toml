@@ -1,0 +1,10 @@
+[workspace]
+members = ["foo_member1"]
+
+[package]
+name = "foo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+baz_member1.path = "../baz/baz_member1"

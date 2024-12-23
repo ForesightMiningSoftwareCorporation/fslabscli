@@ -1,0 +1,2 @@
+[workspace]
+members = ["baz_member1"]

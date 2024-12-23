@@ -160,7 +160,7 @@ where
         // Collect paths of JSON files
         let json_files: Vec<_> = dir
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "json"))
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
             .map(|entry| entry.path())
             .collect();
 
