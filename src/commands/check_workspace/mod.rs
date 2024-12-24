@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::Package;
+use cargo_metadata::{Package, DependencyKind};
 use clap::Parser;
 use console::{style, Emoji};
 use futures_util::StreamExt;
@@ -160,7 +160,9 @@ impl Options {
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
     pub package: Option<String>,
+    pub rename: Option<String>,
     pub path: Option<PathBuf>,
+    pub kind: DependencyKind,
     pub version: String,
     #[serde(default)]
     pub publishable: bool,
@@ -293,6 +295,8 @@ impl Result {
             // .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
                 package: Some(d.name),
+                rename: d.rename,
+                kind: d.kind,
                 path: d.path.map(|p| p.into()),
                 version: d.req.to_string(),
                 publishable: false,
