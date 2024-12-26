@@ -23,6 +23,7 @@
         inherit (pkgs.stdenv) isDarwin;
         inherit (gitignore.lib) gitignoreSource;
         fenixPkgs = fenix.packages.${system};
+        naersk' = pkgs.callPackage naersk { };
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
         rustSrc = gitignoreSource ./.;
@@ -46,6 +47,28 @@
             crossTarget = "aarch64-darwin";
           };
         };
+        mkRustPackage =
+          packageName:
+          naersk'.buildPackage {
+            pname = packageName;
+            cargoBuildOptions =
+              x:
+              x
+              ++ [
+                "--package"
+                packageName
+              ];
+            version = manifest.version;
+            src = pkgs.lib.cleanSource ./.;
+            nativeBuildInputs = [
+              pkgs.perl # Needed to build vendored OpenSSL.
+            ];
+            buildInputs = pkgs.lib.optionals isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+            ];
+            auditable = false; # Avoid cargo-auditable failures.
+            doCheck = false; # Disable test as it requires network access.
+          };
         pkgsWin64 = pkgs.pkgsCross.mingwW64;
         mkWin64RustPackage =
           packageName:
@@ -268,6 +291,7 @@
         formatter = pkgs.nixpkgs-fmt;
 
         packages = individualPackages // {
+          default = mkRustPackage "cargo-fslabscli";
           release = pkgs.runCommand "release-binaries" { } ''
             mkdir -p "$out/bin"
             for pkg in ${
