@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{Package, DependencyKind};
+use cargo_metadata::{DependencyKind, Package};
 use clap::Parser;
 use console::{style, Emoji};
 use futures_util::StreamExt;
@@ -18,6 +18,7 @@ use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use object_store::{path::Path as BSPath, ObjectStore};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
+use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::from_value;
 use serde_yaml::Value;
@@ -144,6 +145,8 @@ pub struct Options {
     changed_base_ref: String,
     #[arg(long, default_value_t = false)]
     fail_unit_error: bool,
+    #[arg(long, default_value_t = false)]
+    hide_dependencies: bool,
 }
 
 impl Options {
@@ -171,7 +174,7 @@ pub struct ResultDependency {
     pub guid_suffix: Option<String>,
 }
 
-#[derive(Serialize, Clone, Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Result {
     pub workspace: String,
     pub package: String,
@@ -179,13 +182,41 @@ pub struct Result {
     pub path: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
     pub publish: bool,
-    // #[serde(skip_serializing)]
+    hide_dependencies: bool,
     pub dependencies: Vec<ResultDependency>,
     pub changed: bool,
     pub dependencies_changed: bool,
     pub perform_test: bool,
     pub test_detail: PackageMetadataFslabsCiTest,
     pub toolchain: String,
+}
+
+impl SerSerialize for Result {
+    fn serialize<S>(&self, serializer: S) -> CoreResult<S::Ok, S::Error>
+    where
+        S: SerSerializer,
+    {
+        let mut fields = 12;
+        if !(self.hide_dependencies) {
+            fields += 1;
+        }
+        let mut state = serializer.serialize_struct("Result", fields)?;
+        state.serialize_field("workspace", &self.workspace)?;
+        state.serialize_field("package", &self.package)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("path", &self.path)?;
+        state.serialize_field("publish_detail", &self.publish_detail)?;
+        state.serialize_field("publish", &self.publish)?;
+        if !(self.hide_dependencies) {
+            state.serialize_field("dependencies", &self.dependencies)?;
+        }
+        state.serialize_field("changed", &self.changed)?;
+        state.serialize_field("dependencies_changed", &self.dependencies_changed)?;
+        state.serialize_field("perform_test", &self.perform_test)?;
+        state.serialize_field("test_detail", &self.test_detail)?;
+        state.serialize_field("toolchain", &self.toolchain)?;
+        state.end()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -258,7 +289,12 @@ fn get_blob_name(
 }
 
 impl Result {
-    pub fn new(workspace: String, package: Package, root_dir: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(
+        workspace: String,
+        package: Package,
+        root_dir: PathBuf,
+        hide_dependencies: bool,
+    ) -> anyhow::Result<Self> {
         let path = package
             .manifest_path
             .canonicalize()?
@@ -334,6 +370,7 @@ impl Result {
             path,
             publish_detail: publish,
             test_detail: metadata.fslabs.test.unwrap_or_default(),
+            hide_dependencies,
             dependencies,
             ..Default::default()
         })
@@ -771,6 +808,7 @@ pub async fn check_workspace(
                 workspace.path.to_string_lossy().into(),
                 package.clone(),
                 working_directory.clone(),
+                options.hide_dependencies,
             ) {
                 Ok(package) => {
                     packages.insert(package.package.clone(), package);
@@ -957,10 +995,9 @@ pub async fn check_workspace(
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            package.dependencies.retain(|d| {
-                d.package
-                    .as_ref().is_some_and(|p| package_keys.contains(p))
-            });
+            package
+                .dependencies
+                .retain(|d| d.package.as_ref().is_some_and(|p| package_keys.contains(p)));
             for dep in &mut package.dependencies {
                 if let Some(package_name) = &dep.package {
                     if let Some(dep_p) = publish_status.get(package_name) {
