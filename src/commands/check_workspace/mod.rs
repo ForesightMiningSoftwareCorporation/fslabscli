@@ -103,18 +103,24 @@ where
 #[derive(Debug, Parser, Default)]
 #[command(about = "Check directory for crates that need to be published.")]
 pub struct Options {
+    #[arg(long, default_value_t = false)]
+    skip_docker: bool,
     #[arg(long)]
     docker_registry: Option<String>,
     #[arg(long)]
     docker_registry_username: Option<String>,
     #[arg(long)]
     docker_registry_password: Option<String>,
+    #[arg(long, default_value_t = false)]
+    skip_npm: bool,
     #[arg(long)]
     npm_registry_url: Option<String>,
     #[arg(long)]
     npm_registry_token: Option<String>,
     #[arg(long)]
     npm_registry_npmrc_path: Option<String>,
+    #[arg(long, default_value_t = false)]
+    skip_cargo: bool,
     #[arg(long)]
     cargo_registry: Option<String>,
     #[arg(long)]
@@ -123,6 +129,8 @@ pub struct Options {
     cargo_registry_user_agent: Option<String>,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
+    #[arg(long, default_value_t = false)]
+    skip_binary: bool,
     #[arg(long, env)]
     binary_store_storage_account: Option<String>,
     #[arg(long, env)]
@@ -638,44 +646,56 @@ impl Result {
 
     pub async fn check_publishable(
         &mut self,
+        skip_npm: bool,
         npm: &Npm,
+        skip_cargo: bool,
         cargo: &Cargo,
+        skip_docker: bool,
         docker: &mut Docker,
+        skip_binary: bool,
         binary_store: &Option<BinaryStore>,
     ) -> anyhow::Result<()> {
-        match self
-            .publish_detail
-            .docker
-            .check(self.package.clone(), self.version.clone(), docker)
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => self.publish_detail.docker.error = Some(e.to_string()),
-        };
-        match self
-            .publish_detail
-            .npm_napi
-            .check(self.package.clone(), self.version.clone(), npm)
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => self.publish_detail.npm_napi.error = Some(e.to_string()),
-        };
-        match self
-            .publish_detail
-            .cargo
-            .check(self.package.clone(), self.version.clone(), cargo)
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
-        };
-        match self.publish_detail.binary.check(binary_store).await {
-            Ok(_) => {}
-            Err(e) => {
-                self.publish_detail.binary.error = Some(e.to_string());
-            }
-        };
+        if !skip_docker {
+            match self
+                .publish_detail
+                .docker
+                .check(self.package.clone(), self.version.clone(), docker)
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => self.publish_detail.docker.error = Some(e.to_string()),
+            };
+        }
+        if !skip_npm {
+            match self
+                .publish_detail
+                .npm_napi
+                .check(self.package.clone(), self.version.clone(), npm)
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => self.publish_detail.npm_napi.error = Some(e.to_string()),
+            };
+        }
+        if !skip_cargo {
+            match self
+                .publish_detail
+                .cargo
+                .check(self.package.clone(), self.version.clone(), cargo)
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
+            };
+        }
+        if !skip_binary {
+            match self.publish_detail.binary.check(binary_store).await {
+                Ok(_) => {}
+                Err(e) => {
+                    self.publish_detail.binary.error = Some(e.to_string());
+                }
+            };
+        }
 
         Ok(())
     }
@@ -916,7 +936,16 @@ pub async fn check_workspace(
             }
             if options.check_publish {
                 match package
-                    .check_publishable(&npm, &cargo, &mut docker, &binary_store)
+                    .check_publishable(
+                        options.skip_npm,
+                        &npm,
+                        options.skip_cargo,
+                        &cargo,
+                        options.skip_docker,
+                        &mut docker,
+                        options.skip_binary,
+                        &binary_store,
+                    )
                     .await
                 {
                     Ok(_) => {}
