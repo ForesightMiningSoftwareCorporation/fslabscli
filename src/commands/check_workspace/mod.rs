@@ -168,11 +168,15 @@ impl Options {
     }
 }
 
+fn default_dependency_kind() -> DependencyKind {
+    DependencyKind::Normal
+}
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
     pub package: Option<String>,
     pub rename: Option<String>,
     pub path: Option<PathBuf>,
+    #[serde(default = "default_dependency_kind")]
     pub kind: DependencyKind,
     pub version: String,
     #[serde(default)]
