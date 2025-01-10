@@ -1089,7 +1089,7 @@ pub async fn check_workspace(
     }
     for package_key in package_keys.clone() {
         if let Some(package) = packages.get_mut(&package_key) {
-            if package.changed || package.dependencies_changed || package.publish {
+            if package.changed || package.dependencies_changed  {
                 package.perform_test = true;
             }
         }
