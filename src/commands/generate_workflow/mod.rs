@@ -21,7 +21,6 @@ use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspac
 use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
 
-use self::test_workflow::TestWorkflowArgs;
 use self::workflows::publish_docker::PublishDockerWorkflow;
 use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
@@ -31,7 +30,6 @@ use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
 
-mod test_workflow;
 mod workflows;
 
 const EMPTY_WORKFLOW: &str = r#"
@@ -68,10 +66,6 @@ pub struct Options {
     fslabscli_version: String,
     #[arg(long, default_value_t = false)]
     cargo_default_publish: bool,
-    #[arg(long, default_value = "standard")]
-    nomad_runner_label: String,
-    #[arg(long, default_value_t = false)]
-    test_publish_required_disabled: bool,
     #[arg(long, default_value = "0 19 * * *")]
     nightly_cron_schedule: String,
     /// Default branch to consider for publishing and schedule release
@@ -456,13 +450,6 @@ fn get_publish_triggers(
     ])
 }
 
-fn get_test_triggers() -> IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> {
-    IndexMap::from([(
-        GithubWorkflowTrigger::PullRequest,
-        GithubWorkflowTriggerPayload::default(),
-    )])
-}
-
 fn get_check_workspace_job(
     members: &Members,
     required_jobs: Vec<String>,
@@ -582,12 +569,8 @@ pub async fn generate_workflow(
     // Get workflows, useful in case where additional tools need to be run before
     let mut publish_workflow =
         get_base_workflow(&options.template, "CI - CD: Publishing".to_string())?;
-    let mut test_workflow = get_base_workflow(&options.template, "CI - CD: Tests".to_string())?;
 
     // Triggers
-    // Tests should be done on pr always
-    let test_triggers: IndexMap<GithubWorkflowTrigger, GithubWorkflowTriggerPayload> =
-        get_test_triggers();
     let mut publish_triggers = get_publish_triggers(options.default_branch);
     // If we have binaries to publish,  nightly Publish should be done every night at 3AM
     if members
@@ -605,19 +588,15 @@ pub async fn generate_workflow(
             },
         );
     }
-    test_workflow.triggers = Some(test_triggers);
     publish_workflow.triggers = Some(publish_triggers);
 
     // Create check_workspace job, and add it to both workflows
     let check_job_key = "check_changed_and_publish".to_string();
     let check_workspace_job = get_check_workspace_job(
         &members,
-        test_workflow.jobs.keys().cloned().collect(),
+        publish_workflow.jobs.keys().cloned().collect(),
         &options.fslabscli_version,
     );
-    test_workflow
-        .jobs
-        .insert(check_job_key.clone(), check_workspace_job.clone());
     publish_workflow
         .jobs
         .insert(check_job_key.clone(), check_workspace_job);
@@ -626,7 +605,6 @@ pub async fn generate_workflow(
     member_keys.sort();
     let base_if = "!cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
 
-    let mut actual_tests: Vec<String> = vec![];
     let mut actual_publishings: Vec<String> = vec![];
     for member_key in member_keys {
         let Some(member) = members.0.get(&member_key) else {
@@ -723,41 +701,8 @@ pub async fn generate_workflow(
             }
         }
 
-        let testing_if = format!(
-            "{} && (fromJSON(needs.{}.outputs.workspace).{}.perform_test)",
-            base_if, check_job_key, member_key
-        );
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
-        let cargo_test_options: TestWorkflowArgs = match member.test_detail.args.clone() {
-            Some(a) => a.into(),
-            None => Default::default(),
-        };
-        let test_with: TestWorkflowArgs = TestWorkflowArgs {
-            working_directory: Some(working_directory.clone()),
-            test_publish_required: Some(StringBool(
-                member.publish_detail.cargo.publish && !options.test_publish_required_disabled,
-            )),
-            ..Default::default()
-        }
-        .merge(cargo_test_options.clone());
 
-        let test_job_key = format!("test_{}", member_key);
-        let test_job = GithubWorkflowJob {
-            name: Some(format!("Test {}: {}", member.workspace, member.package)),
-            uses: Some(format!(
-                "ForesightMiningSoftwareCorporation/github/.github/workflows/rust_test.yml@{}",
-                options.build_workflow_version
-            )),
-            needs: Some(testing_requirements),
-            job_if: Some(format!("${{{{ {} }}}}", testing_if)),
-            with: Some(test_with.into()),
-            secrets: Some(GithubWorkflowJobSecret {
-                inherit: true,
-                secrets: None,
-            }),
-            env: member.test_detail.env.clone(),
-            ..Default::default()
-        };
 
         for publishing_job in member_workflows.iter() {
             let mut needs = publishing_requirements.clone();
@@ -797,36 +742,8 @@ pub async fn generate_workflow(
             actual_publishings.push(key.clone());
             publish_workflow.jobs.insert(key, job);
         }
-        test_workflow.jobs.insert(test_job_key.clone(), test_job);
-        actual_tests.push(test_job_key.clone());
     }
     // Add Reporting
-    // Tests
-    let mut test_reporting_needs = vec![check_job_key.clone()];
-    test_reporting_needs.extend(actual_tests);
-    test_workflow.jobs.insert("test_results".to_string(), GithubWorkflowJob {
-        name: Some("Tests Results".to_string()),
-        job_if: Some("always() && !contains(needs.*.result, 'cancelled')".to_string()),
-            uses: Some(
-                format!(
-                    "ForesightMiningSoftwareCorporation/github/.github/workflows/check_summaries.yml@{}",
-                    options.build_workflow_version
-                )
-            ),
-        with: Some(
-            IndexMap::from([
-                ("run_type".to_string(), "checks".into()),
-                ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
-                ("fslabscli_version".to_string(), options.fslabscli_version.clone().into())
-            ])
-        ),
-        secrets: Some(GithubWorkflowJobSecret {
-            inherit: true,
-            secrets: None,
-        }),
-        needs: Some(test_reporting_needs),
-        ..Default::default()
-    });
     // Publishing
     let mut publishing_reporting_needs = vec![check_job_key.clone()];
     publishing_reporting_needs.extend(actual_publishings);
@@ -854,11 +771,7 @@ pub async fn generate_workflow(
         ..Default::default()
     });
     // If we are splitted then we actually need to create two files
-    let test_file_path = working_directory.join(".github/workflows/test.yml");
     let release_file_path = working_directory.join(".github/workflows/release_publish.yml");
-    let test_file = File::create(test_file_path)?;
-    let mut test_writer = BufWriter::new(test_file);
-    serde_yaml::to_writer(&mut test_writer, &test_workflow)?;
     let release_file = File::create(release_file_path)?;
     let mut release_writer = BufWriter::new(release_file);
     serde_yaml::to_writer(&mut release_writer, &publish_workflow)?;

@@ -648,6 +648,7 @@ impl Result {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn check_publishable(
         &mut self,
         skip_npm: bool,
@@ -1089,7 +1090,7 @@ pub async fn check_workspace(
     }
     for package_key in package_keys.clone() {
         if let Some(package) = packages.get_mut(&package_key) {
-            if package.changed  {
+            if package.changed {
                 package.perform_test = true;
             }
         }

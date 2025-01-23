@@ -1,4 +1,11 @@
-**/target
-.idea/
 result/
 result
+**/.dev-env
+**/.devenv
+**/.direnv
+**/.env
+**/.idea
+**/.vscode
+**/dagger_db
+**/database.db
+**/target

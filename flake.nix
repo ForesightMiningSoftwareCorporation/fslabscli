@@ -6,15 +6,20 @@
     naersk.url = "github:nix-community/naersk";
     nixpkgs.url = "github:nixos/nixpkgs/nixos-24.11";
     gitignore.url = "github:hercules-ci/gitignore.nix";
+    devenv.url = "github:cachix/devenv";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
   };
   outputs =
-    {
+    inputs@{
       self,
       nixpkgs,
       flake-utils,
       naersk,
       fenix,
+      devenv,
       gitignore,
+      treefmt-nix,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -151,12 +156,12 @@
             #
             # Use DWARF-2 instead of SJLJ for exception handling.
             winCC = pkgsWin32.buildPackages.wrapCC (
-              (pkgsWin32.buildPackages.gcc-unwrapped.override ({
+              (pkgsWin32.buildPackages.gcc-unwrapped.override {
                 threadsCross = {
                   model = "win32";
                   package = null;
                 };
-              })).overrideAttrs
+              }).overrideAttrs
                 (oldAttr: {
                   configureFlags = oldAttr.configureFlags ++ [
                     "--disable-sjlj-exceptions --with-dwarf2"
@@ -286,9 +291,18 @@
             cargo-fslabscli-win64 = mkWin64RustPackage "cargo-fslabscli";
             cargo-fslabscli-win32 = mkWin32RustPackage "cargo-fslabscli";
           };
+
+        treefmt = treefmt-nix.lib.evalModule pkgs {
+          projectRootFile = "flake.nix";
+          programs = {
+            alejandra.enable = true;
+            nixfmt.enable = true;
+            rustfmt.enable = true;
+          };
+        };
       in
       {
-        formatter = pkgs.nixpkgs-fmt;
+        formatter = treefmt.config.build.wrapper;
 
         packages = individualPackages // {
           default = mkRustPackage "cargo-fslabscli";
@@ -305,32 +319,53 @@
             done
             (cd "$out/bin" && sha256sum * > sha256.txt)
           '';
+          devenv-up = self.devShells.${system}.default.config.procfileScript;
+          devenv-test = self.devShells.${system}.default.config.test;
         };
 
-        devShells.default =
-          let
-            pkgs = import nixpkgs {
-              system = system;
-              overlays = [ fenix.overlays.default ];
-            };
-          in
-          pkgs.mkShell {
+        devShells.default = devenv.lib.mkShell {
+          inherit inputs pkgs;
+          modules = [
+            (
+              {
+                pkgs,
+                config,
+                lib,
+                ...
+              }:
+              {
+                packages = with pkgs; [
+                  updatecli
+                ];
+                languages = {
+                  nix.enable = true;
+                  rust = {
+                    enable = true;
+                  };
+                };
 
-            buildInputs = with pkgs; [
-              (fenix.packages.${system}.complete.withComponents [
-                "cargo"
-                "clippy"
-                "rust-src"
-                "rustc"
-                "rustfmt"
-              ])
-              cargo-deny
-              rust-analyzer-nightly
-              cargo-nextest
-              perl # needed to build vendored OpenSSL
-              git-cliff
-            ];
-          };
+                enterShell = ''
+                  [ ! -f .env ] || export $(grep -v '^#' .env | xargs)
+                  echo 👋 Welcome to fslabscli Development Environment. 🚀
+                  echo
+                  echo If you see this message, it means your are inside the Nix shell ❄️.
+                  echo
+                  echo ------------------------------------------------------------------
+                  echo
+                  echo Commands: available
+                  ${pkgs.gnused}/bin/sed -e 's| |••|g' -e 's|=| |' <<EOF | ${pkgs.util-linuxMinimal}/bin/column -t | ${pkgs.gnused}/bin/sed -e 's|^|💪 |' -e 's|••| |g'
+                  ${lib.generators.toKeyValue { } (lib.mapAttrs (name: value: value.description) config.scripts)}
+                  EOF
+                  echo
+                  echo Repository:
+                  echo  - https://github.com/orica-libs/orepro-infrastructure
+                  echo ------------------------------------------------------------------
+                  echo
+                '';
+              }
+            )
+          ];
+        };
       }
     );
 }
