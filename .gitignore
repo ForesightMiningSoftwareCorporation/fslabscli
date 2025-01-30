@@ -9,3 +9,4 @@ result
 **/dagger_db
 **/database.db
 **/target
+**/junit.rust.xml

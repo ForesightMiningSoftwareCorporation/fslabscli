@@ -622,7 +622,7 @@ mod tests {
         commit_repo(repo_path, message);
     }
 
-    fn modify_file(repo_path: &PathBuf, file_path: &str, content: &str) {
+    fn modify_file(repo_path: &Path, file_path: &str, content: &str) {
         let full_path = repo_path.join(file_path);
 
         // Ensure the directory exists
@@ -633,7 +633,7 @@ mod tests {
     }
 
     fn stage_file(repo_path: &PathBuf, file_path: &str) {
-        let repo = Repository::open(&repo_path).expect("Failed to open repo");
+        let repo = Repository::open(repo_path).expect("Failed to open repo");
         let mut index = repo.index().unwrap();
         index
             .add_all([file_path].iter(), git2::IndexAddOption::DEFAULT, None)
@@ -646,7 +646,7 @@ mod tests {
     }
 
     fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
-        let repo = Repository::open(&repo_path).expect("Failed to open repo");
+        let repo = Repository::open(repo_path).expect("Failed to open repo");
         let mut index = repo.index().unwrap();
 
         let oid = index.write_tree().unwrap();

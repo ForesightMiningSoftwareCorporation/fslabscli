@@ -5,4 +5,5 @@ pub mod fix_lock_files;
 pub mod generate_wix;
 pub mod generate_workflow;
 pub mod github_app_token;
+pub mod rust_tests;
 pub mod summaries;
