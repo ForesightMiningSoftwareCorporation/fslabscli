@@ -336,6 +336,8 @@
               {
                 packages = with pkgs; [
                   updatecli
+                  cargo-deny
+                  xunit-viewer
                 ];
                 languages = {
                   nix.enable = true;

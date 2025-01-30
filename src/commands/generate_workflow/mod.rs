@@ -703,7 +703,6 @@ pub async fn generate_workflow(
 
         let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
 
-
         for publishing_job in member_workflows.iter() {
             let mut needs = publishing_requirements.clone();
             if let Some(additional_keys) = publishing_job.get_additional_dependencies() {

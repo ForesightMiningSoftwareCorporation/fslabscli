@@ -15,6 +15,9 @@ REV1_CONTENT=$TEST_DATA/rev1_content
 REV2_CONTENT=$TEST_DATA/rev2_content
 
 git init
+git config --local commit.gpgsign false
+git config --local user.name "Test User"
+git config --local user.email "test@example.com"
 
 # 1ST COMMIT: Initialize crates and create dependencies
 

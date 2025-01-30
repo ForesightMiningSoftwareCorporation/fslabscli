@@ -148,9 +148,9 @@ pub struct Options {
     #[arg(long, default_value_t = false)]
     pub(crate) check_changed: bool,
     #[arg(long, default_value = "HEAD")]
-    changed_head_ref: String,
+    pub(crate) changed_head_ref: String,
     #[arg(long, default_value = "HEAD~")]
-    changed_base_ref: String,
+    pub(crate) changed_base_ref: String,
     #[arg(long, default_value_t = false)]
     fail_unit_error: bool,
     #[arg(long, default_value_t = false)]
@@ -164,6 +164,26 @@ impl Options {
 
     pub fn with_cargo_default_publish(mut self, cargo_default_publish: bool) -> Self {
         self.cargo_default_publish = cargo_default_publish;
+        self
+    }
+
+    pub fn with_check_changed(mut self, check_changed: bool) -> Self {
+        self.check_changed = check_changed;
+        self
+    }
+
+    pub fn with_check_publish(mut self, check_publish: bool) -> Self {
+        self.check_publish = check_publish;
+        self
+    }
+
+    pub fn with_changed_head_ref(mut self, head_ref: String) -> Self {
+        self.changed_head_ref = head_ref;
+        self
+    }
+
+    pub fn with_changed_base_ref(mut self, base_ref: String) -> Self {
+        self.changed_base_ref = base_ref;
         self
     }
 }

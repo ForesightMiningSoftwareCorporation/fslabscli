@@ -17,6 +17,7 @@ use crate::commands::fix_lock_files::{fix_lock_files, Options as CheckLockFilesO
 use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
+use crate::commands::rust_tests::{rust_tests, Options as RustTestsOptions};
 use crate::commands::summaries::{summaries, Options as SummariesOptions};
 
 mod commands;
@@ -34,7 +35,7 @@ mod utils;
 )]
 struct Cli {
     /// Enables verbose logging
-    #[arg(short, long, global = true, action = ArgAction::Count)]
+    #[arg(short, long, global = true, action = ArgAction::Count, default_value_t = 2)]
     verbose: u8,
     #[arg(long, global = true)]
     json: bool,
@@ -65,6 +66,7 @@ enum Commands {
     DownloadArtifacts(Box<DownloadArtifactsOptions>),
     GithubAppToken(Box<GithubAppTokenOptions>),
     DockerBuildPush(Box<DockerBuildPushOptions>),
+    RustTests(Box<RustTestsOptions>),
 }
 
 pub fn setup_logging(verbosity: u8) {
@@ -139,6 +141,9 @@ async fn main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DockerBuildPush(options) => docker_build_push(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::RustTests(options) => rust_tests(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
     };

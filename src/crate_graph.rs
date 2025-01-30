@@ -115,7 +115,7 @@ impl CrateGraph {
             .flat_map(|w| w.metadata.workspace_packages())
     }
 
-    /// Determines which packages have changed between `old_rev` and `new_rev`.
+    /// Determines which packages have changed between `old_rev` and `new_rev`. (Un)Staged changes are considered
     pub fn changed_packages(&self, old_rev: &str, new_rev: &str) -> anyhow::Result<Vec<PathBuf>> {
         // Create git diff between revisions.
         let repository = Repository::open(&self.repo_root)?;
@@ -123,18 +123,32 @@ impl CrateGraph {
         let new_commit = repository.revparse_single(new_rev)?;
         let old_tree = old_commit.peel_to_tree()?;
         let new_tree = new_commit.peel_to_tree()?;
-        let diff = repository.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+
+        // Get index and working directory state
+        let index = repository.index()?;
+
+        // Create diffs:
+        // - one between old_rev and new_rev,
+        // - and another between new_rev and current state staged
+        // - and another between new_rev and current state unstaged
+        let diff_old_new = repository.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+        let diff_new_staged = repository.diff_tree_to_index(Some(&new_tree), Some(&index), None)?;
+        let diff_new_unstaged = repository.diff_index_to_workdir(Some(&index), None)?;
 
         // Check each package path against each file paths in git diff.
         let mut changed = Vec::new();
         for package in self.packages() {
             let package_path = package_path(&self.repo_root, package).into_owned();
+
+            // If package_path is ".", treat it as the entire repo
+            let is_repo_root = package_path == Path::new(".");
+
             let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
                 for delta_path in [delta.old_file().path(), delta.new_file().path()]
                     .into_iter()
                     .flatten()
                 {
-                    if delta_path.starts_with(&package_path) {
+                    if is_repo_root || delta_path.starts_with(&package_path) {
                         changed.push(package_path.clone());
                         return false;
                     }
@@ -143,9 +157,12 @@ impl CrateGraph {
             };
             // Returning early from a callback will propagate an error for some
             // reason. Ignore it.
-            let _ = diff.foreach(&mut file_cb, None, None, None);
+            let _ = diff_old_new.foreach(&mut file_cb, None, None, None);
+            let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
+            let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
         }
         changed.sort();
+        changed.dedup(); // Remove duplicates if package changed in multiple diffs
 
         Ok(changed)
     }
@@ -360,9 +377,17 @@ pub fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path>
 }
 
 fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, StripPrefixError> {
-    match path.strip_prefix(root)? {
+    // In MacOs temp folders can be /var/private or /private (symlink between the two)
+    let canonical_root = root
+        .canonicalize()
+        .expect("Failed to canonicalize root path");
+    let canonical_path = path
+        .canonicalize()
+        .expect("Failed to canonicalize package path");
+
+    match canonical_path.strip_prefix(&canonical_root)? {
         p if p == Path::new("") => Ok(Cow::Owned(PathBuf::from("."))),
-        stripped => Ok(Cow::Borrowed(stripped)),
+        stripped => Ok(Cow::Owned(stripped.to_path_buf())), // Ensure we return an owned path
     }
 }
 
@@ -479,6 +504,38 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_changed_package_single_rust_crate() {
+        let repo = create_simple_rust_crate();
+        let graph = CrateGraph::new(&repo).unwrap();
+
+        let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
+        assert_eq!(changed, [Path::new(".")]);
+    }
+
+    #[test]
+    fn test_detect_changed_package_unstaged_file() {
+        let repo = create_simple_rust_crate();
+
+        let graph = CrateGraph::new(&repo).unwrap();
+        modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
+
+        let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
+        assert_eq!(changed, [Path::new(".")]);
+    }
+
+    #[test]
+    fn test_detect_changed_package_staged_file() {
+        let repo = create_simple_rust_crate();
+
+        let graph = CrateGraph::new(&repo).unwrap();
+        modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
+        stage_file(&repo, "src/lib.rs");
+
+        let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
+        assert_eq!(changed, [Path::new(".")]);
+    }
+
+    #[test]
     fn test_fix_lock_files() {
         let repo = initialize_repo();
         let graph = CrateGraph::new(&repo).unwrap();
@@ -522,5 +579,105 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         tmp
+    }
+
+    fn create_simple_rust_crate() -> PathBuf {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        let repo = Repository::init(&tmp).expect("Failed to init repo");
+
+        // Configure Git user info (required for commits)
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Test User")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "test@example.com")
+            .unwrap();
+        repo.config().unwrap().set_str("gpg.sign", "false").unwrap();
+
+        Command::new("cargo")
+            .arg("init")
+            .arg("--lib")
+            .arg("--name")
+            .arg("test-lib")
+            .current_dir(&tmp)
+            .output()
+            .expect("Failed to create simple crate");
+
+        // Stage and commit initial crate
+        commit_all_changes(&tmp, "Initial commit");
+        // Create Second Commit
+        modify_file(&tmp, "src/lib.rs", "pub fn new_function() {}");
+        stage_file(&tmp, "src/lib.rs");
+        commit_repo(&tmp, "Added new function");
+        tmp
+    }
+    fn commit_all_changes(repo_path: &PathBuf, message: &str) {
+        stage_all(repo_path);
+        commit_repo(repo_path, message);
+    }
+
+    fn modify_file(repo_path: &Path, file_path: &str, content: &str) {
+        let full_path = repo_path.join(file_path);
+
+        // Ensure the directory exists
+        std::fs::create_dir_all(full_path.parent().unwrap()).expect("Failed to create directories");
+
+        // Modify the file
+        std::fs::write(&full_path, content).expect("Failed to write to file");
+    }
+
+    fn stage_file(repo_path: &PathBuf, file_path: &str) {
+        let repo = Repository::open(repo_path).expect("Failed to open repo");
+        let mut index = repo.index().unwrap();
+        index
+            .add_all([file_path].iter(), git2::IndexAddOption::DEFAULT, None)
+            .expect("Failed to add files to index");
+        index.write().expect("Failed to write index");
+    }
+
+    fn stage_all(repo_path: &PathBuf) {
+        stage_file(repo_path, "*");
+    }
+
+    fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
+        let repo = Repository::open(repo_path).expect("Failed to open repo");
+        let mut index = repo.index().unwrap();
+
+        let oid = index.write_tree().unwrap();
+        let signature = repo.signature().unwrap();
+        let tree = repo.find_tree(oid).unwrap();
+        let parent_commit = repo
+            .head()
+            .ok()
+            .and_then(|r| r.target())
+            .and_then(|oid| repo.find_commit(oid).ok());
+
+        if let Some(parent) = parent_commit {
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                commit_message,
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        } else {
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                commit_message,
+                &tree,
+                &[],
+            )
+            .unwrap();
+        };
     }
 }
