@@ -1,0 +1,15 @@
+policies:
+  - name: Local Updatecli Policies
+    config:
+      - updatecli/updatecli.d
+    values:
+      - updatecli/values.d/scm.yaml
+  - name: Handle Updatecli Policy Updates
+    policy: ghcr.io/updatecli/policies/autodiscovery/updatecli:0.8.0@sha256:99e9e61b501575c2c176c39f2275998d198b590a3f6b1fe829f7315f8d457e7f
+    values:
+      - updatecli/values.d/scm.yaml
+      - updatecli/values.d/updatecli-composse.yaml
+  - name: Rust
+    policy: ghcr.io/updatecli/policies/autodiscovery/cargo:0.6.0@sha256:4fbe25f1b0780239aaa3c7a5a4b02a1c3c43d73365755713dbe63612095dafbc
+    values:
+      - updatecli/values.d/scm.yaml

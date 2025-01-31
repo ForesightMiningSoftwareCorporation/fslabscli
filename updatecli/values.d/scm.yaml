@@ -1,0 +1,8 @@
+scm:
+  enabled: true
+  user: fmsc-bot
+  username: fmsc-bot
+  email: updatecli@fslabs.ca
+  owner: ForesightMiningSoftwareCorporation
+  repository: fslabscli
+  branch: main
