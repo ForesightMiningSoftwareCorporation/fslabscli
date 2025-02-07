@@ -1093,16 +1093,17 @@ pub async fn check_workspace(
                 if let Some(ref pb) = pb {
                     pb.set_message(format!("{} : {}", package.workspace, package.package));
                 }
-                // TODO: it seems like we never actually set "package.publish"
-                // to true, so I'm not sure this actually does anything.
                 if options.check_publish && package.publish {
                     // mark package as changed
                     package.changed = true;
+                    log::info!("Marking package as changed for publish: {:?}", package.path);
                     continue;
                 }
                 if changed_package_paths.contains(&package.path) {
+                    log::info!("Detected change in {:?}", package.path);
                     package.changed = true;
                 } else if changed_closure.contains(&package.path) {
+                    log::info!("A dependency changed for {:?}", package.path);
                     package.dependencies_changed = true;
                 }
             }
