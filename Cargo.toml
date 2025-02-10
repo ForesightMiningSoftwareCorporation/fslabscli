@@ -57,7 +57,7 @@ bytes = "1.6.1"
 junit-report = "0.8.3"
 rand = "0.9.0"
 port_check = "0.2.1"
-reqwest = { default-features = true, features = ["rustls-tls"], version = "0.12"}
+reqwest = { default-features = false, features = ["rustls-tls"], version = "0.12"}
 
 
 [dev-dependencies]
