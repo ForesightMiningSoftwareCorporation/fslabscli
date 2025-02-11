@@ -4,6 +4,6 @@ default_stages:
 fail_fast: true
 repos:
   - repo: https://github.com/ForesightMiningSoftwareCorporation/pre-commit
-    rev: v1.0.3
+    rev: v1.0.2
     hooks:
       - id: cargo-fmt
