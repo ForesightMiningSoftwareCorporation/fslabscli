@@ -1062,6 +1062,7 @@ pub async fn check_workspace(
         }
     }
     let package_keys: Vec<String> = packages.keys().cloned().collect();
+    log::info!("Package list: {package_keys:#?}");
 
     if options.progress {
         println!(
@@ -1080,10 +1081,12 @@ pub async fn check_workspace(
         // Check changed from a git pov
         let changed_package_paths =
             crates.changed_packages(&options.changed_base_ref, &options.changed_head_ref)?;
+        log::info!("Changed packages: {changed_package_paths:#?}");
         // Any packages that transitively depend on changed packages are also considered "changed".
         let changed_closure = crates
             .dependency_graph()
             .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
+        log::info!("Changed closure: {changed_closure:#?}");
 
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
