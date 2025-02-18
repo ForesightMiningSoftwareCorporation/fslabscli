@@ -166,6 +166,12 @@ async fn get_or_download_deny_config(
 pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
     let overall_start_time = OffsetDateTime::now_utc();
     // Get Directory information
+    log::info!("Running the tests with the following arguments:");
+    log::info!("* `check_changed`: true");
+    log::info!("* `check_publish`: false");
+    log::info!("* `changed_head_ref`: {}", options.pull_pull_sha);
+    log::info!("* `changed_base_ref`: {}", options.pull_base_sha);
+
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(true)
         .with_check_publish(false)
