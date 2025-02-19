@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 use log::LevelFilter;
-use log4rs::append::console::ConsoleAppender;
+use log4rs::append::console::{ConsoleAppender, Target};
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use serde::Serialize;
@@ -83,12 +83,14 @@ pub fn setup_logging(verbosity: u8) {
         .encoder(Box::new(PatternEncoder::new(
             "{h({d(%Y-%m-%d %H:%M:%S)(utc)} - {l}: {m}{n})}",
         )))
+        .target(Target::Stderr)
         .build();
 
     let log_config = log4rs::config::Config::builder()
         .appender(Appender::builder().build("stderr", Box::new(stdout)))
         .build(Root::builder().appender("stderr").build(logging_level))
         .unwrap();
+
     log4rs::init_config(log_config)
         .map_err(|e| format!("Could not setup logging: {}", e))
         .unwrap();
