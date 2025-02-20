@@ -1,7 +1,7 @@
 
 [dependencies]
   base64 = "0.21"
-  bytes = "1.6.1"
+  bytes = "1.10.0"
   cargo_metadata = "0.18.1"
   chrono = "0.4"
   console = "0.15.8"
