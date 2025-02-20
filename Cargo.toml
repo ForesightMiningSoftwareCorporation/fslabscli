@@ -26,7 +26,7 @@
   serde_yaml = "0.9.34+deprecated"
   strum = "0.26"
   strum_macros = "0.26"
-  toml = "0.8.12"
+  toml = "0.8.20"
   url = "2.5.0"
   void = "1.0.2"
   zip = "2.1.5"
