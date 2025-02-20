@@ -96,7 +96,10 @@ pub async fn docker_build_push(
     build_command.arg("--file").arg(context.join(&options.file));
     build_command
         .arg("--platform")
-        .arg(options.platforms.join(","));
+        .arg(options.platforms.join(","))
+        .arg(context);
+
+    log::debug!("Running `{:?}`", build_command);
 
     let status = build_command.status()?;
     if !status.success() {
