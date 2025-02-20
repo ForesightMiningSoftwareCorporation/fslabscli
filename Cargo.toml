@@ -11,7 +11,7 @@
   http = "1.2.0"
   http-body-util = "0.1"
   ignore = "0.4.23"
-  indicatif = "0.17.8"
+  indicatif = "0.17.11"
   itertools = "0.12"
   jsonwebtoken = "9.3.0"
   junit-report = "0.8.3"
