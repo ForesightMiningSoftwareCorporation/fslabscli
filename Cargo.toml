@@ -13,7 +13,7 @@
   ignore = "0.4.23"
   indicatif = "0.17.11"
   itertools = "0.12"
-  jsonwebtoken = "9.3.0"
+  jsonwebtoken = "9.3.1"
   junit-report = "0.8.3"
   log = "0.4"
   log4rs = "1.3"
