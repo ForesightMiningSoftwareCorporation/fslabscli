@@ -27,7 +27,7 @@
   strum = "0.26"
   strum_macros = "0.26"
   toml = "0.8.20"
-  url = "2.5.0"
+  url = "2.5.4"
   void = "1.0.2"
   zip = "2.1.5"
 
