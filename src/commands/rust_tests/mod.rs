@@ -6,18 +6,16 @@ use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use serde_yaml::Value;
-use std::io::Cursor;
 use std::{
     collections::HashMap,
     env,
     fmt::{Display, Formatter},
     fs::File,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     thread::sleep,
     time::Duration,
 };
-use tempfile::tempdir;
 
 use crate::{
     commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions},
@@ -141,28 +139,6 @@ fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<b
     test_args.get(arg).and_then(|v| v.as_bool())
 }
 
-/// Checks if a cargo deny config file exists; if not, downloads default to a temporary location.
-/// Returns the path to the confifg.
-async fn get_or_download_deny_config(
-    repo_root: &Path,
-    default_location: &str,
-    temp_dir: &Path,
-) -> anyhow::Result<PathBuf> {
-    let file_path = repo_root.join("deny.toml");
-    if file_path.exists() {
-        Ok(file_path.to_path_buf())
-    } else {
-        let temp_file_path = temp_dir.join("deny.toml");
-
-        // Download the file
-        let response = reqwest::get(default_location).await?;
-        let mut file = File::create(&temp_file_path)?;
-        let mut content = Cursor::new(response.bytes().await?);
-        std::io::copy(&mut content, &mut file)?;
-        Ok(temp_file_path)
-    }
-}
-
 pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
     let overall_start_time = OffsetDateTime::now_utc();
     // Get Directory information
@@ -188,12 +164,6 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
     let mut junit_report = ReportBuilder::new().build();
 
-    let temp_dir = tempdir()?;
-    let deny_config_location =
-        get_or_download_deny_config(&repo_root, &options.default_deny_location, temp_dir.path())
-            .await?
-            .display()
-            .to_string();
     // Global fail tracker
     let mut failed = false;
 
@@ -376,31 +346,6 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
             FslabsTest {
                 command: "cargo doc --no-deps".to_string(),
                 envs: HashMap::from([("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]),
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo deny check -c {deny_config_location} licenses"),
-                optional: true,
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo deny check -c {deny_config_location} bans"),
-                optional: true,
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo deny check -c {deny_config_location} advisories"),
-                optional: true,
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo deny check -c {deny_config_location} sources"),
-                optional: true,
-                ..Default::default()
-            },
-            FslabsTest {
-                command: "cargo machete".to_string(),
-                optional: true,
                 ..Default::default()
             },
             FslabsTest {
