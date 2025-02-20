@@ -5,7 +5,7 @@
   cargo_metadata = "0.19.1"
   chrono = "0.4"
   console = "0.15.10"
-  convert_case = "0.6.0"
+  convert_case = "0.7.1"
   exitcode = "1.1"
   futures-util = "0.3.30"
   http = "1.0.0"
