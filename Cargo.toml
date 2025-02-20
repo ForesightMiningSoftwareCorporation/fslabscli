@@ -74,7 +74,7 @@
 
   [dependencies.quick-xml]
     features = ["serialize"]
-    version = "0.35.0"
+    version = "0.37.2"
 
   [dependencies.reqwest]
     default-features = false
