@@ -29,7 +29,7 @@
   toml = "0.8.20"
   url = "2.5.4"
   void = "1.0.2"
-  zip = "2.1.5"
+  zip = "2.2.2"
 
   [dependencies.anyhow]
     features = []
