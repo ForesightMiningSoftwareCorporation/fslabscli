@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fslabscli"
-version = "2.8.4"
+version = "2.9.0"
 edition = "2021"
 authors = ["FSLABS DevOps Gods"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
@@ -51,7 +51,6 @@ chrono = "0.4"
 rust-toolchain-file = "0.1"
 futures-util = "0.3.30"
 humanize-duration = { version = "0.0.6", features = ["chrono"]}
-tempfile = "3.10.1"
 zip = "2.1.5"
 bytes = "1.6.1"
 junit-report = "0.8.3"
