@@ -41,7 +41,7 @@
 
   [dependencies.git2]
     default-features = false
-    version = "0.18.2"
+    version = "0.20.0"
 
   [dependencies.humanize-duration]
     features = ["chrono"]
