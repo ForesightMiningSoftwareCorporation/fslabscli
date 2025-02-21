@@ -119,7 +119,7 @@
   name = "cargo-fslabscli"
   publish = ["foresight-mining-software-corporation"]
   repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-  version = "2.9.1"
+  version = "2.9.2"
 
   [package.metadata]
 
