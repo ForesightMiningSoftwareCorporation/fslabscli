@@ -1,0 +1,63 @@
+---
+name-template: 'cargo-fslabscli-$RESOLVED_VERSION'
+tag-template: 'cargo-fslabscli-$RESOLVED_VERSION'
+categories:
+  - title: '🚀 Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bugfix'
+      - 'bug'
+  - title: '🧰 Maintenance'
+    labels:
+      - 'chore'
+      - 'dependencies'
+      - 'cleanup'
+      - 'deprecated'
+      - 'depreciation'
+  - title: '📝 Documentation'
+    labels:
+      - 'documentation'
+      - 'doc'
+      - 'docs'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking'
+  minor:
+    labels:
+      - 'minor'
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'patch'
+      - 'fix'
+      - 'bugfix'
+      - 'bug'
+      - 'chore'
+      - 'dependencies'
+      - 'documentation'
+      - 'doc'
+      - 'docs'
+      - 'cleanup'
+      - 'deprecated'
+      - 'depreciation'
+  default: patch
+exclude-labels:
+  - 'skip-changelog'
