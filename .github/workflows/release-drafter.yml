@@ -1,21 +1,17 @@
 name: Release Drafter
-
 on:
   workflow_dispatch:
   push:
     # branches to consider in the event; optional, defaults to all
     branches:
       - main
-
 permissions: {}
-
 jobs:
   update_release_draft:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
-
     steps:
       - name: Checkout
         uses: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" # v4.2.2
@@ -24,7 +20,7 @@ jobs:
         with:
           file: 'Cargo.toml'
           field: 'package.version'
-      - uses: release-drafter/release-drafter@v6
+      - uses: release-drafter/release-drafter@v6.1.0
         with:
           config-name: release-drafter.yaml
           version: ${{ steps.read_toml.outputs.value }}
