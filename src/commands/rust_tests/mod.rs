@@ -385,20 +385,22 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                 ..Default::default()
             },
             FslabsTest {
-                command: format!("cargo check --all-targets {additional_args}"),
+                command: format!("cargo check --all-targets --color=always {additional_args}"),
                 ..Default::default()
             },
             FslabsTest {
-                command: format!("cargo clippy --all-targets {additional_args} -- -D warnings"),
+                command: format!(
+                    "cargo clippy --all-targets --color=always {additional_args} -- -D warnings"
+                ),
                 ..Default::default()
             },
             FslabsTest {
-                command: "cargo doc --no-deps".to_string(),
+                command: "cargo doc --no-deps --color=always".to_string(),
                 envs: HashMap::from([("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]),
                 ..Default::default()
             },
             FslabsTest {
-                command: format!("cargo test --all-targets {additional_args}"),
+                command: format!("cargo test --all-targets --color=always {additional_args}"),
                 pre_command: database_url
                     .clone()
                     .map(|d| format!("echo DATABASE_URL={d} > .env")),
