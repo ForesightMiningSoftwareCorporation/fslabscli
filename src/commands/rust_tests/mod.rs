@@ -111,13 +111,13 @@ async fn execute_command(
             Ok(Some(line)) = stdout_stream.next_line() =>  {
                 stdout_string.push_str(&line);
                 if let Some(level) = log_stdout {
-                    log::log!(level,"{}", line)
+                    log::log!(level," │ {}", line)
                 }
             },
             Ok(Some(line)) = stderr_stream.next_line() =>  {
                 stderr_string.push_str(&line);
                 if let Some(level) = log_stderr {
-                    log::log!(level,"{}", line)
+                    log::log!(level," │ {}", line)
                 }
             },
             else => break,
@@ -231,6 +231,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
         let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
         log::info!("Testing {ts_name}");
+        log::info!("");
         let mut ts_mandatory = TestSuiteBuilder::new(&format!("Mandatory {ts_name}"))
             .set_timestamp(OffsetDateTime::now_utc())
             .build();
@@ -408,14 +409,18 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
         for fslabs_test in fslabs_tests {
             if failed {
-                log::info!("  |-- `{}` ⏭", fslabs_test.command);
+                log::info!("╭──────────────────────────────────────────────────────╮");
+                log::info!("│ {:50} ⏭ │", fslabs_test.command);
+                log::info!("╰─┬────────────────────────────────────────────────────╯");
                 let tc = TestCase::skipped(fslabs_test.command.as_str());
                 match fslabs_test.optional {
                     true => ts_optional.add_testcase(tc),
                     false => ts_mandatory.add_testcase(tc),
                 };
             } else {
-                log::info!("  |-- `{}`...", fslabs_test.command);
+                log::info!("╭──────────────────────────────────────────────────────╮");
+                log::info!("│ {:50} ⋯ │", fslabs_test.command);
+                log::info!("╰─┬────────────────────────────────────────────────────╯");
                 let start_time = OffsetDateTime::now_utc();
                 if let Some(pre_command) = fslabs_test.pre_command {
                     execute_command_without_logging(&pre_command, &package_path, &fslabs_test.envs)
@@ -442,11 +447,13 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
                 let mut tc = match success {
                     true => {
-                        log::info!("  |----- success in {}", duration);
+                        log::info!("  ╰───────⏵ PASS ✔ in {}", duration);
+                        log::info!("");
                         TestCase::success(&fslabs_test.command, duration)
                     }
                     false => {
-                        log::info!("  |----- failed in {}", duration);
+                        log::info!("  ╰───────⏵ FAIL x in {}", duration);
+                        log::info!("");
                         failed = !fslabs_test.optional; // fail all if not optional
                         TestCase::failure(
                             &fslabs_test.command,
