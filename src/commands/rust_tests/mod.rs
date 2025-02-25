@@ -125,7 +125,6 @@ async fn execute_command(
     }
 
     let status = child.wait().await;
-    println!("Command exited with: {:?}", status);
 
     match status {
         Ok(output) => {
