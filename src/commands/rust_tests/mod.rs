@@ -12,6 +12,7 @@ use std::{
     fmt::{Display, Formatter},
     fs::File,
     path::PathBuf,
+    process::Stdio,
     thread::sleep,
     time::Duration,
 };
@@ -92,6 +93,8 @@ async fn execute_command(
         .arg(command)
         .current_dir(dir)
         .envs(envs)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("Unable to spawn command");
 
@@ -424,7 +427,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                     &package_path,
                     &fslabs_test.envs,
                     Some(log::Level::Debug),
-                    Some(log::Level::Error),
+                    Some(log::Level::Debug),
                 )
                 .await;
                 if let Some(post_command) = fslabs_test.post_command {
