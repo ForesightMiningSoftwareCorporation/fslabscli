@@ -12,10 +12,10 @@ use std::{
     fmt::{Display, Formatter},
     fs::File,
     path::PathBuf,
-    process::Command,
     thread::sleep,
     time::Duration,
 };
+use tokio::io::AsyncBufReadExt;
 
 use crate::{
     commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions},
@@ -66,23 +66,68 @@ struct FslabsTest {
     pub envs: HashMap<String, String>,
 }
 
-async fn execute_command(
+/// [`execute_command`] with intermediate logging disabled.
+async fn execute_command_without_logging(
     command: &str,
     dir: &PathBuf,
     envs: &HashMap<String, String>,
 ) -> (String, String, bool) {
-    match Command::new("bash")
+    execute_command(command, dir, envs, None, None).await
+}
+
+/// Execute the `command`, returning stdout and stderr as strings, and success state as a boolean.
+///
+/// Optionally, stdout and stderr can be logged asynchronously to the current process's stdout
+/// during command execution. This is useful in cases where the command might hang. If the command
+/// does hang, the partially complete output would never be visible without enabling this logging.
+async fn execute_command(
+    command: &str,
+    dir: &PathBuf,
+    envs: &HashMap<String, String>,
+    log_stdout: Option<log::Level>,
+    log_stderr: Option<log::Level>,
+) -> (String, String, bool) {
+    let mut child = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(command)
         .current_dir(dir)
         .envs(envs)
-        .output()
-    {
+        .spawn()
+        .expect("Unable to spawn command");
+
+    let stdout = child.stdout.take().expect("Failed to get stdout");
+    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
+    let mut stdout_string = String::new();
+
+    let stderr = child.stderr.take().expect("Failed to get stderr");
+    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
+    let mut stderr_string = String::new();
+
+    loop {
+        tokio::select! {
+            Ok(Some(line)) = stdout_stream.next_line() =>  {
+                stdout_string.push_str(&line);
+                if let Some(level) = log_stdout {
+                    log::log!(level,"{}", line)
+                }
+            },
+            Ok(Some(line)) = stderr_stream.next_line() =>  {
+                stderr_string.push_str(&line);
+                if let Some(level) = log_stderr {
+                    log::log!(level,"{}", line)
+                }
+            },
+            else => break,
+        }
+    }
+
+    let status = child.wait().await;
+    println!("Command exited with: {:?}", status);
+
+    match status {
         Ok(output) => {
-            let exit_code = output.status.code().unwrap_or(1);
-            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-            (stdout_str.to_string(), stderr_str, exit_code == 0)
+            let exit_code = output.code().unwrap_or(1);
+            (stdout_string.to_string(), stderr_string, exit_code == 0)
         }
         Err(e) => ("".to_string(), e.to_string(), false),
     }
@@ -91,8 +136,8 @@ async fn execute_command(
 async fn teardown_container(container_id: String) {
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
-    execute_command(&format!("docker stop {container_id}"), &path, &envs).await;
-    execute_command(&format!("docker rm {container_id}"), &path, &envs).await;
+    execute_command_without_logging(&format!("docker stop {container_id}"), &path, &envs).await;
+    execute_command_without_logging(&format!("docker rm {container_id}"), &path, &envs).await;
 }
 
 async fn create_docker_container(
@@ -106,7 +151,7 @@ async fn create_docker_container(
     let container_name = format!("{prefix}_{suffix}");
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
-    let (_, stderr, success) = execute_command(
+    let (_, stderr, success) = execute_command_without_logging(
         &format!("docker run --name={container_name} -d {env} {port} {options} {image}"),
         &path,
         &envs,
@@ -117,7 +162,7 @@ async fn create_docker_container(
     }
     // Wait 5 Sec
     sleep(Duration::from_millis(5000));
-    let (container_id, stderr, success) = execute_command(
+    let (container_id, stderr, success) = execute_command_without_logging(
         &format!("docker ps -q -f name={container_name}"),
         &path,
         &envs,
@@ -268,7 +313,8 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                     envs.insert("DATABASE_URL".to_string(), db_url.clone());
                 }
                 let (stdout, stderr, success) =
-                    execute_command(&cache_miss_command, &package_path, &envs).await;
+                    execute_command_without_logging(&cache_miss_command, &package_path, &envs)
+                        .await;
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
                 log::debug!("cache_miss: {stdout}");
@@ -306,7 +352,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                         continue;
                     }
                     let (stdout, stderr, success) =
-                        execute_command(line, &package_path, &envs).await;
+                        execute_command_without_logging(line, &package_path, &envs).await;
                     log::debug!("additional_script: {line} {stdout}");
                     if !success {
                         sub_fail = Some(stderr);
@@ -370,14 +416,24 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                 log::info!("  |-- `{}`...", fslabs_test.command);
                 let start_time = OffsetDateTime::now_utc();
                 if let Some(pre_command) = fslabs_test.pre_command {
-                    execute_command(&pre_command, &package_path, &fslabs_test.envs).await;
+                    execute_command_without_logging(&pre_command, &package_path, &fslabs_test.envs)
+                        .await;
                 }
-                let (stdout, stderr, success) =
-                    execute_command(&fslabs_test.command, &package_path, &fslabs_test.envs).await;
-                let output = format!("{stdout}\n{stderr}");
-                log::debug!("{}", output);
+                let (stdout, stderr, success) = execute_command(
+                    &fslabs_test.command,
+                    &package_path,
+                    &fslabs_test.envs,
+                    Some(log::Level::Debug),
+                    Some(log::Level::Error),
+                )
+                .await;
                 if let Some(post_command) = fslabs_test.post_command {
-                    execute_command(&post_command, &package_path, &fslabs_test.envs).await;
+                    execute_command_without_logging(
+                        &post_command,
+                        &package_path,
+                        &fslabs_test.envs,
+                    )
+                    .await;
                 }
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
