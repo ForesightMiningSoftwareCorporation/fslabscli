@@ -327,9 +327,7 @@ impl Result {
         root_dir: PathBuf,
         hide_dependencies: bool,
     ) -> anyhow::Result<Self> {
-        let path = package
-            .manifest_path
-            .canonicalize()?
+        let path = dunce::canonicalize(package.manifest_path)?
             .parent()
             .unwrap()
             .to_path_buf();
@@ -812,8 +810,7 @@ pub async fn check_workspace(
     let started = Instant::now();
     let path = match working_directory.is_absolute() {
         true => working_directory.clone(),
-        false => working_directory
-            .canonicalize()
+        false => dunce::canonicalize(&working_directory)
             .with_context(|| format!("Failed to get absolute path from {:?}", working_directory))?,
     };
 

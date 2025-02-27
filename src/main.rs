@@ -118,9 +118,7 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
 async fn main() {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
-    let working_directory = cli
-        .working_directory
-        .canonicalize()
+    let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
         Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory),
