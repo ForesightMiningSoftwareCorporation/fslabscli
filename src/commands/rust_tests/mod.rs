@@ -89,7 +89,7 @@ async fn execute_command(
     log_stderr: Option<log::Level>,
 ) -> (String, String, bool) {
     let shell = if cfg!(target_os = "windows") {
-        "pwsh"
+        "powershell.exe"
     } else {
         "bash"
     };
