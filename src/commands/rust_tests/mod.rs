@@ -88,10 +88,16 @@ async fn execute_command(
     log_stdout: Option<log::Level>,
     log_stderr: Option<log::Level>,
 ) -> (String, String, bool) {
-    let mut child = tokio::process::Command::new("bash")
+    let shell = if cfg!(target_os = "windows") {
+        "pwsh"
+    } else {
+        "bash"
+    };
+
+    let mut child = tokio::process::Command::new(shell)
         .arg("-c")
         .arg(command)
-        .current_dir(dir)
+        .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
         .envs(envs)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
