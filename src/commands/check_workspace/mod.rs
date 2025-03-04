@@ -806,7 +806,7 @@ pub async fn check_workspace(
     options: Box<Options>,
     working_directory: PathBuf,
 ) -> anyhow::Result<Results> {
-    log::info!("Check directory for crates that need publishing");
+    tracing::info!("Check directory for crates that need publishing");
     let started = Instant::now();
     let path = match working_directory.is_absolute() {
         true => working_directory.clone(),
@@ -825,7 +825,7 @@ pub async fn check_workspace(
         options.binary_store_container_name,
         options.binary_store_access_key,
     )?;
-    log::debug!("Base directory: {:?}", path);
+    tracing::debug!("Base directory: {:?}", path);
     // 1. Find all workspaces to investigate
     if options.progress {
         println!(
@@ -860,7 +860,7 @@ pub async fn check_workspace(
                     if options.fail_unit_error {
                         anyhow::bail!(error_msg)
                     } else {
-                        log::warn!("{}", error_msg);
+                        tracing::warn!("{}", error_msg);
                         continue;
                     }
                 }
@@ -981,7 +981,7 @@ pub async fn check_workspace(
                         if options.fail_unit_error {
                             anyhow::bail!(error_msg)
                         } else {
-                            log::warn!("{}", error_msg);
+                            tracing::warn!("{}", error_msg);
                             continue;
                         }
                     }
@@ -1059,7 +1059,7 @@ pub async fn check_workspace(
         }
     }
     let package_keys: Vec<String> = packages.keys().cloned().collect();
-    log::info!("Package list: {package_keys:#?}");
+    tracing::info!("Package list: {package_keys:#?}");
 
     if options.progress {
         println!(
@@ -1078,12 +1078,12 @@ pub async fn check_workspace(
         // Check changed from a git pov
         let changed_package_paths =
             crates.changed_packages(&options.changed_base_ref, &options.changed_head_ref)?;
-        log::info!("Changed packages: {changed_package_paths:#?}");
+        tracing::info!("Changed packages: {changed_package_paths:#?}");
         // Any packages that transitively depend on changed packages are also considered "changed".
         let changed_closure = crates
             .dependency_graph()
             .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
-        log::info!("Changed closure: {changed_closure:#?}");
+        tracing::info!("Changed closure: {changed_closure:#?}");
 
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
@@ -1096,14 +1096,14 @@ pub async fn check_workspace(
                 if options.check_publish && package.publish {
                     // mark package as changed
                     package.changed = true;
-                    log::info!("Marking package as changed for publish: {:?}", package.path);
+                    tracing::info!("Marking package as changed for publish: {:?}", package.path);
                     continue;
                 }
                 if changed_package_paths.contains(&package.path) {
-                    log::info!("Detected change in {:?}", package.path);
+                    tracing::info!("Detected change in {:?}", package.path);
                     package.changed = true;
                 } else if changed_closure.contains(&package.path) {
-                    log::info!("A dependency changed for {:?}", package.path);
+                    tracing::info!("A dependency changed for {:?}", package.path);
                     package.dependencies_changed = true;
                 }
             }

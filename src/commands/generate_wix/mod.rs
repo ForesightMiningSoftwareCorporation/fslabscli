@@ -918,7 +918,7 @@ pub async fn generate_wix(
     )
     .await
     .map_err(|e| {
-        log::error!("Unparseable template: {}", e);
+        tracing::error!("Unparseable template: {}", e);
         e
     })?
     .0

@@ -140,7 +140,7 @@ impl Docker {
         name: String,
         version: String,
     ) -> anyhow::Result<bool> {
-        log::debug!(
+        tracing::debug!(
             "Docker: checking if version {} of {} already exists",
             version,
             name
