@@ -28,7 +28,7 @@
   tracing-core = "0.1.33"
   url = "2.5.4"
   void = "1.0.2"
-  zip = "2.2.2"
+  zip = "2.2.3"
 
   [dependencies.anyhow]
     features = []
