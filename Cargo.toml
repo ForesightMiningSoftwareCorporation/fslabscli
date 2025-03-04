@@ -4,7 +4,7 @@
   bytes = "1.10.0"
   cargo_metadata = "0.19.2"
   chrono = "0.4"
-  console = "0.15.10"
+  console = "0.15.11"
   convert_case = "0.7.1"
   dunce = "1.0.5"
   exitcode = "1.1"
