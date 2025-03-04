@@ -31,7 +31,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         version: String,
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
-        log::info!("Got following registries: {:?}", self.registry);
+        tracing::info!("Got following registries: {:?}", self.registry);
         let registries = match &self.registry {
             Some(r) => r.clone(),
             None => {
@@ -39,7 +39,7 @@ impl PackageMetadataFslabsCiPublishCargo {
                 if self.allow_public {
                     vec!["public".to_string()]
                 } else {
-                    log::debug!("Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`", name);
+                    tracing::debug!("Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`", name);
                     vec![]
                 }
             }
@@ -49,7 +49,7 @@ impl PackageMetadataFslabsCiPublishCargo {
             return Ok(());
         }
         let registry_name = registries.first().unwrap().clone();
-        log::debug!(
+        tracing::debug!(
             "CARGO: checking if version {} of {} already exists for registry {}",
             version,
             name,

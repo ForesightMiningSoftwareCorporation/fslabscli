@@ -38,7 +38,7 @@ impl PackageMetadataFslabsCiPublishNpmNapi {
             None => "".to_string(),
         };
         let package_name = format!("{}{}", npm_package_prefix, package.clone());
-        log::debug!(
+        tracing::debug!(
             "NPM: checking if version {} of {} already exists",
             version,
             package_name

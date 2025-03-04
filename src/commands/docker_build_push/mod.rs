@@ -99,7 +99,7 @@ pub async fn docker_build_push(
         .arg(options.platforms.join(","))
         .arg(context);
 
-    log::debug!("Running `{:?}`", build_command);
+    tracing::debug!("Running `{:?}`", build_command);
 
     let status = build_command.status()?;
     if !status.success() {
