@@ -116,13 +116,13 @@ async fn execute_command(
     loop {
         tokio::select! {
             Ok(Some(line)) = stdout_stream.next_line() =>  {
-                stdout_string.push_str(&line);
+                stdout_string.push_str(&format!("{}\n", line));
                 if log_stdout.is_some() {
                     tracing::event!(tracing::Level::DEBUG, " │ {}", line)
                 }
             },
             Ok(Some(line)) = stderr_stream.next_line() =>  {
-                stderr_string.push_str(&line);
+                stderr_string.push_str(&format!("{}\n", line));
                 if log_stderr.is_some() {
                     tracing::event!(tracing::Level::DEBUG, " │ {}", line)
                 }
