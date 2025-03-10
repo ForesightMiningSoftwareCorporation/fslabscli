@@ -1,5 +1,5 @@
 use anyhow::Context;
-use cargo_metadata::{DependencyKind, PackageId};
+use cargo_metadata::PackageId;
 use clap::Parser;
 use octocrab::Octocrab;
 use serde::Serialize;
@@ -19,8 +19,7 @@ use crate::{
     commands::check_workspace::{
         Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
-    crate_graph::CrateGraph,
-    utils::execute_command,
+    utils::{cargo::Cargo, execute_command},
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -34,9 +33,9 @@ pub struct Options {
     repo_owner: String,
     #[arg(long, env)]
     repo_name: String,
-    #[arg(long, env)]
-    github_token: String,
-    #[arg(long, env, default_value = "5")]
+    // #[arg(long, env)]
+    // github_token: String,
+    #[arg(long, env, default_value = "1")]
     job_limit: usize,
 }
 
@@ -80,6 +79,7 @@ async fn publish_package(
     dependencies: Option<Vec<PackageId>>,
     statuses: Arc<RwLock<HashMap<PackageId, Option<bool>>>>,
     output_dir: PathBuf,
+    cargo: Arc<Cargo>,
 ) {
     if let Some(ref package_id) = package.package_id {
         loop {
@@ -120,7 +120,7 @@ async fn publish_package(
 
         // Acquire a permit from the semaphore to limit the number of concurrent tasks
         let permit = semaphore.acquire().await;
-        let success = do_publish_package(repo_root.clone(), package.clone(), output_dir)
+        let success = do_publish_package(repo_root.clone(), package.clone(), output_dir, cargo)
             .await
             .is_ok();
         let mut map = statuses.write().expect("RwLock poisoned");
@@ -133,6 +133,7 @@ async fn do_publish_package(
     repo_root: PathBuf,
     package: Package,
     output_dir: PathBuf,
+    cargo: Arc<Cargo>,
 ) -> anyhow::Result<()> {
     let _workspace_name = &package.workspace;
     let package_name = &package.package;
@@ -154,6 +155,58 @@ async fn do_publish_package(
         }
         overall_success = success;
     }
+    if package.publish_detail.cargo.publish {
+        let additional_args = package.publish_detail.additional_args.unwrap_or_default();
+        for (registry_name, registry_publish) in package.publish_detail.cargo.registries_publish {
+            if !registry_publish {
+                continue;
+            }
+            // ok_data is available here
+            let Some(registry) = cargo.get_registry(&registry_name) else {
+                continue;
+            };
+            let args = vec![
+                additional_args.clone(),
+                "--registry".to_string(),
+                registry_name.clone(),
+            ];
+            let env_name = registry_name.to_uppercase().replace("-", "_");
+            let user_agent = registry
+                .user_agent
+                .clone()
+                .unwrap_or_else(|| "fslabsci".to_string());
+            let mut envs = HashMap::from([
+                // ("CARGO_HTTP_USER_AGENT".to_string(), user_agent),
+                (
+                    "GIT_SSH_COMMAND".to_string(),
+                    format!("ssh -i $CARGO_REGISTRIES_{}_PRIVATE_KEY_PATH", env_name),
+                ),
+            ]);
+            if let Some(token) = &registry.token {
+                envs.insert(
+                    format!("CARGO_REGISTRIES_{}_TOKEN", env_name),
+                    token.clone(),
+                );
+            }
+            if let Some(index) = &registry.index {
+                envs.insert(
+                    format!("CARGO_REGISTRIES_{}_INDEX", env_name),
+                    index.clone(),
+                );
+            }
+            let (_stdout, _stderr, success) = execute_command(
+                &format!("cargo publish {}", args.join(" ")),
+                &package_path,
+                &envs,
+                Some(tracing::Level::DEBUG),
+                Some(tracing::Level::DEBUG),
+            )
+            .await;
+            tracing::info!("STDOUT: {}", _stdout);
+            tracing::info!("STDERR: {}", _stderr);
+            overall_success = success;
+        }
+    }
     match overall_success {
         true => {
             println!("Published package {}", package_name);
@@ -169,15 +222,9 @@ async fn do_publish_package(
 pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<PublishResult> {
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
-        .with_cargo_default_publish(true)
-        .with_cargo_registry("foresight-mining-software-corporation".to_string())
-        .with_cargo_registry_url("https://shipyard.rs/api/v1/shipyard/krates/by-name/".to_string())
-        .with_cargo_registry_user_agent("shipyard ${SHIPYARD_TOKEN}".to_string())
         .with_ignore_dev_dependencies(true);
 
-    let crates = CrateGraph::new(repo_root.clone(), Some(DependencyKind::Normal))?;
-    let dependency_graph = crates.dependency_graph();
-    let members = check_workspace(Box::new(check_workspace_options), repo_root.clone())
+    let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
         .map_err(|e| {
             tracing::error!("Check directory for crates that need publishing: {}", e);
@@ -185,11 +232,14 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
         })
         .with_context(|| "Could not get directory information")?;
 
+    tracing::info!("Got results: {:?}", results.members);
+
+    let cargo = Arc::new(Cargo::new(&results.crate_graph)?);
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
 
     let mut handles = vec![];
     let mut init_status: HashMap<PackageId, Option<bool>> = HashMap::new();
-    for member_id in members.0.keys() {
+    for member_id in results.members.keys() {
         init_status.insert(member_id.clone(), None);
     }
     let publish_status = Arc::new(RwLock::new(init_status));
@@ -197,65 +247,69 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     let artifact_dir = options.artifacts.join("output");
     fs::create_dir_all(&artifact_dir)?;
     // Spawn a task for each object
-    for (_, member) in members.0 {
+    for (_, member) in results.members {
         if let Some(ref member_id) = member.package_id {
             let o = artifact_dir.clone();
             let m = member.clone();
             let r = repo_root.clone();
             let s = Arc::clone(&semaphore);
+            let c = Arc::clone(&cargo);
             let status = Arc::clone(&publish_status);
             let task_handle = tokio::spawn(publish_package(
                 r,
                 m,
                 s,
-                dependency_graph.dependencies.get(member_id).cloned(),
+                results
+                    .crate_graph
+                    .dependency_graph()
+                    .dependencies
+                    .get(member_id)
+                    .cloned(),
                 status,
                 o,
+                c,
             ));
             handles.push(task_handle);
         }
     }
     futures::future::join_all(handles).await;
 
-    // Send initial tasks to workers
-    // We have a github token we should try to upload the artifact to the releas
-    let octocrab = Octocrab::builder()
-        .personal_token(options.github_token)
-        .build()?;
+    // let octocrab = Octocrab::builder()
+    //     .personal_token(options.github_token)
+    //     .build()?;
 
-    let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
-    let repo_releases = repo.releases();
-    if let Ok(release) = repo_releases.get_by_tag(&options.pull_base_ref).await {
-        tracing::info!("Updating github release {}", release.id);
-        let paths = fs::read_dir(artifact_dir)?;
-        for raw_artifact in paths {
-            if let Ok(artifact) = raw_artifact {
-                let artifact_path = artifact.path();
-                if let Some(artifact_name) = artifact_path.file_name() {
-                    if let Some(artifact_name) = artifact_name.to_str() {
-                        tracing::debug!("Uploading github artifact {:?}", artifact_name);
-                        if let Ok(mut file) = File::open(&artifact_path) {
-                            if let Ok(metadata) = fs::metadata(&artifact_path) {
-                                let mut data: Vec<u8> = vec![0; metadata.len() as usize];
-                                if file.read(&mut data).is_ok() {
-                                    let _ = repo_releases
-                                        .upload_asset(
-                                            release.id.into_inner(),
-                                            artifact_name,
-                                            data.into(),
-                                        )
-                                        .send()
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        tracing::info!("Could not find a github release to update, not doing anything");
-    }
+    // let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
+    // let repo_releases = repo.releases();
+    // if let Ok(release) = repo_releases.get_by_tag(&options.pull_base_ref).await {
+    //     let paths = fs::read_dir(&artifact_dir)?;
+    //     for raw_artifact in paths {
+    //         if let Ok(artifact) = raw_artifact {
+    //             let artifact_path = artifact.path();
+    //             if let Some(artifact_name) = artifact_path.file_name() {
+    //                 if let Some(artifact_name) = artifact_name.to_str() {
+    //                     tracing::debug!("Uploading github artifact {:?}", artifact_name);
+    //                     if let Ok(mut file) = File::open(&artifact_path) {
+    //                         if let Ok(metadata) = fs::metadata(&artifact_path) {
+    //                             let mut data: Vec<u8> = vec![0; metadata.len() as usize];
+    //                             if file.read(&mut data).is_ok() {
+    //                                 let _ = repo_releases
+    //                                     .upload_asset(
+    //                                         release.id.into_inner(),
+    //                                         artifact_name,
+    //                                         data.into(),
+    //                                     )
+    //                                     .send()
+    //                                     .await;
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // } else {
+    //     tracing::info!("Could not find a github release to update, not doing anything");
+    // }
 
     Ok(PublishResult {})
 }

@@ -27,8 +27,9 @@ use strum_macros::EnumString;
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
 use crate::crate_graph::CrateGraph;
+use crate::utils::cargo::Cargo;
 use binary::PackageMetadataFslabsCiPublishBinary;
-use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
+use cargo::PackageMetadataFslabsCiPublishCargo;
 use docker::PackageMetadataFslabsCiPublishDocker;
 use nix_binary::PackageMetadataFslabsCiPublishNixBinary;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
@@ -123,14 +124,6 @@ pub struct Options {
     npm_registry_npmrc_path: Option<String>,
     #[arg(long, default_value_t = false)]
     skip_cargo: bool,
-    #[arg(long)]
-    cargo_registry: Option<String>,
-    #[arg(long)]
-    cargo_registry_url: Option<String>,
-    #[arg(long)]
-    cargo_registry_user_agent: Option<String>,
-    #[arg(long, default_value_t = false)]
-    cargo_default_publish: bool,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, env)]
@@ -166,11 +159,6 @@ impl Options {
         Self::default()
     }
 
-    pub fn with_cargo_default_publish(mut self, cargo_default_publish: bool) -> Self {
-        self.cargo_default_publish = cargo_default_publish;
-        self
-    }
-
     pub fn with_check_changed(mut self, check_changed: bool) -> Self {
         self.check_changed = check_changed;
         self
@@ -188,21 +176,6 @@ impl Options {
 
     pub fn with_changed_base_ref(mut self, base_ref: String) -> Self {
         self.changed_base_ref = base_ref;
-        self
-    }
-
-    pub fn with_cargo_registry(mut self, cargo_registry: String) -> Self {
-        self.cargo_registry = Some(cargo_registry);
-        self
-    }
-
-    pub fn with_cargo_registry_url(mut self, cargo_registry_url: String) -> Self {
-        self.cargo_registry_url = Some(cargo_registry_url);
-        self
-    }
-
-    pub fn with_cargo_registry_user_agent(mut self, cargo_registry_user_agent: String) -> Self {
-        self.cargo_registry_user_agent = Some(cargo_registry_user_agent);
         self
     }
 
@@ -364,13 +337,17 @@ impl Result {
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.clone().fslabs.publish.unwrap_or_default();
-        publish.cargo.registry = match package.publish.clone() {
+        publish.cargo.registries = match package.publish.clone() {
             Some(r) => Some(r.clone()),
             None => {
                 // Should be public registry, double check this is wanted
                 if publish.cargo.allow_public {
-                    Some(vec!["public".to_string()])
+                    Some(vec!["crates.io".to_string()])
                 } else {
+                    tracing::debug!(
+                        "Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`",
+                        package.name
+                    );
                     Some(vec![])
                 }
             }
@@ -378,9 +355,9 @@ impl Result {
 
         publish.cargo.publish = publish
             .cargo
-            .registry
+            .registries
             .clone()
-            .map(|r| r.len() == 1)
+            .map(|r| r.len() >= 1)
             .unwrap_or(false);
 
         let dependencies: Vec<ResultDependency> = package
@@ -790,11 +767,15 @@ impl Display for Result {
 }
 
 #[derive(Serialize)]
-pub struct Results(pub(crate) HashMap<PackageId, Result>);
+pub struct Results {
+    pub members: HashMap<PackageId, Result>,
+    #[serde(skip)]
+    pub crate_graph: CrateGraph,
+}
 
 impl Display for Results {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for (k, v) in &self.0 {
+        for (k, v) in &self.members {
             writeln!(f, "{}: {}", k, v)?;
         }
         Ok(())
@@ -806,7 +787,7 @@ fn bool_to_emoji(value: bool) -> &'static str {
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
-        let mut results: Vec<&Result> = self.0.values().collect();
+        let mut results: Vec<&Result> = self.members.values().collect();
         results.sort_by(|a, b| {
             // Compare primary keys first
             match a.workspace.cmp(&b.workspace) {
@@ -887,7 +868,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/9]").bold().dim(),
+            style("[1/10]").bold().dim(),
             LOOKING_GLASS
         );
     }
@@ -903,7 +884,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/9]").bold().dim(),
+            style("[2/10]").bold().dim(),
             TRUCK
         );
     }
@@ -946,7 +927,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Compute runtime information...",
-            style("[5/9]").bold().dim(),
+            style("[3/10]").bold().dim(),
             TRUCK
         );
     }
@@ -985,7 +966,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[6/9]").bold().dim(),
+            style("[4/10]").bold().dim(),
             PAPER
         );
     }
@@ -996,17 +977,7 @@ pub async fn check_workspace(
         options.npm_registry_npmrc_path.clone(),
         true,
     )?;
-    let mut cargo = Cargo::new(None)?;
-    if let (Some(private_registry), Some(private_registry_url)) = (
-        options.cargo_registry.clone(),
-        options.cargo_registry_url.clone(),
-    ) {
-        cargo.add_registry(
-            private_registry,
-            private_registry_url,
-            options.cargo_registry_user_agent.clone(),
-        )?;
-    }
+    let cargo = Cargo::new(&crates)?;
     let mut docker = Docker::new(None)?;
     if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
         options.docker_registry.clone(),
@@ -1095,7 +1066,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages dependencies...",
-            style("[3/9]").bold().dim(),
+            style("[3/10]").bold().dim(),
             TRUCK
         );
     }
@@ -1139,7 +1110,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Checking if packages changed...",
-            style("[8/9]").bold().dim(),
+            style("[8/10]").bold().dim(),
             TRUCK
         );
     }
@@ -1195,5 +1166,8 @@ pub async fn check_workspace(
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
 
-    Ok(Results(packages))
+    Ok(Results {
+        members: packages,
+        crate_graph: crates,
+    })
 }

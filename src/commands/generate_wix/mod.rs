@@ -1,12 +1,14 @@
-use crate::commands::check_workspace::{
-    check_workspace, Options as CheckWorkspaceOptions, Result as Member,
+use crate::{
+    PrettyPrintable,
+    commands::check_workspace::{
+        Options as CheckWorkspaceOptions, Result as Member, check_workspace,
+    },
 };
-use crate::PrettyPrintable;
 use clap::Parser;
 use convert_case::{Case, Casing};
 use indexmap::IndexMap;
-use quick_xml::events::{BytesPI, BytesStart, Event};
 use quick_xml::Writer;
+use quick_xml::events::{BytesPI, BytesStart, Event};
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
@@ -921,7 +923,7 @@ pub async fn generate_wix(
         tracing::error!("Unparseable template: {}", e);
         e
     })?
-    .0
+    .members
     .iter()
     .filter_map(|(_, v)| match v.publish_detail.binary.installer.publish {
         true => Some(v.clone()),
