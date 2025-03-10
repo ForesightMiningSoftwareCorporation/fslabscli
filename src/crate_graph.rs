@@ -1,7 +1,7 @@
 use cargo_metadata::{
-    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
+    semver::Version, DependencyKind, Metadata, MetadataCommand, Package, PackageId,
 };
-use git2::{DiffDelta, Repository, build::CheckoutBuilder};
+use git2::{build::CheckoutBuilder, DiffDelta, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -422,7 +422,7 @@ mod tests {
     fn test_discover_standalone_workspace() {
         let repo = initialize_repo().join("standalone");
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].path, Path::new("."));
@@ -439,7 +439,7 @@ mod tests {
     fn test_discover_many_workspaces() {
         let repo = initialize_repo();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 5);
         let mut i = workspaces.iter();
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn test_detect_changed_packages() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
 
         // These revision strings rely on an understanding of the test repo's git log.
         // We know that the most recent revision makes changes to files in foo and bar.
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn test_detect_changed_package_single_rust_crate() {
         let repo = create_simple_rust_crate();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
 
         let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
@@ -538,7 +538,7 @@ mod tests {
     fn test_detect_changed_package_unstaged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
 
         let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
@@ -549,7 +549,7 @@ mod tests {
     fn test_detect_changed_package_staged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
         stage_file(&repo, "src/lib.rs");
 
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn test_fix_lock_files() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, None).unwrap();
 
         // Remove lock files created from running cargo-metadata.
         for workspace in graph.workspaces() {
