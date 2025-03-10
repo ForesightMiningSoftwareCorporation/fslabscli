@@ -356,10 +356,11 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "2.13.2"
+version = "2.14.0-rc1"
 dependencies = [
  "anyhow",
  "assert_fs",
+ "async-stream",
  "base64 0.21.7",
  "bytes",
  "cargo_metadata",
@@ -369,6 +370,7 @@ dependencies = [
  "convert_case",
  "dunce",
  "exitcode",
+ "futures",
  "futures-util",
  "git2",
  "http",
@@ -406,6 +408,7 @@ dependencies = [
  "strum_macros",
  "testcontainers",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-core",
  "tracing-subscriber",

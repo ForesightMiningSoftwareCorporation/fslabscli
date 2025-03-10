@@ -1,4 +1,4 @@
-use chrono::{prelude::*, Duration};
+use chrono::{Duration, prelude::*};
 use core::result::Result as CoreResult;
 use std::cmp;
 use std::cmp::Ordering;
@@ -10,13 +10,13 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{DependencyKind, Package};
+use cargo_metadata::{DependencyKind, Package, PackageId};
 use clap::Parser;
-use console::{style, Emoji};
+use console::{Emoji, style};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{path::Path as BSPath, ObjectStore};
+use object_store::{ObjectStore, path::Path as BSPath};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -30,6 +30,7 @@ use crate::crate_graph::CrateGraph;
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
 use docker::PackageMetadataFslabsCiPublishDocker;
+use nix_binary::PackageMetadataFslabsCiPublishNixBinary;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
 use crate::PrettyPrintable;
@@ -37,6 +38,7 @@ use crate::PrettyPrintable;
 mod binary;
 mod cargo;
 mod docker;
+mod nix_binary;
 mod npm;
 
 static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
@@ -155,6 +157,8 @@ pub struct Options {
     fail_unit_error: bool,
     #[arg(long, default_value_t = false)]
     hide_dependencies: bool,
+    #[arg(long, default_value_t = false)]
+    ignore_dev_dependencies: bool,
 }
 
 impl Options {
@@ -186,6 +190,26 @@ impl Options {
         self.changed_base_ref = base_ref;
         self
     }
+
+    pub fn with_cargo_registry(mut self, cargo_registry: String) -> Self {
+        self.cargo_registry = Some(cargo_registry);
+        self
+    }
+
+    pub fn with_cargo_registry_url(mut self, cargo_registry_url: String) -> Self {
+        self.cargo_registry_url = Some(cargo_registry_url);
+        self
+    }
+
+    pub fn with_cargo_registry_user_agent(mut self, cargo_registry_user_agent: String) -> Self {
+        self.cargo_registry_user_agent = Some(cargo_registry_user_agent);
+        self
+    }
+
+    pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
+        self.ignore_dev_dependencies = ignore_dev_dependencies;
+        self
+    }
 }
 
 fn default_dependency_kind() -> DependencyKind {
@@ -194,6 +218,7 @@ fn default_dependency_kind() -> DependencyKind {
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
     pub package: Option<String>,
+    pub package_id: Option<PackageId>,
     pub rename: Option<String>,
     pub path: Option<PathBuf>,
     #[serde(default = "default_dependency_kind")]
@@ -210,6 +235,7 @@ pub struct ResultDependency {
 pub struct Result {
     pub workspace: String,
     pub package: String,
+    pub package_id: Option<PackageId>,
     pub version: String,
     pub path: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
@@ -261,6 +287,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "PackageMetadataFslabsCiPublishBinary::default")]
     pub binary: PackageMetadataFslabsCiPublishBinary,
+    #[serde(default = "PackageMetadataFslabsCiPublishNixBinary::default")]
+    pub nix_binary: PackageMetadataFslabsCiPublishNixBinary,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     #[serde(default, serialize_with = "serialize_multiline_as_escaped")]
@@ -326,6 +354,7 @@ impl Result {
         package: Package,
         root_dir: PathBuf,
         hide_dependencies: bool,
+        dep_to_id: &HashMap<String, PackageId>,
     ) -> anyhow::Result<Self> {
         let path = dunce::canonicalize(package.manifest_path)?
             .parent()
@@ -360,7 +389,8 @@ impl Result {
             // Somehow, we now need to put the devedependencies in the tree
             // .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
-                package: Some(d.name),
+                package: Some(d.name.clone()),
+                package_id: dep_to_id.get(&d.name).cloned(),
                 rename: d.rename,
                 kind: d.kind,
                 path: d.path.map(|p| p.into()),
@@ -395,6 +425,7 @@ impl Result {
         //
         Ok(Self {
             workspace,
+            package_id: Some(package.id.clone()),
             package: package.name,
             version: package.version.to_string(),
             path,
@@ -452,8 +483,9 @@ impl Result {
         release_channel: Option<&str>,
         toolchain: &str,
         version_timestamp: &str,
-        package_versions: &HashMap<String, String>,
+        package_versions: &HashMap<PackageId, String>,
         object_store: &Option<BinaryStore>,
+        dep_to_id: &HashMap<String, PackageId>,
     ) -> anyhow::Result<()> {
         self.update_release_channel(release_channel);
         self.update_ci_runner(toolchain);
@@ -573,31 +605,37 @@ impl Result {
                     self.package,
                     self.publish_detail.binary.launcher.suffix
                 );
-                if let Some(launcher_version) = package_versions.get(&launcher_name) {
-                    let (launcher_blob_dir, launcher_name) = get_blob_name(
-                        &launcher_name,
-                        launcher_version,
-                        toolchain,
-                        &self.publish_detail.release_channel,
-                    );
-                    self.publish_detail.binary.installer.launcher_blob_dir =
-                        Some(launcher_blob_dir);
-                    self.publish_detail.binary.installer.launcher_blob_name = Some(launcher_name);
-                    if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
-                        self.publish_detail.binary.installer.installer_blob_name = Some(
-                            format!("{}.{}.{}.msi", fallback_name, launcher_version, rc_version)
+                if let Some(launcher_package_id) = dep_to_id.get(&launcher_name) {
+                    if let Some(launcher_version) = package_versions.get(launcher_package_id) {
+                        let (launcher_blob_dir, launcher_name) = get_blob_name(
+                            &launcher_name,
+                            launcher_version,
+                            toolchain,
+                            &self.publish_detail.release_channel,
+                        );
+                        self.publish_detail.binary.installer.launcher_blob_dir =
+                            Some(launcher_blob_dir);
+                        self.publish_detail.binary.installer.launcher_blob_name =
+                            Some(launcher_name);
+                        if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
+                            self.publish_detail.binary.installer.installer_blob_name = Some(
+                                format!(
+                                    "{}.{}.{}.msi",
+                                    fallback_name, launcher_version, rc_version
+                                )
                                 .to_lowercase(),
-                        );
-                        self.publish_detail
-                            .binary
-                            .installer
-                            .installer_blob_signed_name = Some(
-                            format!(
-                                "{}.{}.{}-signed.msi",
-                                fallback_name, launcher_version, rc_version
-                            )
-                            .to_lowercase(),
-                        );
+                            );
+                            self.publish_detail
+                                .binary
+                                .installer
+                                .installer_blob_signed_name = Some(
+                                format!(
+                                    "{}.{}.{}-signed.msi",
+                                    fallback_name, launcher_version, rc_version
+                                )
+                                .to_lowercase(),
+                            );
+                        }
                     }
                 }
                 // subapps
@@ -606,14 +644,18 @@ impl Result {
                     let sub_app_full_blob_name: String;
                     if self.publish_detail.release_channel == ReleaseChannel::Nightly {
                         //need to add the nightly epoch to the suffix
-                        if let Some(subapp_version) = package_versions.get(s) {
-                            let (subapp_dir, subapp_name) = get_blob_name(
-                                s,
-                                &format!("{}.{}", subapp_version, version_timestamp),
-                                toolchain,
-                                &self.publish_detail.release_channel,
-                            );
-                            sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                        if let Some(subapp_package_id) = dep_to_id.get(s) {
+                            if let Some(subapp_version) = package_versions.get(subapp_package_id) {
+                                let (subapp_dir, subapp_name) = get_blob_name(
+                                    s,
+                                    &format!("{}.{}", subapp_version, version_timestamp),
+                                    toolchain,
+                                    &self.publish_detail.release_channel,
+                                );
+                                sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                            } else {
+                                continue;
+                            }
                         } else {
                             continue;
                         }
@@ -718,6 +760,12 @@ impl Result {
                     self.publish_detail.binary.error = Some(e.to_string());
                 }
             };
+            match self.publish_detail.nix_binary.check().await {
+                Ok(_) => {}
+                Err(e) => {
+                    self.publish_detail.nix_binary.error = Some(e.to_string());
+                }
+            };
         }
 
         Ok(())
@@ -742,7 +790,7 @@ impl Display for Result {
 }
 
 #[derive(Serialize)]
-pub struct Results(pub(crate) HashMap<String, Result>);
+pub struct Results(pub(crate) HashMap<PackageId, Result>);
 
 impl Display for Results {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -754,11 +802,7 @@ impl Display for Results {
 }
 
 fn bool_to_emoji(value: bool) -> &'static str {
-    if value {
-        "x"
-    } else {
-        ""
-    }
+    if value { "x" } else { "" }
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
@@ -780,10 +824,23 @@ impl PrettyPrintable for Results {
             7,
         );
         let out: Vec<String> = vec![
-            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-"),
-            format!("| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |", "Workspace", "Package", "Version", "Publish", "Tests"),
-            format!("| {:workspace_len$} | {:package_len$} | {:version_len$} | docker | cargo | npm | binary | any | {:^5} |", "", "", "", ""),
-            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-")];
+            format!(
+                "|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|",
+                "-", "-", "-", "-", "-"
+            ),
+            format!(
+                "| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |",
+                "Workspace", "Package", "Version", "Publish", "Tests"
+            ),
+            format!(
+                "| {:workspace_len$} | {:package_len$} | {:version_len$} | docker | cargo | npm | binary | any | {:^5} |",
+                "", "", "", ""
+            ),
+            format!(
+                "|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|",
+                "-", "-", "-", "-", "-"
+            ),
+        ];
         [out,
          results.iter()
             .map(|v| {
@@ -834,8 +891,14 @@ pub async fn check_workspace(
             LOOKING_GLASS
         );
     }
-    let crates = CrateGraph::new(&path)?;
-    let mut packages: HashMap<String, Result> = HashMap::new();
+    let limit_dependency_kind = match options.ignore_dev_dependencies {
+        true => Some(DependencyKind::Normal),
+        false => None,
+    };
+    let crates = CrateGraph::new(&path, limit_dependency_kind)?;
+    let mut packages: HashMap<PackageId, Result> = HashMap::new();
+    let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
+
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
         println!(
@@ -844,16 +907,25 @@ pub async fn check_workspace(
             TRUCK
         );
     }
+
     for workspace in crates.workspaces() {
+        let resolve = workspace.metadata.resolve.as_ref().unwrap();
+        for node in &resolve.nodes {
+            for node_dep in &node.deps {
+                dep_to_id.insert(node_dep.name.clone(), node_dep.pkg.clone());
+            }
+        }
+
         for package in workspace.metadata.workspace_packages() {
             match Result::new(
                 workspace.path.to_string_lossy().into(),
                 package.clone(),
                 working_directory.clone(),
                 options.hide_dependencies,
+                &dep_to_id,
             ) {
                 Ok(package) => {
-                    packages.insert(package.package.clone(), package);
+                    packages.insert(package.package_id.clone().unwrap().clone(), package);
                 }
                 Err(e) => {
                     let error_msg = format!("Could not check package {}: {}", package.name, e);
@@ -868,7 +940,7 @@ pub async fn check_workspace(
         }
     }
 
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
 
     // 5. Compute Runtime information
     if options.progress {
@@ -885,7 +957,7 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
-    let mut package_versions: HashMap<String, String> = HashMap::new();
+    let mut package_versions: HashMap<PackageId, String> = HashMap::new();
     package_versions.extend(packages.iter().map(|(k, v)| (k.clone(), v.version.clone())));
     for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
@@ -903,6 +975,7 @@ pub async fn check_workspace(
                     &timestamp,
                     &package_versions,
                     &binary_store,
+                    &dep_to_id,
                 )
                 .await?;
         }
@@ -1032,7 +1105,7 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
-    let publish_status: HashMap<String, bool> = packages
+    let publish_status: HashMap<PackageId, bool> = packages
         .clone()
         .into_iter()
         .map(|(k, v)| (k, v.publish))
@@ -1046,11 +1119,13 @@ pub async fn check_workspace(
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            package
-                .dependencies
-                .retain(|d| d.package.as_ref().is_some_and(|p| package_keys.contains(p)));
+            package.dependencies.retain(|d| {
+                d.package_id
+                    .as_ref()
+                    .is_some_and(|p| package_keys.contains(p))
+            });
             for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package {
+                if let Some(package_name) = &dep.package_id {
                     if let Some(dep_p) = publish_status.get(package_name) {
                         dep.publishable = *dep_p;
                     }
@@ -1058,7 +1133,7 @@ pub async fn check_workspace(
             }
         }
     }
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
     tracing::info!("Package list: {package_keys:#?}");
 
     if options.progress {

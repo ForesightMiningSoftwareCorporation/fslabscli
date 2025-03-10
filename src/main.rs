@@ -4,25 +4,26 @@ use std::{env, io};
 
 use clap::{ArgAction, Parser, Subcommand};
 
-use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
-use crate::commands::docker_build_push::{docker_build_push, Options as DockerBuildPushOptions};
+use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
+use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
 use crate::commands::download_artifacts::{
-    download_artifacts, Options as DownloadArtifactsOptions,
+    Options as DownloadArtifactsOptions, download_artifacts,
 };
-use crate::commands::fix_lock_files::{fix_lock_files, Options as CheckLockFilesOptions};
-use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
-use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
-use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
-use crate::commands::rust_tests::{rust_tests, Options as RustTestsOptions};
-use crate::commands::summaries::{summaries, Options as SummariesOptions};
+use crate::commands::fix_lock_files::{Options as CheckLockFilesOptions, fix_lock_files};
+use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix};
+use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
+use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
+use crate::commands::publish::{Options as PublishOptions, publish};
+use crate::commands::rust_tests::{Options as RustTestsOptions, rust_tests};
+use crate::commands::summaries::{Options as SummariesOptions, summaries};
 
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{
+    Resource,
     logs::SdkLoggerProvider,
     metrics::{MeterProviderBuilder, SdkMeterProvider},
     trace::SdkTracerProvider,
-    Resource,
 };
 use serde::Serialize;
 use tracing_core::Level;
@@ -76,6 +77,7 @@ enum Commands {
     GithubAppToken(Box<GithubAppTokenOptions>),
     DockerBuildPush(Box<DockerBuildPushOptions>),
     RustTests(Box<RustTestsOptions>),
+    Publish(Box<PublishOptions>),
 }
 
 fn get_resource() -> Resource {
@@ -161,8 +163,9 @@ pub fn setup_logging(verbosity: u8) -> OtelGuard {
     let log_provider = init_logs();
     let otel_layer = OpenTelemetryTracingBridge::new(&log_provider);
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_writer(io::stderr);
+        .with_writer(io::stderr)
+        .compact();
+
     tracing_subscriber::registry()
         .with(filter)
         .with(otel_layer)
@@ -249,6 +252,9 @@ async fn main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::RustTests(options) => rust_tests(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Publish(options) => publish(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
     };

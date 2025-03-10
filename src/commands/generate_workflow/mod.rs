@@ -11,22 +11,24 @@ use clap::Parser;
 use indexmap::IndexMap;
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_with::{formats::PreferOne, serde_as, OneOrMany};
+use serde_with::{OneOrMany, formats::PreferOne, serde_as};
 use serde_yaml::Value;
 use void::Void;
 
+use cargo_metadata::PackageId;
+
 use itertools::Itertools;
 
-use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
-use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
+use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
+use crate::utils::{FromMap, deserialize_opt_string_or_map, deserialize_opt_string_or_struct};
 
+use self::workflows::Workflow;
 use self::workflows::publish_docker::PublishDockerWorkflow;
 use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
 use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
 use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
-use self::workflows::Workflow;
 
 use super::check_workspace::Results as Members;
 
@@ -601,7 +603,7 @@ pub async fn generate_workflow(
         .jobs
         .insert(check_job_key.clone(), check_workspace_job);
 
-    let mut member_keys: Vec<String> = members.0.keys().cloned().collect();
+    let mut member_keys: Vec<PackageId> = members.0.keys().cloned().collect();
     member_keys.sort();
     let base_if = "!cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
 
@@ -621,7 +623,7 @@ pub async fn generate_workflow(
 
         for dependency in &member.dependencies {
             // Each testing job needs to depends on its'previous testing job
-            if let Some(package_name) = dependency.package.clone() {
+            if let Some(package_name) = dependency.package_id.clone() {
                 testing_requirements.push(format!("test_{}", package_name));
                 if dependency.publishable {
                     if let Some(dependency_package) = members.0.get(&package_name) {
@@ -658,7 +660,7 @@ pub async fn generate_workflow(
                     false => working_directory.clone(),
                 };
                 member_workflows.push(Box::new(PublishRustBinaryWorkflow::new(
-                    member_key.clone(),
+                    member.package.clone(),
                     member.publish_detail.binary.targets.clone(),
                     member.publish_detail.additional_args.clone(),
                     member.publish_detail.binary.sign,
@@ -667,7 +669,7 @@ pub async fn generate_workflow(
                 )));
                 if member.publish_detail.binary.installer.publish {
                     member_workflows.push(Box::new(PublishRustInstallerWorkflow::new(
-                        member_key.clone(),
+                        member.package.clone(),
                         windows_working_directory.clone(),
                         member.publish_detail.binary.sign,
                         &dynamic_value_base,
@@ -676,8 +678,8 @@ pub async fn generate_workflow(
             }
             if member.publish_detail.docker.publish {
                 member_workflows.push(Box::new(PublishDockerWorkflow::new(
-                    member_key.clone(),
-                    member_key.clone(),
+                    member.package.clone(),
+                    member.package.clone(),
                     working_directory.clone(),
                     member.publish_detail.docker.context.clone(),
                     member.publish_detail.docker.dockerfile.clone(),
@@ -687,21 +689,24 @@ pub async fn generate_workflow(
             }
             if member.publish_detail.npm_napi.publish {
                 member_workflows.push(Box::new(PublishNpmNapiWorkflow::new(
-                    member_key.clone(),
+                    member.package.clone(),
                     working_directory.clone(),
                     &dynamic_value_base,
                 )));
             }
             if member.publish_detail.cargo.publish {
                 member_workflows.push(Box::new(PublishRustRegistryWorkflow::new(
-                    member_key.clone(),
+                    member.package.clone(),
                     working_directory.clone(),
                     &dynamic_value_base,
                 )));
             }
         }
 
-        let publishing_if = format!("{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", base_if);
+        let publishing_if = format!(
+            "{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))",
+            base_if
+        );
 
         for publishing_job in member_workflows.iter() {
             let mut needs = publishing_requirements.clone();

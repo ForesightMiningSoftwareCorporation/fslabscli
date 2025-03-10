@@ -6,8 +6,8 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         version: String,
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
-        tracing::info!("Got following registries: {:?}", self.registry);
+        tracing::debug!("Got following registries: {:?}", self.registry);
         let registries = match &self.registry {
             Some(r) => r.clone(),
             None => {
@@ -39,7 +39,10 @@ impl PackageMetadataFslabsCiPublishCargo {
                 if self.allow_public {
                     vec!["public".to_string()]
                 } else {
-                    tracing::debug!("Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`", name);
+                    tracing::debug!(
+                        "Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`",
+                        name
+                    );
                     vec![]
                 }
             }
