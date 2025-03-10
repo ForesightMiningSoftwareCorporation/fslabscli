@@ -11,11 +11,10 @@ pub struct PackageMetadataFslabsCiPublishNixBinary {
 
 impl PackageMetadataFslabsCiPublishNixBinary {
     pub async fn check(&mut self) -> anyhow::Result<()> {
-        self.publish = true;
         // if !self.publish {
         //     return Ok(());
         // }
-        // let mut publish = true;
+        // // let mut publish = true;
         // self.publish = publish;
         Ok(())
     }

@@ -4,15 +4,14 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, de};
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    path::PathBuf,
-    process::Stdio,
-};
+use serde::{de, Deserialize, Deserializer};
+use std::{collections::HashMap, fmt::Display, path::PathBuf, process::Stdio};
 use tokio::io::AsyncBufReadExt;
+
 use void::Void;
+
+pub mod cargo;
+pub mod github;
 
 pub trait FromMap {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
@@ -214,6 +213,7 @@ pub async fn execute_command(
         "bash"
     };
 
+    tracing::info!("Got command: {}", command);
     let mut child = tokio::process::Command::new(shell)
         .arg("-c")
         .arg(command)

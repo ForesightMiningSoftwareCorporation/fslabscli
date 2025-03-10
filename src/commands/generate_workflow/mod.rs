@@ -11,7 +11,7 @@ use clap::Parser;
 use indexmap::IndexMap;
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_with::{OneOrMany, formats::PreferOne, serde_as};
+use serde_with::{formats::PreferOne, serde_as, OneOrMany};
 use serde_yaml::Value;
 use void::Void;
 
@@ -19,18 +19,18 @@ use cargo_metadata::PackageId;
 
 use itertools::Itertools;
 
+use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
+use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
-use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
-use crate::utils::{FromMap, deserialize_opt_string_or_map, deserialize_opt_string_or_struct};
 
-use self::workflows::Workflow;
 use self::workflows::publish_docker::PublishDockerWorkflow;
 use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
 use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
 use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
+use self::workflows::Workflow;
 
-use super::check_workspace::Results as Members;
+use super::check_workspace::Results as CheckResults;
 
 mod workflows;
 
@@ -453,13 +453,13 @@ fn get_publish_triggers(
 }
 
 fn get_check_workspace_job(
-    members: &Members,
+    results: &CheckResults,
     required_jobs: Vec<String>,
     fslabscli_version: &str,
 ) -> GithubWorkflowJob {
     // For each package published to docker, we need to login to the registry in order to check if the package needs publishing
-    let docker_steps: Vec<GithubWorkflowJobSteps> = members
-        .0
+    let docker_steps: Vec<GithubWorkflowJobSteps> = results
+        .members
         .iter()
         .filter(|(_, v)| v.publish_detail.docker.publish)
         .unique_by(|(_, v)| v.publish_detail.docker.repository.clone())
@@ -487,8 +487,8 @@ fn get_check_workspace_job(
         })
         .collect();
     // For each packaeg published to npm, we need to login to the npm registry
-    let npm_steps: Vec<GithubWorkflowJobSteps> = members
-        .0
+    let npm_steps: Vec<GithubWorkflowJobSteps> = results
+        .members
         .iter()
         .filter(|(_, v)| v.publish_detail.npm_napi.publish)
         .unique_by(|(_, v)| v.publish_detail.npm_napi.scope.clone())
@@ -563,9 +563,8 @@ pub async fn generate_workflow(
     working_directory: PathBuf,
 ) -> anyhow::Result<GenerateResult> {
     // Get Directory information
-    let check_workspace_options =
-        CheckWorkspaceOptions::new().with_cargo_default_publish(options.cargo_default_publish);
-    let members = check_workspace(Box::new(check_workspace_options), working_directory.clone())
+    let check_workspace_options = CheckWorkspaceOptions::new();
+    let results = check_workspace(Box::new(check_workspace_options), working_directory.clone())
         .await
         .with_context(|| "Could not get directory information")?;
     // Get workflows, useful in case where additional tools need to be run before
@@ -575,8 +574,8 @@ pub async fn generate_workflow(
     // Triggers
     let mut publish_triggers = get_publish_triggers(options.default_branch);
     // If we have binaries to publish,  nightly Publish should be done every night at 3AM
-    if members
-        .0
+    if results
+        .members
         .values()
         .any(|r| r.publish_detail.binary.publish || r.publish_detail.binary.installer.publish)
     {
@@ -595,7 +594,7 @@ pub async fn generate_workflow(
     // Create check_workspace job, and add it to both workflows
     let check_job_key = "check_changed_and_publish".to_string();
     let check_workspace_job = get_check_workspace_job(
-        &members,
+        &results,
         publish_workflow.jobs.keys().cloned().collect(),
         &options.fslabscli_version,
     );
@@ -603,13 +602,13 @@ pub async fn generate_workflow(
         .jobs
         .insert(check_job_key.clone(), check_workspace_job);
 
-    let mut member_keys: Vec<PackageId> = members.0.keys().cloned().collect();
+    let mut member_keys: Vec<PackageId> = results.members.keys().cloned().collect();
     member_keys.sort();
     let base_if = "!cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')".to_string();
 
     let mut actual_publishings: Vec<String> = vec![];
     for member_key in member_keys {
-        let Some(member) = members.0.get(&member_key) else {
+        let Some(member) = results.members.get(&member_key) else {
             continue;
         };
         let working_directory = member.path.to_string_lossy().to_string();
@@ -626,7 +625,7 @@ pub async fn generate_workflow(
             if let Some(package_name) = dependency.package_id.clone() {
                 testing_requirements.push(format!("test_{}", package_name));
                 if dependency.publishable {
-                    if let Some(dependency_package) = members.0.get(&package_name) {
+                    if let Some(dependency_package) = results.members.get(&package_name) {
                         if dependency_package.publish_detail.binary.publish {
                             publishing_requirements
                                 .push(format!("publish_rust_binary_{}", package_name,));

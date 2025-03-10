@@ -4,9 +4,9 @@ description = "Command line interface for helping FSLABS ci"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
-publish = ["foresight-mining-software-corporation"]
+publish = ["foresight-mining-software-corporation", "fslabs-nominal"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.14.0-rc1"
+version = "2.14.0"
 
 [package.metadata]
 
@@ -19,6 +19,8 @@ name = "FSLABS Cli tool"
 publish = true
 sign = false
 targets = ["x86_64-unknown-linux-gnu"]
+[package.metadata.fslabs.publish.nix_binary]
+publish = true
 
 [features]
 alpha = []
@@ -65,6 +67,7 @@ tracing-core = "0.1.33"
 futures = "0.3.31"
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
+toml = "0.8.20"
 
 [dependencies.anyhow]
 features = []

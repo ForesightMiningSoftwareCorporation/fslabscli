@@ -1,7 +1,9 @@
-use crate::commands::check_workspace::{
-    check_workspace, Options as CheckWorkspaceOptions, Result as Member,
+use crate::{
+    commands::check_workspace::{
+        check_workspace, Options as CheckWorkspaceOptions, Result as Member,
+    },
+    PrettyPrintable,
 };
-use crate::PrettyPrintable;
 use clap::Parser;
 use convert_case::{Case, Casing};
 use indexmap::IndexMap;
@@ -921,7 +923,7 @@ pub async fn generate_wix(
         tracing::error!("Unparseable template: {}", e);
         e
     })?
-    .0
+    .members
     .iter()
     .filter_map(|(_, v)| match v.publish_detail.binary.installer.publish {
         true => Some(v.clone()),
