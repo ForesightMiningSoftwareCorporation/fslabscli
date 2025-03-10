@@ -1,5 +1,7 @@
-use cargo_metadata::{semver::Version, Metadata, MetadataCommand, Package, PackageId};
-use git2::{build::CheckoutBuilder, DiffDelta, Repository};
+use cargo_metadata::{
+    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
+};
+use git2::{DiffDelta, Repository, build::CheckoutBuilder};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -12,7 +14,7 @@ use std::{
 pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
-    dependencies: DependencyGraph,
+    pub dependencies: DependencyGraph,
 }
 
 impl CrateGraph {
@@ -25,7 +27,10 @@ impl CrateGraph {
     /// # Errors
     ///
     /// Returns error if a manifest is found that cannot be parsed.
-    pub fn new(repo_root: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    pub fn new(
+        repo_root: impl Into<PathBuf>,
+        dep_kind: Option<DependencyKind>,
+    ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
@@ -34,7 +39,7 @@ impl CrateGraph {
         }
         Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces)?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
-        let dependencies = DependencyGraph::new(&repo_root, &workspaces);
+        let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
         Ok(Self {
             repo_root,
             workspaces,
@@ -299,13 +304,17 @@ pub struct DependencyGraph {
     id_to_path: HashMap<PackageId, PathBuf>,
 
     /// "KEY depends on VALUE"
-    dependencies: HashMap<PackageId, Vec<PackageId>>,
+    pub dependencies: HashMap<PackageId, Vec<PackageId>>,
     /// "KEY is depended on by VALUE"
     reverse_dependencies: HashMap<PackageId, Vec<PackageId>>,
 }
 
 impl DependencyGraph {
-    pub fn new(repo_root: &Path, workspaces: &[Workspace]) -> Self {
+    pub fn new(
+        repo_root: &Path,
+        workspaces: &[Workspace],
+        dep_kind: Option<DependencyKind>,
+    ) -> Self {
         let mut me = Self::default();
 
         for w in workspaces {
@@ -324,10 +333,23 @@ impl DependencyGraph {
             for node in &resolve.nodes {
                 if me.id_to_path.contains_key(&node.id) {
                     let deps = me.dependencies.get_mut(&node.id).unwrap();
-                    for d in &node.dependencies {
-                        if me.id_to_path.contains_key(d) {
-                            let reverse_deps = me.reverse_dependencies.get_mut(d).unwrap();
-                            deps.push(d.clone());
+                    for node_dep in &node.deps {
+                        let dep_id = &node_dep.pkg;
+                        let is_accepted_dep = match dep_kind {
+                            Some(kind) => {
+                                let mut is_accepted_dep = false;
+                                for dep_kind in &node_dep.dep_kinds {
+                                    if dep_kind.kind == kind {
+                                        is_accepted_dep = true;
+                                    }
+                                }
+                                is_accepted_dep
+                            }
+                            None => true,
+                        };
+                        if is_accepted_dep && me.id_to_path.contains_key(dep_id) {
+                            let reverse_deps = me.reverse_dependencies.get_mut(dep_id).unwrap();
+                            deps.push(dep_id.clone());
                             reverse_deps.push(node.id.clone());
                         }
                     }

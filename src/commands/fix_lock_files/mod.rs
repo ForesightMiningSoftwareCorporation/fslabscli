@@ -19,7 +19,7 @@ pub fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Result<Str
         .as_ref()
         .map(|base_rev| DiffRevs { head_rev, base_rev });
 
-    CrateGraph::new(repo_root)?.fix_lock_files(diff)?;
+    CrateGraph::new(repo_root, None)?.fix_lock_files(diff)?;
 
     Ok("".into())
 }

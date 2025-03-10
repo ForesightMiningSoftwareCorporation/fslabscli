@@ -1,11 +1,17 @@
 use std::fmt;
-use std::fmt::Display;
 use std::marker::PhantomData;
 use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    path::PathBuf,
+    process::Stdio,
+};
+use tokio::io::AsyncBufReadExt;
 use void::Void;
 
 pub trait FromMap {
@@ -179,4 +185,78 @@ where
     }
 
     deserializer.deserialize_any(StringOrStruct(PhantomData))
+}
+
+/// [`execute_command`] with intermediate logging disabled.
+pub async fn execute_command_without_logging(
+    command: &str,
+    dir: &PathBuf,
+    envs: &HashMap<String, String>,
+) -> (String, String, bool) {
+    execute_command(command, dir, envs, None, None).await
+}
+
+/// Execute the `command`, returning stdout and stderr as strings, and success state as a boolean.
+///
+/// Optionally, stdout and stderr can be logged asynchronously to the current process's stdout
+/// during command execution. This is useful in cases where the command might hang. If the command
+/// does hang, the partially complete output would never be visible without enabling this logging.
+pub async fn execute_command(
+    command: &str,
+    dir: &PathBuf,
+    envs: &HashMap<String, String>,
+    log_stdout: Option<tracing::Level>,
+    log_stderr: Option<tracing::Level>,
+) -> (String, String, bool) {
+    let shell = if cfg!(target_os = "windows") {
+        "powershell.exe"
+    } else {
+        "bash"
+    };
+
+    let mut child = tokio::process::Command::new(shell)
+        .arg("-c")
+        .arg(command)
+        .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
+        .envs(envs)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Unable to spawn command");
+
+    let stdout = child.stdout.take().expect("Failed to get stdout");
+    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
+    let mut stdout_string = String::new();
+
+    let stderr = child.stderr.take().expect("Failed to get stderr");
+    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
+    let mut stderr_string = String::new();
+
+    loop {
+        tokio::select! {
+            Ok(Some(line)) = stdout_stream.next_line() =>  {
+                stdout_string.push_str(&format!("{}\n", line));
+                if log_stdout.is_some() {
+                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                }
+            },
+            Ok(Some(line)) = stderr_stream.next_line() =>  {
+                stderr_string.push_str(&format!("{}\n", line));
+                if log_stderr.is_some() {
+                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                }
+            },
+            else => break,
+        }
+    }
+
+    let status = child.wait().await;
+
+    match status {
+        Ok(output) => {
+            let exit_code = output.code().unwrap_or(1);
+            (stdout_string.to_string(), stderr_string, exit_code == 0)
+        }
+        Err(e) => ("".to_string(), e.to_string(), false),
+    }
 }
