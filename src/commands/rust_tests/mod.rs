@@ -140,7 +140,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         .with_changed_head_ref(options.pull_pull_sha)
         .with_changed_base_ref(options.pull_base_sha);
 
-    let members = check_workspace(Box::new(check_workspace_options), repo_root.clone())
+    let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
         .map_err(|e| {
             tracing::error!("Check directory for crates that need publishing: {}", e);
@@ -153,7 +153,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
     // Global fail tracker
     let mut failed = false;
 
-    for (_, member) in members.0 {
+    for (_, member) in results.members {
         let member_start_time = OffsetDateTime::now_utc();
         let workspace_name = member.workspace;
         let package_name = member.package;
