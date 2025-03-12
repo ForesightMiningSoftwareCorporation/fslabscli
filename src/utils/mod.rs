@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use std::{collections::HashMap, fmt::Display, path::PathBuf, process::Stdio};
 use tokio::io::AsyncBufReadExt;
 
@@ -213,12 +213,12 @@ pub async fn execute_command(
         "bash"
     };
 
-    tracing::info!("Got command: {}", command);
     let mut child = tokio::process::Command::new(shell)
         .arg("-c")
         .arg(command)
         .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
         .envs(envs)
+        .env_remove("SSH_AUTH_SOCK") // We should pbly set this from option
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

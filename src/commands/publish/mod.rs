@@ -14,13 +14,13 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
+use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
+    PrettyPrintable,
     commands::check_workspace::{
-        check_workspace, Options as CheckWorkspaceOptions, Result as Package,
+        Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
     utils::{cargo::Cargo, execute_command},
-    PrettyPrintable,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -174,36 +174,18 @@ async fn do_publish_package(
             if !registry_publish {
                 continue;
             }
-            // ok_data is available here
-            let Some(registry) = cargo.get_registry(&registry_name) else {
+            if cargo.get_registry(&registry_name).is_none() {
                 continue;
-            };
+            }
             let args = [
                 additional_args.clone(),
                 "--registry".to_string(),
                 registry_name.clone(),
             ];
-            let env_name = registry_name.to_uppercase().replace("-", "_");
-            let mut envs = HashMap::from([(
-                "GIT_SSH_COMMAND".to_string(),
-                format!("ssh -i $CARGO_REGISTRIES_{}_PRIVATE_KEY_PATH", env_name),
-            )]);
-            if let Some(token) = &registry.token {
-                envs.insert(
-                    format!("CARGO_REGISTRIES_{}_TOKEN", env_name),
-                    token.clone(),
-                );
-            }
-            if let Some(index) = &registry.index {
-                envs.insert(
-                    format!("CARGO_REGISTRIES_{}_INDEX", env_name),
-                    index.clone(),
-                );
-            }
             let (_stdout, _stderr, success) = execute_command(
                 &format!("cargo publish {}", args.join(" ")),
                 &package_path,
-                &envs,
+                &HashMap::new(),
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
             )
