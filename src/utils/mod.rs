@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, de};
+use serde::{de, Deserialize, Deserializer};
 use std::{collections::HashMap, fmt::Display, path::PathBuf, process::Stdio};
 use tokio::io::AsyncBufReadExt;
 

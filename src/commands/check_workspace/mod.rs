@@ -1109,7 +1109,7 @@ pub async fn check_workspace(
         }
     }
     let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
-    tracing::info!("Package list: {package_keys:#?}");
+    tracing::debug!("Package list: {package_keys:#?}");
 
     if options.progress {
         println!(
