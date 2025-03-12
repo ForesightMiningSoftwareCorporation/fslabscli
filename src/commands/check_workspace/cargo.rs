@@ -24,7 +24,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         version: String,
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
-        tracing::info!("Got following registries: {:?}", self.registries);
+        tracing::debug!("Got following registries: {:?}", self.registries);
         let registries = match &self.registries {
             Some(r) => r.clone(),
             None => {
@@ -42,7 +42,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         };
         let mut overall_publish = false;
         for registry_name in registries {
-            tracing::info!(
+            tracing::debug!(
                 "CARGO: checking if version {} of {} already exists for registry {}",
                 version,
                 name,

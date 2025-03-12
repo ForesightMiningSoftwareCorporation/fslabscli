@@ -14,13 +14,13 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
+use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
 use crate::{
-    PrettyPrintable,
     commands::check_workspace::{
-        Options as CheckWorkspaceOptions, Result as Package, check_workspace,
+        check_workspace, Options as CheckWorkspaceOptions, Result as Package,
     },
     utils::{cargo::Cargo, execute_command},
+    PrettyPrintable,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -148,8 +148,12 @@ async fn do_publish_package(
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
 ) -> anyhow::Result<()> {
+    if !package.publish {
+        return Ok(());
+    }
     let _workspace_name = &package.workspace;
     let package_name = &package.package;
+    println!("Publishing package {}", package_name);
     let _package_version = &package.version;
     let package_path = repo_root.join(&package.path);
     let mut overall_success = true;
@@ -251,8 +255,6 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
             e
         })
         .with_context(|| "Could not get directory information")?;
-
-    tracing::info!("Got results: {:?}", results.members);
 
     let cargo = Arc::new(Cargo::new(&results.crate_graph)?);
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
