@@ -10,3 +10,6 @@ result
 **/database.db
 **/target
 **/junit.rust.xml
+logs/
+output/
+result/
