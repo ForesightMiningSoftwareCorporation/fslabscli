@@ -1,10 +1,12 @@
 use anyhow::Context;
 use cargo_metadata::PackageId;
 use clap::Parser;
+use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
 use octocrab::Octocrab;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::time::SystemTime;
 use std::{
     fmt::{Display, Formatter},
     fs,
@@ -35,9 +37,9 @@ pub struct Options {
     #[arg(long, env)]
     repo_name: String,
     #[arg(long, env)]
-    github_app_id: u64,
+    github_app_id: Option<u64>,
     #[arg(long, env)]
-    github_app_private_key: PathBuf,
+    github_app_private_key: Option<PathBuf>,
     #[arg(long, env, default_value = "1")]
     job_limit: usize,
     #[arg(long, env)]
@@ -50,20 +52,298 @@ pub struct Options {
     docker_hub_username: Option<String>,
     #[arg(long, env)]
     docker_hub_password: Option<String>,
+    #[arg(long, env)]
+    npm_ghcr_scope: Option<String>,
+    #[arg(long, env)]
+    npm_ghcr_token: Option<String>,
+    #[arg(long, env)]
+    cargo_registries_foresight_mining_software_corporation_token: Option<String>,
+    #[arg(long, env)]
+    cargo_registries_foresight_mining_software_corporation_user_agent: Option<String>,
+    #[arg(long, env, default_value = "false")]
+    dry_run: bool,
 }
 
-#[derive(Serialize)]
-pub struct PublishResult {}
+#[derive(Serialize, Default, Clone)]
+pub struct PublishDetailResult {
+    pub name: String,
+    pub key: String,
+    pub should_publish: bool,
+    pub success: bool,
+    pub error: String,
+    pub stderr: String,
+    pub stdout: String,
+    pub start_time: Option<SystemTime>,
+    pub end_time: Option<SystemTime>,
+}
 
-impl Display for PublishResult {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "")
+static SKIPPED: &str = "-";
+static SUCCESS: &str = "✔";
+static FAILED: &str = "✘";
+
+impl PublishDetailResult {
+    pub fn get_status(&self) -> String {
+        if !self.should_publish {
+            SKIPPED.to_string()
+        } else if self.success {
+            SUCCESS.to_string()
+        } else {
+            FAILED.to_string()
+        }
+    }
+    pub fn get_junit_testcase(&self) -> TestCase {
+        match self.should_publish {
+            true => {
+                let duration = match (self.start_time, self.end_time) {
+                    (Some(s), Some(e)) => Duration::seconds_f64(
+                        e.duration_since(s)
+                            .map(|d| d.as_secs_f64())
+                            .unwrap_or_else(|_| 0.0),
+                    ),
+                    _ => Duration::default(),
+                };
+                let mut tc = match self.success {
+                    true => TestCase::success(&self.name, duration),
+                    false => TestCase::failure(&self.name, duration, &self.name, "required"),
+                };
+                // stdout and stderr are inverted because we want to still output stderr on console
+                tc.set_system_out(&self.stderr);
+                tc.set_system_err(&self.stdout);
+                tc
+            }
+            false => TestCase::skipped(&self.name),
+        }
+    }
+}
+#[derive(Serialize, Default, Clone)]
+pub struct PublishResult {
+    pub should_publish: bool,
+    pub success: bool,
+    pub docker: PublishDetailResult,
+    pub cargo: HashMap<String, PublishDetailResult>, // HashMap on Registries
+    pub nix_binary: PublishDetailResult,
+    pub start_time: Option<SystemTime>,
+    pub end_time: Option<SystemTime>,
+}
+
+impl PublishResult {
+    pub fn new(package: &Package, registries: HashSet<String>) -> Self {
+        let mut s = Self {
+            should_publish: package.publish,
+            docker: PublishDetailResult {
+                name: "docker build && docker push".to_string(),
+                key: "docker".to_string(),
+                should_publish: package.publish_detail.docker.publish,
+                ..Default::default()
+            },
+            nix_binary: PublishDetailResult {
+                name: "nix build .#release".to_string(),
+                key: "nix".to_string(),
+                should_publish: package.publish_detail.nix_binary.publish,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        for registry_name in &registries {
+            s.cargo.insert(
+                registry_name.clone(),
+                PublishDetailResult {
+                    should_publish: *package
+                        .publish_detail
+                        .cargo
+                        .registries_publish
+                        .get(registry_name)
+                        .unwrap_or(&false),
+                    name: format!("cargo publish -r {}", registry_name),
+                    key: format!("cargo_{}", registry_name),
+                    ..Default::default()
+                },
+            );
+        }
+
+        s
+    }
+
+    pub fn with_failed(mut self, failed: bool) -> Self {
+        self.success = !failed;
+        self
     }
 }
 
-impl PrettyPrintable for PublishResult {
+#[derive(Serialize, Default)]
+pub struct PublishResults {
+    pub published_members: HashMap<PackageId, PublishResult>,
+    pub all_members: HashMap<PackageId, Package>,
+}
+
+impl PublishResults {
+    fn craft_junit(&self, output_dir: &Path) -> anyhow::Result<()> {
+        let mut registries = HashMap::new();
+        for package in self.all_members.values() {
+            for registry_name in package.publish_detail.cargo.registries_publish.keys() {
+                registries.insert(registry_name, registry_name.len());
+            }
+        }
+        let mut junit_report = ReportBuilder::new().build();
+        for (package_id, package) in &self.all_members {
+            let workspace_name = &package.workspace;
+            let package_name = &package.package;
+            let package_version = &package.version;
+            let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
+            let mut ts = TestSuiteBuilder::new(&ts_name).build();
+            if let Some(publish_result) = self.published_members.get(package_id) {
+                let mut results = vec![&publish_result.nix_binary, &publish_result.docker];
+                for cargo in publish_result.cargo.values() {
+                    results.push(cargo);
+                }
+                ts.add_testcases(results.into_iter().map(|r| r.get_junit_testcase()));
+                junit_report.add_testsuite(ts);
+            }
+        }
+        let mut junit_file = File::create(output_dir.join("junit.rust.xml"))?;
+        junit_report.write_xml(&mut junit_file)?;
+        Ok(())
+    }
+    fn store_logs(&self, output_dir: &Path) -> anyhow::Result<()> {
+        let logs_dir = output_dir.join("logs");
+        fs::create_dir_all(&logs_dir)?;
+        for (package_id, package) in &self.all_members {
+            let package_name = &package.package;
+            let package_version = &package.version;
+            let file_prefix = format!("{package_name}__{package_version}");
+            if let Some(publish_result) = self.published_members.get(package_id) {
+                let mut results = vec![&publish_result.nix_binary, &publish_result.docker];
+                for cargo in publish_result.cargo.values() {
+                    results.push(cargo);
+                }
+                for r in results {
+                    // stdout and stderr are inverted because we want to still output stderr on console
+                    if !r.stderr.is_empty() {
+                        let mut stdout_file = File::create(
+                            logs_dir.join(format!("{file_prefix}_{}.out.log", r.key)),
+                        )?;
+                        stdout_file.write_all(r.stderr.as_bytes())?;
+                    }
+                    if !r.stdout.is_empty() {
+                        let mut stderr_file = File::create(
+                            logs_dir.join(format!("{file_prefix}_{}.err.log", r.key)),
+                        )?;
+                        stderr_file.write_all(r.stdout.as_bytes())?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Display for PublishResults {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut registries = HashMap::new();
+        for package in self.all_members.values() {
+            for registry_name in package.publish_detail.cargo.registries_publish.keys() {
+                registries.insert(registry_name, registry_name.len());
+            }
+        }
+        let cargo_size: usize = registries.values().sum::<usize>() + 9;
+        let empty_cargo_reg_headers = &registries
+            .clone()
+            .into_values()
+            .map(|size| format!("{:─^width$}", "", width = size + 4))
+            .collect::<Vec<String>>()
+            .join("┼");
+        let empty_last_cargo_reg_headers = &registries
+            .clone()
+            .into_values()
+            .map(|size| format!("{:─^width$}", "", width = size + 4))
+            .collect::<Vec<String>>()
+            .join("┴");
+        let cargo_reg_headers = &registries
+            .clone()
+            .into_iter()
+            .map(|(registry_name, size)| format!("{:^width$}", registry_name, width = size + 4))
+            .collect::<Vec<String>>()
+            .join("│");
+        writeln!(
+            f,
+            "┌{:─^60}┬{:─^20}┬{:─^15}┬{:─^width$}┬{:─^15}┐",
+            " Package ",
+            " Version ",
+            " Docker ",
+            " Cargo ",
+            " Nix Binary ",
+            width = cargo_size
+        )?;
+
+        writeln!(
+            f,
+            "│{:60}│{:20}│{:15}│{:^width$}│{:15}│",
+            "",
+            "",
+            "",
+            cargo_reg_headers,
+            "",
+            width = cargo_size
+        )?;
+        for (package_name, publish_result) in self.published_members.clone().into_iter() {
+            let mut id = package_name.to_string().clone();
+            id = id.as_str().rsplit_once('/').unwrap().1.to_string();
+            let (name, mut version) = id.split_once('#').unwrap();
+            if version.contains('@') {
+                version = version.split_once('@').unwrap().1;
+            }
+            let cargo_reg = &registries
+                .clone()
+                .into_iter()
+                .map(|(registry_name, size)| {
+                    let s = match publish_result.cargo.get(registry_name) {
+                        Some(s) => format!(" {} ", s.get_status()),
+                        None => SKIPPED.to_string(),
+                    };
+                    format!("{:^width$}", s, width = size + 4)
+                })
+                .collect::<Vec<String>>()
+                .join("│");
+            writeln!(
+                f,
+                "├{:─^60}┼{:─^20}┼{:─^15}┼{:─^width$}┼{:─^15}┤",
+                "",
+                "",
+                "",
+                empty_cargo_reg_headers,
+                "",
+                width = cargo_size
+            )?;
+
+            writeln!(
+                f,
+                "│{:^60}│{:^20}│{:^15}│{:^width$}│{:^15}│",
+                name,
+                version,
+                publish_result.docker.get_status(),
+                cargo_reg,
+                publish_result.nix_binary.get_status(),
+                width = cargo_size,
+            )?;
+        }
+        writeln!(
+            f,
+            "└{:─^60}┴{:─^20}┴{:─^15}┴{:─^width$}┴{:─^15}┘",
+            "",
+            "",
+            "",
+            empty_last_cargo_reg_headers,
+            "",
+            width = cargo_size
+        )?;
+        Ok(())
+    }
+}
+
+impl PrettyPrintable for PublishResults {
     fn pretty_print(&self) -> String {
-        "".to_string()
+        self.to_string()
     }
 }
 
@@ -85,14 +365,18 @@ fn copy_files(src_dir: &PathBuf, dest_dir: &PathBuf) -> anyhow::Result<Vec<PathB
     Ok(copied_paths)
 }
 
+/// publish_package handles the dependencies waiting and stuff like that
+#[allow(clippy::too_many_arguments)]
 async fn publish_package(
     repo_root: PathBuf,
     package: Package,
     semaphore: Arc<Semaphore>,
     dependencies: Option<Vec<PackageId>>,
-    statuses: Arc<RwLock<HashMap<PackageId, Option<bool>>>>,
+    statuses: Arc<RwLock<HashMap<PackageId, Option<PublishResult>>>>,
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
+    options: Box<Options>,
+    registries: HashSet<String>,
 ) {
     if let Some(ref package_id) = package.package_id {
         loop {
@@ -102,15 +386,17 @@ async fn publish_package(
                 if let Some(ref deps) = dependencies {
                     for dep_id in deps {
                         let map = statuses.read().expect("RwLock poisoned");
-                        if let Some(dep_status) = map.get(dep_id) {
-                            match dep_status {
-                                Some(success) => {
-                                    if !success {
+                        if let Some(dep_result) = map.get(dep_id) {
+                            match dep_result {
+                                Some(result) => {
+                                    if result.should_publish && !result.success {
+                                        // Dep should have published, but has not done so succesfully
                                         mark_failed = true;
                                         process = false;
                                     }
                                 }
                                 None => {
+                                    // Dep should not yet published
                                     process = false;
                                 }
                             }
@@ -120,7 +406,8 @@ async fn publish_package(
             }
             if mark_failed {
                 let mut map = statuses.write().expect("RwLock posoned");
-                *map.entry(package_id.clone()).or_insert(None) = Some(false);
+                let failed_result = PublishResult::new(&package, registries).with_failed(true);
+                *map.entry(package_id.clone()).or_insert(None) = Some(failed_result);
                 drop(map);
                 return;
             }
@@ -133,95 +420,252 @@ async fn publish_package(
 
         // Acquire a permit from the semaphore to limit the number of concurrent tasks
         let permit = semaphore.acquire().await;
-        let success = do_publish_package(repo_root.clone(), package.clone(), output_dir, cargo)
-            .await
-            .is_ok();
+        let success = do_publish_package(
+            repo_root.clone(),
+            package.clone(),
+            output_dir,
+            cargo,
+            options,
+            registries,
+        )
+        .await;
         let mut map = statuses.write().expect("RwLock poisoned");
         *map.entry(package_id.clone()).or_insert(None) = Some(success);
         drop(permit);
     }
 }
 
+/// Actual Publish
 async fn do_publish_package(
     repo_root: PathBuf,
     package: Package,
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
-) -> anyhow::Result<()> {
+    options: Box<Options>,
+    registries: HashSet<String>,
+) -> PublishResult {
+    let mut result = PublishResult::new(&package, registries);
+    result.start_time = Some(SystemTime::now());
     if !package.publish {
-        return Ok(());
+        result.end_time = Some(SystemTime::now());
+        return result;
     }
-    let _workspace_name = &package.workspace;
+    let workspace_name = &package.workspace;
+    let package_version = &package.version;
     let package_name = &package.package;
-    println!("Publishing package {}", package_name);
-    let _package_version = &package.version;
     let package_path = repo_root.join(&package.path);
-    let mut overall_success = true;
-    if package.publish_detail.nix_binary.publish {
-        let (_stdout, _stderr, mut success) = execute_command(
-            "nix build .#release",
-            &package_path,
-            &HashMap::new(),
-            Some(tracing::Level::DEBUG),
-            Some(tracing::Level::DEBUG),
-        )
-        .await;
-        if success {
-            // Let's copy the artifacts to the
-            success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
-        }
-        overall_success = success;
-    }
-    if package.publish_detail.cargo.publish {
-        let additional_args = package.publish_detail.additional_args.unwrap_or_default();
-        for (registry_name, registry_publish) in package.publish_detail.cargo.registries_publish {
-            if !registry_publish {
-                continue;
-            }
-            if cargo.get_registry(&registry_name).is_none() {
-                continue;
-            }
-            let args = [
-                additional_args.clone(),
-                "--registry".to_string(),
-                registry_name.clone(),
-            ];
-            let (_stdout, _stderr, success) = execute_command(
-                &format!("cargo publish {}", args.join(" ")),
+    let mut is_failed = false;
+    if !is_failed && package.publish_detail.nix_binary.publish {
+        result.nix_binary.start_time = Some(SystemTime::now());
+        if options.dry_run {
+            result.nix_binary.success = true;
+        } else {
+            let (stdout, stderr, mut success) = execute_command(
+                "nix build .#release",
                 &package_path,
                 &HashMap::new(),
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
             )
             .await;
-            tracing::info!("STDOUT: {}", _stdout);
-            tracing::info!("STDERR: {}", _stderr);
-            overall_success = success;
+            if success {
+                // Let's copy the artifacts to the
+                success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+            }
+            result.nix_binary.success = success;
+            result.nix_binary.stdout = stdout;
+            result.nix_binary.stderr = stderr;
+            is_failed = !success;
+        }
+        result.nix_binary.end_time = Some(SystemTime::now());
+    }
+    if !is_failed && package.publish_detail.cargo.publish {
+        let additional_args = package.publish_detail.additional_args.unwrap_or_default();
+        for (registry_name, registry_publish) in package.publish_detail.cargo.registries_publish {
+            let mut r = PublishDetailResult {
+                start_time: Some(SystemTime::now()),
+                ..Default::default()
+            };
+            let mut run = true;
+            if is_failed {
+                run = false;
+            }
+            if !registry_publish {
+                run = false;
+            }
+            if cargo.get_registry(&registry_name).is_none() {
+                run = false;
+            }
+            if run {
+                let mut args = vec![
+                    additional_args.clone(),
+                    "--registry".to_string(),
+                    registry_name.clone(),
+                ];
+                if options.dry_run {
+                    args.push("--dry-run".to_string())
+                }
+                let (stdout, stderr, success) = execute_command(
+                    &format!("cargo publish {}", args.join(" ")),
+                    &package_path,
+                    &HashMap::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
+                )
+                .await;
+                r.success = success;
+                r.stdout = stdout;
+                r.stderr = stderr;
+                is_failed = !success;
+            }
+            r.end_time = Some(SystemTime::now());
+            result.cargo.insert(registry_name.clone(), r);
         }
     }
-
-    match overall_success {
-        true => {
-            println!("Published package {}", package_name);
-            Ok(())
+    if !is_failed && package.publish_detail.docker.publish {
+        result.docker.start_time = Some(SystemTime::now());
+        if options.dry_run {
+            result.docker.success = true;
+        } else {
+            let registry = &package
+                .publish_detail
+                .docker
+                .repository
+                .unwrap_or_else(|| "ghcr.io/foresightminingsoftwarecorporation".to_string());
+            let context = &package
+                .publish_detail
+                .docker
+                .context
+                .unwrap_or_else(|| ".".to_string());
+            let dockerfile = &package
+                .publish_detail
+                .docker
+                .dockerfile
+                .unwrap_or_else(|| format!("{}/Dockerfile", workspace_name));
+            let image_name = format!("{}/{}:{}", registry, package_name, package_version);
+            let image_latest = format!("{}/{}:latest", registry, package_name);
+            let mut args = vec![
+                image_name.to_string(),
+                "-f".to_string(),
+                dockerfile.clone(),
+                "--ssh=default".to_string(),
+            ];
+            let mut envs = HashMap::new();
+            if let (Some(_), Some(npm_ghcr_token)) = (
+                options.npm_ghcr_scope.clone(),
+                options.npm_ghcr_token.clone(),
+            ) {
+                envs.insert("NPM_GHCR_TOKEN", npm_ghcr_token);
+                args.push("--secret id=node_auth_token,env=NPM_GHCR_TOKEN".to_string());
+            }
+            if let (Some(user_agent), Some(token)) = (
+                options
+                    .cargo_registries_foresight_mining_software_corporation_token
+                    .clone(),
+                options
+                    .cargo_registries_foresight_mining_software_corporation_user_agent
+                    .clone(),
+            ) {
+                envs.insert(
+                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_USER_AGENT",
+                    user_agent,
+                );
+                envs.insert(
+                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_TOKEN",
+                    token,
+                );
+                envs.insert(
+                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME",
+                    "foresight-mining-software-corporation".to_string(),
+                );
+                args.push(
+                    "--secret id=cargo_private_registry_user_agent,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_USER_AGENT".to_string(),
+                );
+                args.push(
+                    "--secret id=cargo_private_registry_token,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_TOKEN".to_string(),
+                );
+                args.push(
+                    "--secret id=argo_private_registry_name,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME".to_string(),
+                );
+            }
+            args.push(context.clone());
+            // First we build
+            let (stdout, stderr, success) = execute_command(
+                &format!("docker build {}", args.join(" ")),
+                &package_path,
+                &HashMap::new(),
+                Some(tracing::Level::DEBUG),
+                Some(tracing::Level::DEBUG),
+            )
+            .await;
+            result.nix_binary.success = success;
+            result.nix_binary.stdout = stdout;
+            result.nix_binary.stderr = stderr;
+            is_failed = !success;
+            if !is_failed {
+                // Tag as latest
+                let (stdout, stderr, success) = execute_command(
+                    &format!("docker tag {} {}", image_name, image_latest),
+                    &package_path,
+                    &HashMap::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
+                )
+                .await;
+                result.nix_binary.success = success;
+                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                is_failed = !success;
+                if !is_failed {
+                    // Push image
+                    let (stdout, stderr, success) = execute_command(
+                        &format!("docker push {}", image_name),
+                        &package_path,
+                        &HashMap::new(),
+                        Some(tracing::Level::DEBUG),
+                        Some(tracing::Level::DEBUG),
+                    )
+                    .await;
+                    result.nix_binary.success = success;
+                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                    is_failed = !success;
+                    if !is_failed {
+                        // Push latest
+                        let (stdout, stderr, success) = execute_command(
+                            &format!("docker push {}", image_latest),
+                            &package_path,
+                            &HashMap::new(),
+                            Some(tracing::Level::DEBUG),
+                            Some(tracing::Level::DEBUG),
+                        )
+                        .await;
+                        result.nix_binary.success = success;
+                        result.nix_binary.stdout =
+                            format!("{}\n{}", result.nix_binary.stdout, stdout);
+                        result.nix_binary.stderr =
+                            format!("{}\n{}", result.nix_binary.stderr, stderr);
+                        is_failed = !success;
+                    }
+                }
+            }
         }
-        false => Err(anyhow::anyhow!(
-            "Could not publish package {}",
-            package_name
-        )),
+        result.docker.end_time = Some(SystemTime::now());
     }
+    result.success = !is_failed;
+    result.end_time = Some(SystemTime::now());
+    result
 }
 
-pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<PublishResult> {
-    let check_workspace_options = CheckWorkspaceOptions::new()
-        .with_check_publish(true)
-        .with_ignore_dev_dependencies(true);
-
+/// login handles the custom logic of login to the 3rd party provider
+/// - Docker, we may need to login to multiple docker registries
+/// - Cargo, we may need to login to multiple registries
+pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result<()> {
     // We might need to log to some docker registries
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
         let (_stdout, stderr, success) = execute_command(
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
-            &repo_root,
+            repo_root,
             &HashMap::new(),
             Some(tracing::Level::DEBUG),
             Some(tracing::Level::DEBUG),
@@ -237,7 +681,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     {
         let (_stdout, stderr, success) = execute_command(
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
-            &repo_root,
+            repo_root,
             &HashMap::new(),
             Some(tracing::Level::DEBUG),
             Some(tracing::Level::DEBUG),
@@ -247,6 +691,71 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
             return Err(anyhow::anyhow!(stderr));
         }
     }
+    Ok(())
+}
+
+pub async fn report_publish_to_github(
+    options: Box<Options>,
+    artifact_dir: &PathBuf,
+) -> anyhow::Result<()> {
+    if let (Some(github_app_id), Some(github_app_private_key)) =
+        (options.github_app_id, options.github_app_private_key)
+    {
+        let github_token = generate_github_app_token(
+            github_app_id,
+            github_app_private_key.clone(),
+            InstallationRetrievalMode::Organization,
+            Some(options.repo_owner.clone()),
+        )
+        .await?;
+        let octocrab = Octocrab::builder().personal_token(github_token).build()?;
+
+        let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
+        let repo_releases = repo.releases();
+        if let Ok(release) = repo_releases.get_by_tag(&options.pull_base_ref).await {
+            let paths = fs::read_dir(artifact_dir)?;
+            for artifact in paths.flatten() {
+                let artifact_path = artifact.path();
+                if let Some(artifact_name) = artifact_path.file_name() {
+                    if let Some(artifact_name) = artifact_name.to_str() {
+                        tracing::debug!("Uploading github artifact {:?}", artifact_name);
+                        if let Ok(mut file) = File::open(&artifact_path) {
+                            if let Ok(metadata) = fs::metadata(&artifact_path) {
+                                let mut data: Vec<u8> = vec![0; metadata.len() as usize];
+                                if file.read(&mut data).is_ok() {
+                                    let _ = repo_releases
+                                        .upload_asset(
+                                            release.id.into_inner(),
+                                            artifact_name,
+                                            data.into(),
+                                        )
+                                        .send()
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            tracing::debug!("Could not find a github release to update, not doing anything");
+        }
+    } else {
+        tracing::debug!("Github credentials not set, not doing anything");
+    }
+    Ok(())
+}
+
+pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<PublishResults> {
+    // Login to whatever need login to
+    login(options.clone(), &repo_root)
+        .await
+        .with_context(|| "Could not login")?;
+
+    // Check workspace information
+    let check_workspace_options = CheckWorkspaceOptions::new()
+        .with_check_publish(true)
+        .with_ignore_dev_dependencies(true);
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
@@ -260,16 +769,23 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
 
     let mut handles = vec![];
-    let mut init_status: HashMap<PackageId, Option<bool>> = HashMap::new();
+    let mut status: HashMap<PackageId, Option<PublishResult>> = HashMap::new();
     for member_id in results.members.keys() {
-        init_status.insert(member_id.clone(), None);
+        status.insert(member_id.clone(), None);
     }
-    let publish_status = Arc::new(RwLock::new(init_status));
+    let publish_status = Arc::new(RwLock::new(status));
 
-    let artifact_dir = options.artifacts.join("output");
+    let artifact_dir = options.artifacts.clone().join("output");
     fs::create_dir_all(&artifact_dir)?;
+
+    let mut registries = HashSet::new();
+    for package in results.members.values() {
+        for registry_name in package.publish_detail.cargo.registries_publish.keys() {
+            registries.insert(registry_name.clone());
+        }
+    }
     // Spawn a task for each object
-    for (_, member) in results.members {
+    for member in results.members.values() {
         if let Some(ref member_id) = member.package_id {
             let o = artifact_dir.clone();
             let m = member.clone();
@@ -290,51 +806,35 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
                 status,
                 o,
                 c,
+                options.clone(),
+                registries.clone(),
             ));
             handles.push(task_handle);
         }
     }
     futures::future::join_all(handles).await;
 
-    let github_token = generate_github_app_token(
-        options.github_app_id,
-        options.github_app_private_key.clone(),
-        InstallationRetrievalMode::Organization,
-        Some(options.repo_owner.clone()),
-    )
-    .await?;
-    let octocrab = Octocrab::builder().personal_token(github_token).build()?;
+    // Report publish result to github
+    report_publish_to_github(options.clone(), &artifact_dir)
+        .await
+        .with_context(|| "Issue reporting to GitHub")?;
 
-    let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
-    let repo_releases = repo.releases();
-    if let Ok(release) = repo_releases.get_by_tag(&options.pull_base_ref).await {
-        let paths = fs::read_dir(&artifact_dir)?;
-        for artifact in paths.flatten() {
-            let artifact_path = artifact.path();
-            if let Some(artifact_name) = artifact_path.file_name() {
-                if let Some(artifact_name) = artifact_name.to_str() {
-                    tracing::debug!("Uploading github artifact {:?}", artifact_name);
-                    if let Ok(mut file) = File::open(&artifact_path) {
-                        if let Ok(metadata) = fs::metadata(&artifact_path) {
-                            let mut data: Vec<u8> = vec![0; metadata.len() as usize];
-                            if file.read(&mut data).is_ok() {
-                                let _ = repo_releases
-                                    .upload_asset(
-                                        release.id.into_inner(),
-                                        artifact_name,
-                                        data.into(),
-                                    )
-                                    .send()
-                                    .await;
-                            }
-                        }
-                    }
-                }
+    let mut published_members = HashMap::new();
+    let lock = publish_status.read().expect("RwLock Poisoned");
+    for (k, v) in lock.iter() {
+        if let Some(v) = v {
+            if v.should_publish {
+                published_members.insert(k.clone(), v.clone());
             }
         }
-    } else {
-        tracing::info!("Could not find a github release to update, not doing anything");
     }
-
-    Ok(PublishResult {})
+    let r = PublishResults {
+        published_members,
+        all_members: results.members.clone(),
+    };
+    // Store logs
+    r.store_logs(&options.artifacts)?;
+    // Craft Junit Results
+    r.craft_junit(&options.artifacts)?;
+    Ok(r)
 }
