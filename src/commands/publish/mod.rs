@@ -17,13 +17,16 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
+use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
 use crate::{
-    PrettyPrintable,
     commands::check_workspace::{
-        Options as CheckWorkspaceOptions, Result as Package, check_workspace,
+        check_workspace, Options as CheckWorkspaceOptions, Result as Package,
     },
-    utils::{cargo::Cargo, execute_command},
+    utils::{
+        cargo::{patch_crate_for_registry, Cargo},
+        execute_command,
+    },
+    PrettyPrintable,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -463,6 +466,7 @@ async fn do_publish_package(
                 "nix build .#release",
                 &package_path,
                 &HashMap::new(),
+                &HashSet::new(),
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
             )
@@ -478,7 +482,7 @@ async fn do_publish_package(
         }
         result.nix_binary.end_time = Some(SystemTime::now());
     }
-    if true || (!is_failed && package.publish_detail.cargo.publish) {
+    if !is_failed && package.publish_detail.cargo.publish {
         let additional_args = package.publish_detail.additional_args.unwrap_or_default();
         for (registry_name, registry_publish) in package.publish_detail.cargo.registries_publish {
             let mut r = PublishDetailResult {
@@ -486,43 +490,95 @@ async fn do_publish_package(
                 ..Default::default()
             };
             let mut run = true;
-            if is_failed {
-                run = false;
-            }
             if !registry_publish {
+                run = false;
+            } else {
+                r.should_publish = true;
+            }
+            if is_failed {
                 run = false;
             }
             if cargo.get_registry(&registry_name).is_none() {
                 run = false;
             }
-            if options.dry_run {
-                r.success = true;
-            } else if run {
-                // For each reg we need to
-                // 1. Ensure registry is in `publish = []`
-                // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
-                // 3. Ensure there are Cargo.lock
-                // 4. Publish with --allow-dirty
-                let mut args = vec![
-                    additional_args.clone(),
-                    "--registry".to_string(),
-                    registry_name.clone(),
-                ];
-                if options.dry_run {
-                    args.push("--dry-run".to_string())
+            if run {
+                let registry_prefix =
+                    format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
+
+                if let (Ok(index), Ok(token), Ok(private_key)) = (
+                    std::env::var(format!("{}_INDEX", registry_prefix)),
+                    std::env::var(format!("{}_TOKEN", registry_prefix)),
+                    std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)),
+                ) {
+                    // For each reg we need to
+                    // 1. Ensure registry is in `publish = []`
+                    // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
+                    // 3. Ensure there are Cargo.lock
+                    // 4. Publish with --allow-dirty
+                    if patch_crate_for_registry(&package_path, registry_name.clone()).is_ok() {
+                        // to publish to a registry we need
+                        // - index url
+                        // - user agent if set
+                        // - ssh key
+                        let mut envs = HashMap::from([
+                            (format!("{}_INDEX", registry_prefix), index.clone()),
+                            (format!("{}_TOKEN", registry_prefix), token.clone()),
+                            (
+                                "GIT_SSH_COMMAND".to_string(),
+                                format!("ssh -i {}", private_key),
+                            ),
+                            (
+                                "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
+                                "true".to_string(),
+                            ),
+                        ]);
+
+                        if let Ok(user_agent) =
+                            std::env::var(format!("{}_USER_AGENT", registry_prefix))
+                        {
+                            envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent);
+                        }
+
+                        let mut blacklist_envs = HashSet::from([
+                            "GIT_SSH_COMMAND".to_string(),
+                            "SSH_AUTH_SOCK".to_string(),
+                        ]);
+                        for (key, _) in std::env::vars() {
+                            if key.starts_with("CARGO_REGISTRIES_") {
+                                blacklist_envs.insert(key);
+                            }
+                        }
+
+                        let mut args = vec![
+                            additional_args.clone(),
+                            "--registry".to_string(),
+                            registry_name.clone(),
+                            "--allow-dirty".to_string(),
+                        ];
+                        if options.dry_run {
+                            args.push("--dry-run".to_string())
+                        }
+                        let (stdout, stderr, success) = execute_command(
+                            &format!("cargo publish {}", args.join(" ")),
+                            &package_path,
+                            &envs,
+                            &blacklist_envs,
+                            Some(tracing::Level::DEBUG),
+                            Some(tracing::Level::DEBUG),
+                        )
+                        .await;
+                        r.success = success;
+                        r.stdout = stdout;
+                        r.stderr = stderr;
+                    } else {
+                        r.success = false;
+                        r.stderr = format!(
+                            "registry {} not setup correctly, missing index, private_key, and token",
+                            registry_name
+                        );
+                    }
                 }
-                let (stdout, stderr, success) = execute_command(
-                    &format!("cargo publish {}", args.join(" ")),
-                    &package_path,
-                    &HashMap::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
-                )
-                .await;
-                r.success = success;
-                r.stdout = stdout;
-                r.stderr = stderr;
-                is_failed = !success;
+                is_failed = !r.success;
             }
             r.end_time = Some(SystemTime::now());
             result.cargo.insert(registry_name.clone(), r);
@@ -565,7 +621,7 @@ async fn do_publish_package(
                 args.push("--secret id=node_auth_token,env=NPM_GHCR_TOKEN".to_string());
             }
             let main_registry_prefix = format!(
-                "CARGO_REGISTRIES_{}_",
+                "CARGO_REGISTRIES_{}",
                 options.cargo_main_registry.replace("-", "_")
             )
             .to_uppercase();
@@ -601,6 +657,7 @@ async fn do_publish_package(
                 &format!("docker build {}", args.join(" ")),
                 &package_path,
                 &HashMap::new(),
+                &HashSet::new(),
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
             )
@@ -615,6 +672,7 @@ async fn do_publish_package(
                     &format!("docker tag {} {}", image_name, image_latest),
                     &package_path,
                     &HashMap::new(),
+                    &HashSet::new(),
                     Some(tracing::Level::DEBUG),
                     Some(tracing::Level::DEBUG),
                 )
@@ -629,6 +687,7 @@ async fn do_publish_package(
                         &format!("docker push {}", image_name),
                         &package_path,
                         &HashMap::new(),
+                        &HashSet::new(),
                         Some(tracing::Level::DEBUG),
                         Some(tracing::Level::DEBUG),
                     )
@@ -643,6 +702,7 @@ async fn do_publish_package(
                             &format!("docker push {}", image_latest),
                             &package_path,
                             &HashMap::new(),
+                            &HashSet::new(),
                             Some(tracing::Level::DEBUG),
                             Some(tracing::Level::DEBUG),
                         )
@@ -674,6 +734,7 @@ pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
             repo_root,
             &HashMap::new(),
+&HashSet::new(),
             Some(tracing::Level::DEBUG),
             Some(tracing::Level::DEBUG),
         )
@@ -690,6 +751,7 @@ pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
             repo_root,
             &HashMap::new(),
+            &HashSet::new(),
             Some(tracing::Level::DEBUG),
             Some(tracing::Level::DEBUG),
         )

@@ -6,13 +6,17 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::fs;
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+use toml_edit::{table, value, DocumentMut, Table};
 
 const CARGO_DEFAULT_CRATE_URL: &str = "https://crates.io/api/v1/crates/";
 
@@ -183,7 +187,7 @@ impl Cargo {
         Ok(Self {
             client: Some(HyperClient::builder(TokioExecutor::new()).build(https)),
             registries: registries
-                .into_iter()
+                .iter()
                 .map(|k| {
                     (
                         k.clone(),
@@ -292,8 +296,155 @@ impl Cargo {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
+pub fn patch_crate_for_registry(
+    working_directory: &Path,
+    target_registry_name: String,
+) -> anyhow::Result<()> {
+    let cargo_toml_path = working_directory.join("Cargo.toml");
+    let cargo_lock_path = working_directory.join("Cargo.lock");
+    // Read the Cargo.toml file
+    let toml_str = fs::read_to_string(&cargo_toml_path)?;
+    let mut doc: DocumentMut = toml_str.parse()?;
+    let mut publish_registries = toml_edit::Array::new();
+    publish_registries.push(target_registry_name.clone());
+    let mut empty_table = table();
+    let package_table: &mut Table = doc
+        .get_mut("package")
+        .unwrap_or(&mut empty_table)
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Could not get table from package "))?;
+    package_table.insert("publish", value(publish_registries));
+
+    // 2. Find and replace the registry value with the provided `registry_name`
+    let re = Regex::new(r##"registry += +"(.*?)""##)?;
+    let updated_toml_str = re
+        .replace_all(
+            &doc.to_string(),
+            format!("registry = \"{}\"", target_registry_name),
+        )
+        .to_string();
+
+    // Save the updated `Cargo.toml`
+    fs::write(cargo_toml_path, updated_toml_str)?;
+
+    // 3. If Cargo.lock exists, delete it
+    if Path::new(&cargo_lock_path).exists() {
+        fs::remove_file(cargo_lock_path)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    #[test]
+    fn test_publish_key_replaced_if_present() {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        // Prepare mock Cargo.toml
+        let cargo_toml_path = tmp.join("Cargo.toml");
+
+        // Create mock Cargo.toml with no publish key and no registry
+        let toml_content = r#"[package]
+name = "my-package"
+version = "0.1.0"
+publish = ["main_registry"]"#;
+        fs::write(&cargo_toml_path, toml_content).unwrap();
+
+        // Run the patch_crate_for_registry function with a registry name and main_registry
+        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string())
+            .map_err(|e| {
+                println!("Error: {:#?}", e);
+                e
+            })
+            .is_ok());
+
+        // Read the updated Cargo.toml and check if `publish` was correctly updated
+        let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
+        assert!(updated_toml.contains("publish = [\"my_registry\"]"));
+    }
+
+    #[test]
+    fn test_find_and_replace_registry_in_dependencies() {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        // Prepare mock Cargo.toml
+        let cargo_toml_path = tmp.join("Cargo.toml");
+
+        // Create mock Cargo.toml with main_registry
+        let toml_content = r#"[package]
+name = "my-package"
+version = "0.1.0"
+dependencies = { some_crate = { registry = "main_registry" } }"#;
+        fs::write(&cargo_toml_path, toml_content).unwrap();
+
+        // Run the patch_crate_for_registry function with a registry name and main_registry
+        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+
+        // Read the updated Cargo.toml and check if `main_registry` was replaced
+        let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
+        assert!(updated_toml.contains("registry = \"my_registry\""));
+    }
+
+    #[test]
+    fn test_publish_key_added_if_missing() {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        // Prepare mock Cargo.toml
+        let cargo_toml_path = tmp.join("Cargo.toml");
+
+        // Create mock Cargo.toml with no publish key and no registry
+        let toml_content = r#"[package]
+name = "my-package"
+version = "0.1.0""#;
+        fs::write(&cargo_toml_path, toml_content).unwrap();
+
+        // Run the patch_crate_for_registry function with a registry name and main_registry
+        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+
+        // Read the updated Cargo.toml and check if `publish` was correctly updated
+        let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
+        assert!(updated_toml.contains("publish = [\"my_registry\"]"));
+    }
+
+    #[test]
+    fn test_existing_cargo_lock() {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        // Prepare mock Cargo.toml
+        let cargo_toml_path = tmp.join("Cargo.toml");
+        let cargo_lock_path = tmp.join("Cargo.lock");
+
+        // Create mock Cargo.toml
+        let toml_content = r#"[package]
+name = "my-package"
+version = "0.1.0""#;
+        fs::write(&cargo_toml_path, toml_content).unwrap();
+
+        // Create a mock Cargo.lock file
+        fs::write(&cargo_lock_path, "lock data").unwrap();
+
+        // Run the patch_crate_for_registry function and check for success
+        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+
+        // Ensure Cargo.lock is deleted
+        assert!(!cargo_lock_path.exists());
+    }
+}
 //     use wiremock::matchers::{header, method, path};
 //     use wiremock::{Mock, MockServer, ResponseTemplate};
 

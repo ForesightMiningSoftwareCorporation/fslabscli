@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["foresight-mining-software-corporation", "fslabs-nominal"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.15.0"
+version = "2.16.0"
 
 [package.metadata]
 
@@ -78,6 +78,8 @@ toml = "0.8.20"
 unicode-width = "0.2.0"
 clap_complete = "4.5.46"
 clap_mangen = "0.2.26"
+regex = "1.11.1"
+toml_edit = "0.22.24"
 
 [dependencies.anyhow]
 features = []
