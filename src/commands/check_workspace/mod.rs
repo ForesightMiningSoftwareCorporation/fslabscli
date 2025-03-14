@@ -1,4 +1,4 @@
-use chrono::{Duration, prelude::*};
+use chrono::{prelude::*, Duration};
 use core::result::Result as CoreResult;
 use std::cmp;
 use std::cmp::Ordering;
@@ -12,11 +12,11 @@ use std::time::Instant;
 use anyhow::Context;
 use cargo_metadata::{DependencyKind, Package, PackageId};
 use clap::Parser;
-use console::{Emoji, style};
+use console::{style, Emoji};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{ObjectStore, path::Path as BSPath};
+use object_store::{path::Path as BSPath, ObjectStore};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -781,7 +781,11 @@ impl Display for Results {
 }
 
 fn bool_to_emoji(value: bool) -> &'static str {
-    if value { "x" } else { "" }
+    if value {
+        "x"
+    } else {
+        ""
+    }
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
@@ -866,7 +870,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/10]").bold().dim(),
+            style("[1/7]").bold().dim(),
             LOOKING_GLASS
         );
     }
@@ -882,7 +886,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/10]").bold().dim(),
+            style("[2/7]").bold().dim(),
             TRUCK
         );
     }
@@ -925,7 +929,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Compute runtime information...",
-            style("[3/10]").bold().dim(),
+            style("[3/7]").bold().dim(),
             TRUCK
         );
     }
@@ -965,7 +969,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Back-feeding alt registry settings...",
-            style("[4/10]").bold().dim(),
+            style("[4/7]").bold().dim(),
             PAPER
         );
     }
@@ -1017,7 +1021,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[4/10]").bold().dim(),
+            style("[5/7]").bold().dim(),
             PAPER
         );
     }
@@ -1117,7 +1121,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages dependencies...",
-            style("[3/10]").bold().dim(),
+            style("[6/7]").bold().dim(),
             TRUCK
         );
     }
@@ -1161,7 +1165,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Checking if packages changed...",
-            style("[8/10]").bold().dim(),
+            style("[7/7]").bold().dim(),
             TRUCK
         );
     }
@@ -1230,8 +1234,8 @@ mod tests {
     use git2::Repository;
 
     use crate::{
-        commands::check_workspace::{Options, Result as Package, check_workspace},
-        utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
+        commands::check_workspace::{check_workspace, Options, Result as Package},
+        utils::test::{commit_all_changes, initialize_workspace, FAKE_REGISTRY},
     };
 
     fn create_complex_workspace() -> PathBuf {

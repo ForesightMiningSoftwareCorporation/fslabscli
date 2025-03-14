@@ -8,7 +8,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use serde_yaml::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     fmt::{Display, Formatter},
     fs::File,
@@ -70,8 +70,20 @@ struct FslabsTest {
 async fn teardown_container(container_id: String) {
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
-    execute_command_without_logging(&format!("docker stop {container_id}"), &path, &envs).await;
-    execute_command_without_logging(&format!("docker rm {container_id}"), &path, &envs).await;
+    execute_command_without_logging(
+        &format!("docker stop {container_id}"),
+        &path,
+        &envs,
+        &HashSet::new(),
+    )
+    .await;
+    execute_command_without_logging(
+        &format!("docker rm {container_id}"),
+        &path,
+        &envs,
+        &HashSet::new(),
+    )
+    .await;
 }
 
 async fn create_docker_container(
@@ -89,6 +101,7 @@ async fn create_docker_container(
         &format!("docker run --name={container_name} -d {env} {port} {options} {image}"),
         &path,
         &envs,
+        &HashSet::new(),
     )
     .await;
     if !success {
@@ -100,6 +113,7 @@ async fn create_docker_container(
         &format!("docker ps -q -f name={container_name}"),
         &path,
         &envs,
+        &HashSet::new(),
     )
     .await;
     if !success {
@@ -254,9 +268,13 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
                 if let Some(db_url) = database_url.clone() {
                     envs.insert("DATABASE_URL".to_string(), db_url.clone());
                 }
-                let (stdout, stderr, success) =
-                    execute_command_without_logging(&cache_miss_command, &package_path, &envs)
-                        .await;
+                let (stdout, stderr, success) = execute_command_without_logging(
+                    &cache_miss_command,
+                    &package_path,
+                    &envs,
+                    &HashSet::new(),
+                )
+                .await;
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
                 tracing::debug!("cache_miss: {stdout}");
@@ -293,8 +311,13 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
                     if sub_failed {
                         continue;
                     }
-                    let (stdout, stderr, success) =
-                        execute_command_without_logging(line, &package_path, &envs).await;
+                    let (stdout, stderr, success) = execute_command_without_logging(
+                        line,
+                        &package_path,
+                        &envs,
+                        &HashSet::new(),
+                    )
+                    .await;
                     a_stdout = format!("{a_stdout}\n{stdout}",);
                     a_stderr = format!("{a_stderr}\n{stderr}",);
                     tracing::debug!("additional_script: {line} {stdout}");
@@ -391,13 +414,19 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
                 );
                 let start_time = OffsetDateTime::now_utc();
                 if let Some(pre_command) = fslabs_test.pre_command {
-                    execute_command_without_logging(&pre_command, &package_path, &fslabs_test.envs)
-                        .await;
+                    execute_command_without_logging(
+                        &pre_command,
+                        &package_path,
+                        &fslabs_test.envs,
+                        &HashSet::new(),
+                    )
+                    .await;
                 }
                 let (stdout, stderr, success) = execute_command(
                     &fslabs_test.command,
                     &package_path,
                     &fslabs_test.envs,
+                    &HashSet::new(),
                     Some(tracing::Level::DEBUG),
                     Some(tracing::Level::DEBUG),
                 )
@@ -407,6 +436,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
                         &post_command,
                         &package_path,
                         &fslabs_test.envs,
+                        &HashSet::new(),
                     )
                     .await;
                 }

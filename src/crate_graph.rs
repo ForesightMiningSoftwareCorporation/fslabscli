@@ -1,7 +1,7 @@
 use cargo_metadata::{
-    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
+    semver::Version, DependencyKind, Metadata, MetadataCommand, Package, PackageId,
 };
-use git2::{DiffDelta, Repository, build::CheckoutBuilder};
+use git2::{build::CheckoutBuilder, DiffDelta, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,

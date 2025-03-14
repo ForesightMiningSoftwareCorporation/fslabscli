@@ -4,8 +4,13 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, de};
-use std::{collections::HashMap, fmt::Display, path::PathBuf, process::Stdio};
+use serde::{de, Deserialize, Deserializer};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    path::PathBuf,
+    process::Stdio,
+};
 use tokio::io::AsyncBufReadExt;
 
 use void::Void;
@@ -193,8 +198,9 @@ pub async fn execute_command_without_logging(
     command: &str,
     dir: &PathBuf,
     envs: &HashMap<String, String>,
+    envs_remove: &HashSet<String>,
 ) -> (String, String, bool) {
-    execute_command(command, dir, envs, None, None).await
+    execute_command(command, dir, envs, envs_remove, None, None).await
 }
 
 /// Execute the `command`, returning stdout and stderr as strings, and success state as a boolean.
@@ -206,6 +212,7 @@ pub async fn execute_command(
     command: &str,
     dir: &PathBuf,
     envs: &HashMap<String, String>,
+    envs_remove: &HashSet<String>,
     log_stdout: Option<tracing::Level>,
     log_stderr: Option<tracing::Level>,
 ) -> (String, String, bool) {
@@ -215,16 +222,19 @@ pub async fn execute_command(
         "bash"
     };
 
-    let mut child = tokio::process::Command::new(shell)
-        .arg("-c")
+    let mut c = tokio::process::Command::new(shell);
+    c.arg("-c")
         .arg(command)
         .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
-        .envs(envs)
-        .env_remove("SSH_AUTH_SOCK") // We should pbly set this from option
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Unable to spawn command");
+        .stderr(Stdio::piped());
+
+    for env in envs_remove {
+        c.env_remove(env);
+    }
+    c.envs(envs);
+
+    let mut child = c.spawn().expect("Unmable to spawn command");
 
     let stdout = child.stdout.take().expect("Failed to get stdout");
     let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
