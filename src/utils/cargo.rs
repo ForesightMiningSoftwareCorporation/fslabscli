@@ -17,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use toml_edit::{table, value, DocumentMut, Table};
+use walkdir::WalkDir;
 
 const CARGO_DEFAULT_CRATE_URL: &str = "https://crates.io/api/v1/crates/";
 
@@ -296,7 +297,24 @@ impl Cargo {
     }
 }
 
+fn replace_registry_in_cargo_toml(path: &Path, target_registry_name: String) -> anyhow::Result<()> {
+    // Read the content of the Cargo.toml file
+    let content = fs::read_to_string(path)?;
+
+    // Define your regex to find what you want to replace
+    let re = Regex::new(r##"registry += +"(.*?)""##)?;
+    let modified_content = re
+        .replace_all(&content, format!("registry = \"{}\"", target_registry_name))
+        .to_string();
+
+    // Write the modified content back to the file
+    fs::write(path, modified_content)?;
+
+    Ok(())
+}
+
 pub fn patch_crate_for_registry(
+    root_directory: &Path,
     working_directory: &Path,
     target_registry_name: String,
 ) -> anyhow::Result<()> {
@@ -315,17 +333,16 @@ pub fn patch_crate_for_registry(
         .ok_or_else(|| anyhow::anyhow!("Could not get table from package "))?;
     package_table.insert("publish", value(publish_registries));
 
-    // 2. Find and replace the registry value with the provided `registry_name`
-    let re = Regex::new(r##"registry += +"(.*?)""##)?;
-    let updated_toml_str = re
-        .replace_all(
-            &doc.to_string(),
-            format!("registry = \"{}\"", target_registry_name),
-        )
-        .to_string();
+    fs::write(&cargo_toml_path, doc.to_string())?;
 
-    // Save the updated `Cargo.toml`
-    fs::write(cargo_toml_path, updated_toml_str)?;
+    // 2. Find and replace all the registry value with the provided `registry_name`
+    for entry in WalkDir::new(root_directory).into_iter() {
+        let entry = entry?;
+        if entry.path().ends_with("Cargo.toml") {
+            // Perform replacement for each Cargo.toml file found
+            replace_registry_in_cargo_toml(entry.path(), target_registry_name.clone())?;
+        }
+    }
 
     // 3. If Cargo.lock exists, delete it
     if Path::new(&cargo_lock_path).exists() {
@@ -357,12 +374,14 @@ publish = ["main_registry"]"#;
         fs::write(&cargo_toml_path, toml_content).unwrap();
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
-        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string())
-            .map_err(|e| {
-                println!("Error: {:#?}", e);
-                e
-            })
-            .is_ok());
+        assert!(
+            patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string())
+                .map_err(|e| {
+                    println!("Error: {:#?}", e);
+                    e
+                })
+                .is_ok()
+        );
 
         // Read the updated Cargo.toml and check if `publish` was correctly updated
         let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
@@ -387,7 +406,7 @@ dependencies = { some_crate = { registry = "main_registry" } }"#;
         fs::write(&cargo_toml_path, toml_content).unwrap();
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
-        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
 
         // Read the updated Cargo.toml and check if `main_registry` was replaced
         let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
@@ -411,7 +430,7 @@ version = "0.1.0""#;
         fs::write(&cargo_toml_path, toml_content).unwrap();
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
-        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
 
         // Read the updated Cargo.toml and check if `publish` was correctly updated
         let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
@@ -439,7 +458,7 @@ version = "0.1.0""#;
         fs::write(&cargo_lock_path, "lock data").unwrap();
 
         // Run the patch_crate_for_registry function and check for success
-        assert!(patch_crate_for_registry(&tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
 
         // Ensure Cargo.lock is deleted
         assert!(!cargo_lock_path.exists());
