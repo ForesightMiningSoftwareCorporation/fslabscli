@@ -260,18 +260,15 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
                 tracing::debug!("cache_miss: {stdout}");
-                let cache_miss_tc = match success {
+                let mut cache_miss_tc = match success {
                     true => TestCase::success(&cache_miss_command, duration),
                     false => {
                         failed = true;
-                        TestCase::failure(
-                            &cache_miss_command,
-                            duration,
-                            "cache_miss",
-                            stderr.as_str(),
-                        )
+                        TestCase::failure(&cache_miss_command, duration, "", "required")
                     }
                 };
+                cache_miss_tc.set_system_out(&stderr);
+                cache_miss_tc.set_system_err(&stdout);
                 ts_mandatory.add_testcase(cache_miss_tc);
             }
         }
@@ -285,35 +282,37 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                 if let Some(db_url) = database_url.clone() {
                     envs.insert("DATABASE_URL".to_string(), db_url.clone());
                 }
-                let mut sub_fail: Option<String> = None;
+                let mut a_stdout: String = "".to_string();
+                let mut a_stderr: String = "".to_string();
+                let mut sub_failed = false;
+
                 for line in additional_scripts.split("\n") {
                     if line.is_empty() {
                         continue;
                     }
-                    if sub_fail.is_some() {
+                    if sub_failed {
                         continue;
                     }
                     let (stdout, stderr, success) =
                         execute_command_without_logging(line, &package_path, &envs).await;
+                    a_stdout = format!("{a_stdout}\n{stdout}",);
+                    a_stderr = format!("{a_stderr}\n{stderr}",);
                     tracing::debug!("additional_script: {line} {stdout}");
                     if !success {
-                        sub_fail = Some(stderr);
+                        sub_failed = true;
                     }
                 }
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
-                let additional_script_tc = match sub_fail {
-                    None => TestCase::success("additional_script", duration),
-                    Some(stderr) => {
+                let mut additional_script_tc = match sub_failed {
+                    true => TestCase::success("additional_script", duration),
+                    false => {
                         failed = true;
-                        TestCase::failure(
-                            "additional_script",
-                            duration,
-                            "additional_script",
-                            stderr.as_str(),
-                        )
+                        TestCase::failure("additional_script", duration, "", "required")
                     }
                 };
+                additional_script_tc.set_system_out(&a_stderr);
+                additional_script_tc.set_system_err(&a_stdout);
                 ts_mandatory.add_testcase(additional_script_tc);
             }
         }
