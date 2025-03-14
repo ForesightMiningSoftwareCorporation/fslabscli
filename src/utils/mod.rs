@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use std::{collections::HashMap, fmt::Display, path::PathBuf, process::Stdio};
 use tokio::io::AsyncBufReadExt;
 
@@ -12,6 +12,8 @@ use void::Void;
 
 pub mod cargo;
 pub mod github;
+#[cfg(test)]
+pub mod test;
 
 pub trait FromMap {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>

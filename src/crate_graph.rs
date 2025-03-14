@@ -1,7 +1,7 @@
 use cargo_metadata::{
-    semver::Version, DependencyKind, Metadata, MetadataCommand, Package, PackageId,
+    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
 };
-use git2::{build::CheckoutBuilder, DiffDelta, Repository};
+use git2::{DiffDelta, Repository, build::CheckoutBuilder};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -327,7 +327,9 @@ impl DependencyGraph {
                 me.reverse_dependencies
                     .insert(p.id.clone(), Default::default());
             }
+        }
 
+        for w in workspaces {
             // Create the M:N bidirectional dependency map between package IDs.
             let resolve = w.metadata.resolve.as_ref().unwrap();
             for node in &resolve.nodes {
@@ -387,6 +389,22 @@ impl DependencyGraph {
         closure.sort();
         closure
     }
+
+    pub fn get_transitive_dependencies(&self, root: PackageId) -> HashSet<PackageId> {
+        let mut visited = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(current_package) = stack.pop() {
+            if let Some(deps) = self.dependencies.get(&current_package) {
+                for dep in deps {
+                    if !visited.contains(&dep.clone()) {
+                        visited.insert(dep.clone());
+                        stack.push(dep.clone());
+                    }
+                }
+            }
+        }
+        visited
+    }
 }
 
 /// The path to `package`, relative to `repo_root`.
@@ -400,12 +418,8 @@ pub fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path>
 
 fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, StripPrefixError> {
     // In MacOs temp folders can be /var/private or /private (symlink between the two)
-    let canonical_root = root
-        .canonicalize()
-        .expect("Failed to canonicalize root path");
-    let canonical_path = path
-        .canonicalize()
-        .expect("Failed to canonicalize package path");
+    let canonical_root = dunce::canonicalize(root).expect("Failed to canonicalize root path");
+    let canonical_path = dunce::canonicalize(path).expect("Failed to canonicalize package path");
 
     match canonical_path.strip_prefix(&canonical_root)? {
         p if p == Path::new("") => Ok(Cow::Owned(PathBuf::from("."))),
@@ -415,6 +429,8 @@ fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, Strip
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::test::{commit_all_changes, commit_repo, modify_file, stage_file};
+
     use super::*;
     use std::process::Command;
 
@@ -639,67 +655,50 @@ mod tests {
         commit_repo(&tmp, "Added new function");
         tmp
     }
-    fn commit_all_changes(repo_path: &PathBuf, message: &str) {
-        stage_all(repo_path);
-        commit_repo(repo_path, message);
-    }
+    #[test]
+    fn test_get_transitive_dependencies() {
+        // Set up a simple graph
+        let mut graph = DependencyGraph::default();
 
-    fn modify_file(repo_path: &Path, file_path: &str, content: &str) {
-        let full_path = repo_path.join(file_path);
-
-        // Ensure the directory exists
-        std::fs::create_dir_all(full_path.parent().unwrap()).expect("Failed to create directories");
-
-        // Modify the file
-        std::fs::write(&full_path, content).expect("Failed to write to file");
-    }
-
-    fn stage_file(repo_path: &PathBuf, file_path: &str) {
-        let repo = Repository::open(repo_path).expect("Failed to open repo");
-        let mut index = repo.index().unwrap();
-        index
-            .add_all([file_path].iter(), git2::IndexAddOption::DEFAULT, None)
-            .expect("Failed to add files to index");
-        index.write().expect("Failed to write index");
-    }
-
-    fn stage_all(repo_path: &PathBuf) {
-        stage_file(repo_path, "*");
-    }
-
-    fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
-        let repo = Repository::open(repo_path).expect("Failed to open repo");
-        let mut index = repo.index().unwrap();
-
-        let oid = index.write_tree().unwrap();
-        let signature = repo.signature().unwrap();
-        let tree = repo.find_tree(oid).unwrap();
-        let parent_commit = repo
-            .head()
-            .ok()
-            .and_then(|r| r.target())
-            .and_then(|oid| repo.find_commit(oid).ok());
-
-        if let Some(parent) = parent_commit {
-            repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                commit_message,
-                &tree,
-                &[&parent],
-            )
-            .unwrap();
-        } else {
-            repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                commit_message,
-                &tree,
-                &[],
-            )
-            .unwrap();
+        // Example data (add your actual data)
+        let package_1 = PackageId {
+            repr: "1".to_string(),
         };
+        let package_2 = PackageId {
+            repr: "2".to_string(),
+        };
+        let package_3 = PackageId {
+            repr: "3".to_string(),
+        };
+        let package_4 = PackageId {
+            repr: "4".to_string(),
+        };
+
+        // Package 1 depends on Package 2 and Package 3
+        graph.dependencies.insert(
+            package_1.clone(),
+            vec![package_2.clone(), package_3.clone()],
+        );
+
+        // Package 2 depends on Package 4
+        graph
+            .dependencies
+            .insert(package_2.clone(), vec![package_4.clone()]);
+
+        // Package 3 has no dependencies
+        graph.dependencies.insert(package_3.clone(), vec![]);
+
+        // Package 4 has no dependencies
+        graph.dependencies.insert(package_4.clone(), vec![]);
+
+        // Test: Get all transitive dependencies of Package 1
+        let transitive_deps = graph.get_transitive_dependencies(package_1);
+
+        // Expected transitive dependencies for Package 1: {2, 3, 4}
+        let expected_deps: HashSet<PackageId> =
+            vec![package_2, package_3, package_4].into_iter().collect();
+
+        // Assert that the returned transitive dependencies match the expected ones
+        assert_eq!(transitive_deps, expected_deps);
     }
 }
