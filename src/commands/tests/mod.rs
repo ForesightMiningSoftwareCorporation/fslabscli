@@ -27,7 +27,7 @@ static DB_PASSWORD: &str = "mypassword";
 static DB_NAME: &str = "tests";
 
 #[derive(Debug, Parser, Default)]
-#[command(about = "Run rust tests")]
+#[command(about = "Run tests")]
 pub struct Options {
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
@@ -118,8 +118,8 @@ fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<b
     test_args.get(arg).and_then(|v| v.as_bool())
 }
 
-pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
-    let meter = global::meter("rust_tests");
+pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
+    let meter = global::meter("tests");
     let overall_duration_h = meter.f64_histogram("rust_tests_workspace").build();
     let overall_counter = meter.u64_counter("rust_tests_workspace").build();
     let member_duration_h = meter.f64_histogram("rust_tests_member").build();

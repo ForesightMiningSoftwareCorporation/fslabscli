@@ -2,7 +2,9 @@ use std::fmt::Display;
 use std::path::PathBuf;
 use std::{env, io};
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
+use clap_mangen::Man;
 
 use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
 use crate::commands::docker_build_push::{docker_build_push, Options as DockerBuildPushOptions};
@@ -14,8 +16,7 @@ use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions}
 use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
 use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
 use crate::commands::publish::{publish, Options as PublishOptions};
-use crate::commands::rust_tests::{rust_tests, Options as RustTestsOptions};
-use crate::commands::summaries::{summaries, Options as SummariesOptions};
+use crate::commands::tests::{tests, Options as TestsOptions};
 
 use opentelemetry::{global, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
@@ -34,12 +35,11 @@ mod commands;
 mod crate_graph;
 mod utils;
 
-#[derive(Debug, Parser)] // requires `derive` feature
+#[derive(Debug, Parser)]
 #[command(
     author,
     version,
     about,
-    bin_name("fslabscli"),
     subcommand_required(true),
     propagate_version(true)
 )]
@@ -67,17 +67,30 @@ enum CargoSubcommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Fix inconsistencies in all Cargo.lock files.
     FixLockFiles(Box<CheckLockFilesOptions>),
     /// Check which crates needs to be published
     CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
-    Summaries(Box<SummariesOptions>),
+    /// Download github run artifacts
     DownloadArtifacts(Box<DownloadArtifactsOptions>),
+    /// Generate a github token for an github app
     GithubAppToken(Box<GithubAppTokenOptions>),
+    /// Build and push docker image
     DockerBuildPush(Box<DockerBuildPushOptions>),
-    RustTests(Box<RustTestsOptions>),
+    /// Test workspace members
+    #[command(visible_alias = "rust-tests")]
+    Tests(Box<TestsOptions>),
+    /// Publish workspace members
     Publish(Box<PublishOptions>),
+    /// Generate a shell completions script
+    Completions {
+        /// The shell for which to generate the script
+        shell: Shell,
+    },
+    /// Generate man pages
+    ManPage,
 }
 
 fn get_resource() -> Resource {
@@ -225,6 +238,36 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // generate man pages and completions upon request and exit
+    match cli.command {
+        Commands::Completions { shell } => {
+            let mut clap_command = Cli::command();
+            let output = io::stdout();
+            let mut output_handle = output.lock();
+            let bin_name = clap_command.get_name().to_owned();
+            generate(shell, &mut clap_command, bin_name, &mut output_handle);
+            return;
+        }
+        Commands::ManPage => {
+            let clap_command = Cli::command();
+            let output = io::stdout();
+            let mut output_handle = output.lock();
+            let man = Man::new(clap_command.clone());
+            man.render(&mut output_handle).unwrap();
+            for subcommand in clap_command.get_subcommands() {
+                let primary = Man::new(subcommand.clone());
+                primary.render_name_section(&mut output_handle).unwrap();
+                primary.render_synopsis_section(&mut output_handle).unwrap();
+                primary
+                    .render_description_section(&mut output_handle)
+                    .unwrap();
+                primary.render_options_section(&mut output_handle).unwrap();
+            }
+            return;
+        }
+        _ => {} // nothing to do, will be handled later
+    };
     let mut guard = setup_logging(cli.verbose);
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
@@ -239,9 +282,6 @@ async fn main() {
         Commands::GenerateWix(options) => generate_wix(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::Summaries(options) => summaries(options, working_directory)
-            .await
-            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DownloadArtifacts(options) => download_artifacts(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
@@ -251,12 +291,17 @@ async fn main() {
         Commands::DockerBuildPush(options) => docker_build_push(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::RustTests(options) => rust_tests(options, working_directory)
+        Commands::Tests(options) => tests(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Publish(options) => publish(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Completions { shell: _ } | Commands::ManPage => {
+            unreachable!(
+                "Request for completions script or man pages should have been handled earlier and the program should have exited then."
+            );
+        }
     };
     guard.drop();
 
