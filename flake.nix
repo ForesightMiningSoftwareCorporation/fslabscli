@@ -8,6 +8,11 @@
     gitignore.url = "github:hercules-ci/gitignore.nix";
     devenv.url = "github:cachix/devenv";
     treefmt-nix.url = "github:numtide/treefmt-nix";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
   };
   outputs =
     inputs@{
@@ -19,16 +24,24 @@
       devenv,
       gitignore,
       treefmt-nix,
+      rust-overlay,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs {
+          inherit system overlays;
+        };
         inherit (pkgs.stdenv) isDarwin;
         inherit (gitignore.lib) gitignoreSource;
         fenixPkgs = fenix.packages.${system};
-        naersk' = pkgs.callPackage naersk { };
+        toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        naersk' = pkgs.callPackage naersk {
+          cargo = toolchain;
+          rustc = toolchain;
+        };
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
         rustSrc = gitignoreSource ./.;
@@ -293,14 +306,13 @@
           {
             "cargo-fslabscli-${arch}" = cargo-fslabscli;
           };
-        individualPackages =
-          mkRustPackages "x86_64-linux";
-          # // mkRustPackages "aarch64-linux"
-          # // mkRustPackages "aarch64-darwin"
-          # // {
-            # cargo-fslabscli-win64 = mkWin64RustPackage "cargo-fslabscli";
-            # cargo-fslabscli-win32 = mkWin32RustPackage "cargo-fslabscli";
-          # };
+        individualPackages = mkRustPackages "x86_64-linux";
+        # // mkRustPackages "aarch64-linux"
+        # // mkRustPackages "aarch64-darwin"
+        # // {
+        # cargo-fslabscli-win64 = mkWin64RustPackage "cargo-fslabscli";
+        # cargo-fslabscli-win32 = mkWin32RustPackage "cargo-fslabscli";
+        # };
 
         treefmt = treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
@@ -355,6 +367,13 @@
                   nix.enable = true;
                   rust = {
                     enable = true;
+                    toolchain = {
+                      cargo = toolchain;
+                      clippy = toolchain;
+                      rust-analyzer = toolchain;
+                      rustc = toolchain;
+                      rustfmt = toolchain;
+                    };
                   };
                 };
 

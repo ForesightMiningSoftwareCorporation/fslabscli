@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::crate_graph::CrateGraph;
 use anyhow::Context;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -170,24 +169,7 @@ pub struct Cargo {
 }
 
 impl Cargo {
-    pub fn new(crates: &CrateGraph) -> anyhow::Result<Self> {
-        let mut registries: HashSet<String> = HashSet::new();
-        for workspace in crates.workspaces() {
-            for package in workspace.metadata.workspace_packages() {
-                match &package.publish {
-                    Some(r) => {
-                        for registry in r {
-                            registries.insert(registry.clone());
-                        }
-                    }
-                    None => {
-                        // Custome case of publishing to crates.io
-                        registries.insert("crates.io".to_string());
-                    }
-                };
-            }
-        }
-
+    pub fn new(registries: &HashSet<String>) -> anyhow::Result<Self> {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(
                 rustls::ClientConfig::builder()
@@ -202,7 +184,12 @@ impl Cargo {
             client: Some(HyperClient::builder(TokioExecutor::new()).build(https)),
             registries: registries
                 .into_iter()
-                .map(|k| (k.clone(), CargoRegistry::new(k, None, None, None, None)))
+                .map(|k| {
+                    (
+                        k.clone(),
+                        CargoRegistry::new(k.clone(), None, None, None, None),
+                    )
+                })
                 .collect(),
         })
     }

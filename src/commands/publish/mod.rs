@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::time::SystemTime;
 use std::{
+    env,
     fmt::{Display, Formatter},
     fs,
     fs::File,
@@ -16,13 +17,13 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
+use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
+    PrettyPrintable,
     commands::check_workspace::{
-        check_workspace, Options as CheckWorkspaceOptions, Result as Package,
+        Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
     utils::{cargo::Cargo, execute_command},
-    PrettyPrintable,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -56,10 +57,8 @@ pub struct Options {
     npm_ghcr_scope: Option<String>,
     #[arg(long, env)]
     npm_ghcr_token: Option<String>,
-    #[arg(long, env)]
-    cargo_registries_foresight_mining_software_corporation_token: Option<String>,
-    #[arg(long, env)]
-    cargo_registries_foresight_mining_software_corporation_user_agent: Option<String>,
+    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
+    cargo_main_registry: String,
     #[arg(long, env, default_value = "false")]
     dry_run: bool,
 }
@@ -479,7 +478,7 @@ async fn do_publish_package(
         }
         result.nix_binary.end_time = Some(SystemTime::now());
     }
-    if !is_failed && package.publish_detail.cargo.publish {
+    if true || (!is_failed && package.publish_detail.cargo.publish) {
         let additional_args = package.publish_detail.additional_args.unwrap_or_default();
         for (registry_name, registry_publish) in package.publish_detail.cargo.registries_publish {
             let mut r = PublishDetailResult {
@@ -496,7 +495,14 @@ async fn do_publish_package(
             if cargo.get_registry(&registry_name).is_none() {
                 run = false;
             }
-            if run {
+            if options.dry_run {
+                r.success = true;
+            } else if run {
+                // For each reg we need to
+                // 1. Ensure registry is in `publish = []`
+                // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
+                // 3. Ensure there are Cargo.lock
+                // 4. Publish with --allow-dirty
                 let mut args = vec![
                     additional_args.clone(),
                     "--registry".to_string(),
@@ -558,13 +564,14 @@ async fn do_publish_package(
                 envs.insert("NPM_GHCR_TOKEN", npm_ghcr_token);
                 args.push("--secret id=node_auth_token,env=NPM_GHCR_TOKEN".to_string());
             }
-            if let (Some(user_agent), Some(token)) = (
-                options
-                    .cargo_registries_foresight_mining_software_corporation_token
-                    .clone(),
-                options
-                    .cargo_registries_foresight_mining_software_corporation_user_agent
-                    .clone(),
+            let main_registry_prefix = format!(
+                "CARGO_REGISTRIES_{}_",
+                options.cargo_main_registry.replace("-", "_")
+            )
+            .to_uppercase();
+            if let (Ok(user_agent), Ok(token)) = (
+                env::var(format!("{}_USER_AGENT", main_registry_prefix)),
+                env::var(format!("{}_TOKEN", main_registry_prefix)),
             ) {
                 envs.insert(
                     "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_USER_AGENT",
@@ -755,6 +762,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     // Check workspace information
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
+        .with_progress(true)
         .with_ignore_dev_dependencies(true);
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
@@ -765,7 +773,13 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
         })
         .with_context(|| "Could not get directory information")?;
 
-    let cargo = Arc::new(Cargo::new(&results.crate_graph)?);
+    let mut registries = HashSet::new();
+    for member in results.members.values() {
+        if let Some(r) = member.publish_detail.cargo.registries.clone() {
+            registries.extend(r);
+        }
+    }
+    let cargo = Arc::new(Cargo::new(&registries)?);
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
 
     let mut handles = vec![];

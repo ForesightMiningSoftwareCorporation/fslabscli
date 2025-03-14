@@ -1,8 +1,8 @@
-use chrono::{prelude::*, Duration};
+use chrono::{Duration, prelude::*};
 use core::result::Result as CoreResult;
 use std::cmp;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,11 +12,11 @@ use std::time::Instant;
 use anyhow::Context;
 use cargo_metadata::{DependencyKind, Package, PackageId};
 use clap::Parser;
-use console::{style, Emoji};
+use console::{Emoji, style};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{path::Path as BSPath, ObjectStore};
+use object_store::{ObjectStore, path::Path as BSPath};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -161,6 +161,11 @@ impl Options {
 
     pub fn with_check_changed(mut self, check_changed: bool) -> Self {
         self.check_changed = check_changed;
+        self
+    }
+
+    pub fn with_progress(mut self, progress: bool) -> Self {
+        self.progress = progress;
         self
     }
 
@@ -337,21 +342,14 @@ impl Result {
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.clone().fslabs.publish.unwrap_or_default();
-        publish.cargo.registries = match package.publish.clone() {
-            Some(r) => Some(r.clone()),
-            None => {
-                // Should be public registry, double check this is wanted
-                if publish.cargo.allow_public {
-                    Some(vec!["crates.io".to_string()])
-                } else {
-                    tracing::debug!(
-                        "Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`",
-                        package.name
-                    );
-                    Some(vec![])
-                }
-            }
-        };
+        let mut registries = publish.cargo.registries.unwrap_or_default();
+        for r in package.publish.unwrap_or_default() {
+            registries.insert(r.clone());
+        }
+        if publish.cargo.allow_public {
+            registries.insert("crates.io".to_string());
+        }
+        publish.cargo.registries = Some(registries);
 
         publish.cargo.publish = publish
             .cargo
@@ -783,11 +781,7 @@ impl Display for Results {
 }
 
 fn bool_to_emoji(value: bool) -> &'static str {
-    if value {
-        "x"
-    } else {
-        ""
-    }
+    if value { "x" } else { "" }
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
@@ -966,6 +960,59 @@ pub async fn check_workspace(
         }
     }
 
+    // Check Alt Registries Settings
+    // If package A needs to be published to an alt registry, all of its dependencies should be as well
+    if options.progress {
+        println!(
+            "{} {}Back-feeding alt registry settings...",
+            style("[4/10]").bold().dim(),
+            PAPER
+        );
+    }
+    let mut pb: Option<ProgressBar> = None;
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+
+    let mut packages_registries: HashMap<PackageId, HashSet<String>> = HashMap::new();
+    let mut all_packages_registries: HashSet<String> = HashSet::new();
+    for package_key in package_keys.clone() {
+        if let Some(package) = packages.get(&package_key) {
+            if let Some(registries) = &package.publish_detail.cargo.registries {
+                packages_registries.insert(package_key.clone(), registries.clone());
+                all_packages_registries.extend(registries.clone());
+            }
+        }
+    }
+    for (package_key, registries) in packages_registries {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        if !registries.is_empty() {
+            let transitive_dependencies = crates
+                .dependency_graph()
+                .get_transitive_dependencies(package_key.clone());
+            // The package should be publish to some alt registries
+            // Let's set that in all it's dependent
+            // Let's update each transitive dep with the list of registries
+            for dep_id in transitive_dependencies {
+                if let Some(dep) = packages.get_mut(&dep_id) {
+                    let mut dep_registries = dep
+                        .publish_detail
+                        .cargo
+                        .registries
+                        .clone()
+                        .unwrap_or_default();
+                    for registry in &registries {
+                        dep_registries.insert(registry.clone());
+                    }
+                    dep.publish_detail.cargo.registries = Some(dep_registries);
+                }
+            }
+        }
+    }
     // Check Release status
     if options.progress {
         println!(
@@ -981,7 +1028,7 @@ pub async fn check_workspace(
         options.npm_registry_npmrc_path.clone(),
         true,
     )?;
-    let cargo = Cargo::new(&crates)?;
+    let cargo = Cargo::new(&all_packages_registries)?;
     let mut docker = Docker::new(None)?;
     if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
         options.docker_registry.clone(),
@@ -1174,4 +1221,129 @@ pub async fn check_workspace(
         members: packages,
         crate_graph: crates,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, process::Command};
+
+    use git2::Repository;
+
+    use crate::{
+        commands::check_workspace::{Options, Result as Package, check_workspace},
+        utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
+    };
+
+    fn create_complex_workspace() -> PathBuf {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        let repo = Repository::init(&tmp).expect("Failed to init repo");
+
+        // Configure Git user info (required for commits)
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Test User")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "test@example.com")
+            .unwrap();
+        repo.config().unwrap().set_str("gpg.sign", "false").unwrap();
+
+        initialize_workspace(
+            &tmp,
+            "workspace_a",
+            vec!["crates_a", "crates_b", "crates_c"],
+            vec![],
+        );
+        initialize_workspace(&tmp, "workspace_d", vec!["crates_e", "crates_f"], vec![]);
+        initialize_workspace(&tmp, "crates_g", vec![], vec!["some_other_registries"]);
+
+        // Setup Deps
+        // workspace_d/crates_e -> workspace_a/crates_a
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../../../workspace_a/crates/crates_a")
+            .arg("workspace_a__crates_a")
+            .current_dir(tmp.join("workspace_d").join("crates").join("crates_e"))
+            .output()
+            .expect("Failed to add workspace_a__crates_a to workspace_d__crates_e");
+        // crates_g ->  workspace_d/crates_e
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../workspace_d/crates/crates_e")
+            .arg("workspace_d__crates_e")
+            .current_dir(tmp.join("crates_g"))
+            .output()
+            .expect("Failed to add workspace_d__crates_e");
+        // crates_g ->  workspace_a/crates_b
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../workspace_a/crates/crates_b")
+            .arg("workspace_a__crates_b")
+            .current_dir(tmp.join("crates_g"))
+            .output()
+            .expect("Failed to add workspace_a__crates_b");
+        // Stage and commit initial crate
+        commit_all_changes(&tmp, "Initial commit");
+        dunce::canonicalize(tmp).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_alternate_registry_back_feeding() {
+        let ws = create_complex_workspace();
+
+        // Check workspace information
+        let check_workspace_options = Options::new();
+        let results = check_workspace(Box::new(check_workspace_options), ws.clone())
+            .await
+            .unwrap();
+
+        fn check_registry_condition(v: &Package, should_have_registry: bool) {
+            let has_alt_reg = v
+                .publish_detail
+                .cargo
+                .registries
+                .clone()
+                .unwrap_or_default()
+                .contains("some_other_registries");
+            assert_eq!(has_alt_reg, should_have_registry);
+        }
+
+        for v in results.members.values() {
+            match v.package.as_str() {
+                "workspace_a__crates_a" => {
+                    check_registry_condition(v, true);
+                }
+                "workspace_a__crates_b" => {
+                    check_registry_condition(v, true);
+                }
+                "workspace_a__crates_c" => {
+                    check_registry_condition(v, false);
+                }
+                "workspace_d__crates_f" => {
+                    check_registry_condition(v, false);
+                }
+                "crates_g" => {
+                    check_registry_condition(v, true);
+                }
+                _ => {}
+            }
+        }
+    }
 }

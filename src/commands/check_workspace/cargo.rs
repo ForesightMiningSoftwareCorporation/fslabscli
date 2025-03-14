@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,8 @@ use crate::utils::cargo::Cargo;
 pub struct PackageMetadataFslabsCiPublishCargo {
     #[serde(default)]
     pub publish: bool,
-    pub registries: Option<Vec<String>>,
+    #[serde(alias = "alternate_registries")]
+    pub registries: Option<HashSet<String>>,
     #[serde(default)]
     pub registries_publish: HashMap<String, bool>,
     #[serde(default)]
@@ -25,21 +26,7 @@ impl PackageMetadataFslabsCiPublishCargo {
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
         tracing::debug!("Got following registries: {:?}", self.registries);
-        let registries = match &self.registries {
-            Some(r) => r.clone(),
-            None => {
-                // Should be public registry, double check this is wanted
-                if self.allow_public {
-                    vec!["crates.io".to_string()]
-                } else {
-                    tracing::debug!(
-                        "Tried to publish {} to public registry without setting `fslabs_ci.publish.cargo.allow_public`",
-                        name
-                    );
-                    vec![]
-                }
-            }
-        };
+        let registries = self.registries.clone().unwrap_or_default();
         let mut overall_publish = false;
         for registry_name in registries {
             tracing::debug!(
