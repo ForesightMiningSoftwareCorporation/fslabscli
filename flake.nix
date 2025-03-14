@@ -67,12 +67,22 @@
             src = pkgs.lib.cleanSource ./.;
             nativeBuildInputs = [
               pkgs.perl # Needed to build vendored OpenSSL.
+              pkgs.installShellFiles # Shell Completions
             ];
             buildInputs = pkgs.lib.optionals isDarwin [
               pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
             ];
             auditable = false; # Avoid cargo-auditable failures.
             doCheck = false; # Disable test as it requires network access.
+
+            postInstall = ''
+              $out/bin/${packageName} man-page > ${packageName}.man
+              installManPage ${packageName}.man
+              installShellCompletion --cmd ${packageName} \
+               --bash <($out/bin/${packageName} completions bash) \
+               --fish <($out/bin/${packageName} completions fish) \
+               --zsh <($out/bin/${packageName} completions zsh)
+            '';
           };
         pkgsWin64 = pkgs.pkgsCross.mingwW64;
         mkWin64RustPackage =
@@ -300,12 +310,13 @@
             rustfmt.enable = true;
           };
         };
+        fslabscli = mkRustPackage "cargo-fslabscli";
       in
       {
         formatter = treefmt.config.build.wrapper;
 
         packages = individualPackages // {
-          default = mkRustPackage "cargo-fslabscli";
+          default = fslabscli;
           release = pkgs.runCommand "release-binaries" { } ''
             mkdir -p "$out/bin"
             for pkg in ${
@@ -335,6 +346,7 @@
               }:
               {
                 packages = with pkgs; [
+                  fslabscli
                   updatecli
                   cargo-deny
                   xunit-viewer

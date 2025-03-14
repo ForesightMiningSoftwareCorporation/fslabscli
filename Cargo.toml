@@ -76,6 +76,8 @@ tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 toml = "0.8.20"
 unicode-width = "0.2.0"
+clap_complete = "4.5.46"
+clap_mangen = "0.2.26"
 
 [dependencies.anyhow]
 features = []

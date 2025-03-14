@@ -6,5 +6,4 @@ pub mod generate_wix;
 pub mod generate_workflow;
 pub mod github_app_token;
 pub mod publish;
-pub mod rust_tests;
-pub mod summaries;
+pub mod tests;
