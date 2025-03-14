@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "2.16.0"
+version = "2.16.1"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -420,6 +420,7 @@ dependencies = [
  "unicode-width",
  "url",
  "void",
+ "walkdir",
  "wiremock",
  "zip",
 ]

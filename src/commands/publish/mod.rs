@@ -515,7 +515,9 @@ async fn do_publish_package(
                     // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
                     // 3. Ensure there are Cargo.lock
                     // 4. Publish with --allow-dirty
-                    if patch_crate_for_registry(&package_path, registry_name.clone()).is_ok() {
+                    if patch_crate_for_registry(&repo_root, &package_path, registry_name.clone())
+                        .is_ok()
+                    {
                         // to publish to a registry we need
                         // - index url
                         // - user agent if set
