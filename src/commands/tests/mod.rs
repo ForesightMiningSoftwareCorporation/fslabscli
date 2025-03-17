@@ -328,8 +328,8 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
                 let mut additional_script_tc = match sub_failed {
-                    true => TestCase::success("additional_script", duration),
-                    false => {
+                    false => TestCase::success("additional_script", duration),
+                    true => {
                         failed = true;
                         TestCase::failure("additional_script", duration, "", "required")
                     }
