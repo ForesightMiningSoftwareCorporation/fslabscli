@@ -827,7 +827,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
         .with_progress(true)
-        .with_ignore_dev_dependencies(true);
+        .with_ignore_dev_dependencies(false);
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
