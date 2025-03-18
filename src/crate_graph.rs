@@ -1,13 +1,15 @@
 use cargo_metadata::{
-    semver::Version, DependencyKind, Metadata, MetadataCommand, Package, PackageId,
+    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
 };
-use git2::{build::CheckoutBuilder, DiffDelta, Repository};
+use git2::{DiffDelta, Repository, build::CheckoutBuilder};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf, StripPrefixError},
 };
+
+use crate::utils::get_registry_env;
 
 /// The (directed acyclic) graph of crates in a multi-workspace repo.
 #[derive(Clone, Debug)]
@@ -29,6 +31,7 @@ impl CrateGraph {
     /// Returns error if a manifest is found that cannot be parsed.
     pub fn new(
         repo_root: impl Into<PathBuf>,
+        main_registry: impl Into<String> + Clone,
         dep_kind: Option<DependencyKind>,
     ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
@@ -37,9 +40,18 @@ impl CrateGraph {
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
-        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces)?;
+        Self::new_recursive(
+            &repo_root,
+            &ignore,
+            &repo_root,
+            main_registry,
+            &mut workspaces,
+        )?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
+        if let Some(cycles) = dependencies.detect_cycles() {
+            return Err(anyhow::anyhow!("Cycle detected: {:?}", cycles));
+        }
         Ok(Self {
             repo_root,
             workspaces,
@@ -51,6 +63,7 @@ impl CrateGraph {
         repo_root: &Path,
         ignore: &Gitignore,
         dir: &Path,
+        main_registry: impl Into<String> + Clone,
         workspaces: &mut Vec<Workspace>,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name() {
@@ -68,8 +81,13 @@ impl CrateGraph {
         let manifest_path = dir.join("Cargo.toml");
         if std::fs::exists(&manifest_path)? {
             // Found a manifest. Get metadata.
-
-            let metadata = MetadataCommand::new().current_dir(dir).exec()?;
+            let envs = get_registry_env(main_registry.clone().into());
+            let mut command = MetadataCommand::new();
+            command.current_dir(dir);
+            for (k, v) in envs {
+                command.env(k, v);
+            }
+            let metadata = command.exec()?;
 
             let has_explicit_members = if metadata.root_package().is_some() {
                 metadata.workspace_members.len() > 1
@@ -94,7 +112,13 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces)?;
+                Self::new_recursive(
+                    repo_root,
+                    ignore,
+                    &entry.path(),
+                    main_registry.clone(),
+                    workspaces,
+                )?;
             }
         }
 
@@ -405,6 +429,69 @@ impl DependencyGraph {
         }
         visited
     }
+
+    pub fn detect_cycles(&self) -> Option<Vec<PackageId>> {
+        // used to prevent duplicate cycle trasversal
+        let mut visited = HashSet::new();
+        // used to detect if there is a cycle in the current trasversal
+        let mut recursion_stack = HashSet::new();
+        let mut cycle_path = Vec::new();
+
+        // Helper function for DFS traversal, returns true if a cycle is detected
+        fn dfs(
+            graph: &DependencyGraph,
+            package: &PackageId,
+            visited: &mut HashSet<PackageId>,
+            recursion_stack: &mut HashSet<PackageId>,
+            cycle_path: &mut Vec<PackageId>,
+        ) -> bool {
+            if recursion_stack.contains(package) {
+                // Cycle detected, record the cycle path
+                cycle_path.push(package.clone());
+                return true;
+            }
+
+            if visited.contains(package) {
+                return false;
+            }
+
+            // Mark the package as visited
+            visited.insert(package.clone());
+            recursion_stack.insert(package.clone());
+
+            // Traverse the dependencies
+            if let Some(deps) = graph.dependencies.get(package) {
+                for dep in deps {
+                    if dfs(graph, dep, visited, recursion_stack, cycle_path) {
+                        cycle_path.push(package.clone());
+                        return true;
+                    }
+                }
+            }
+
+            // Backtrack
+            recursion_stack.remove(package);
+            false
+        }
+
+        // Try to detect cycles for each package in the graph
+        for package in self.dependencies.keys() {
+            if !visited.contains(&package.clone())
+                && dfs(
+                    self,
+                    package,
+                    &mut visited,
+                    &mut recursion_stack,
+                    &mut cycle_path,
+                )
+            {
+                cycle_path.reverse();
+                return Some(cycle_path);
+            }
+        }
+
+        None // No cycle detected
+    }
 }
 
 /// The path to `package`, relative to `repo_root`.
@@ -438,7 +525,7 @@ mod tests {
     fn test_discover_standalone_workspace() {
         let repo = initialize_repo().join("standalone");
 
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].path, Path::new("."));
@@ -455,7 +542,7 @@ mod tests {
     fn test_discover_many_workspaces() {
         let repo = initialize_repo();
 
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 5);
         let mut i = workspaces.iter();
@@ -533,7 +620,7 @@ mod tests {
     #[test]
     fn test_detect_changed_packages() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         // These revision strings rely on an understanding of the test repo's git log.
         // We know that the most recent revision makes changes to files in foo and bar.
@@ -544,7 +631,7 @@ mod tests {
     #[test]
     fn test_detect_changed_package_single_rust_crate() {
         let repo = create_simple_rust_crate();
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
@@ -554,7 +641,7 @@ mod tests {
     fn test_detect_changed_package_unstaged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
 
         let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
@@ -565,7 +652,7 @@ mod tests {
     fn test_detect_changed_package_staged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
         stage_file(&repo, "src/lib.rs");
 
@@ -576,7 +663,7 @@ mod tests {
     #[test]
     fn test_fix_lock_files() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo, None).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         // Remove lock files created from running cargo-metadata.
         for workspace in graph.workspaces() {

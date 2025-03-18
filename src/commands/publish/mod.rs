@@ -17,16 +17,17 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
+use crate::utils::get_registry_env;
+use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
+    PrettyPrintable,
     commands::check_workspace::{
-        check_workspace, Options as CheckWorkspaceOptions, Result as Package,
+        Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
     utils::{
-        cargo::{patch_crate_for_registry, Cargo},
+        cargo::{Cargo, patch_crate_for_registry},
         execute_command,
     },
-    PrettyPrintable,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -382,6 +383,7 @@ async fn publish_package(
 ) {
     if let Some(ref package_id) = package.package_id {
         loop {
+            // println!("Looping on package: {}", package.package);
             let mut mark_failed = false;
             let mut process = true;
             {
@@ -422,6 +424,7 @@ async fn publish_package(
 
         // Acquire a permit from the semaphore to limit the number of concurrent tasks
         let permit = semaphore.acquire().await;
+        println!("Doing package: {}", package.package);
         let success = do_publish_package(
             repo_root.clone(),
             package.clone(),
@@ -431,6 +434,7 @@ async fn publish_package(
             registries,
         )
         .await;
+        println!("Done package: {}", package.package);
         let mut map = statuses.write().expect("RwLock poisoned");
         *map.entry(package_id.clone()).or_insert(None) = Some(success);
         drop(permit);
@@ -505,11 +509,7 @@ async fn do_publish_package(
                 let registry_prefix =
                     format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
 
-                if let (Ok(index), Ok(token), Ok(private_key)) = (
-                    std::env::var(format!("{}_INDEX", registry_prefix)),
-                    std::env::var(format!("{}_TOKEN", registry_prefix)),
-                    std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)),
-                ) {
+                if std::env::var(format!("{}_INDEX", registry_prefix)).is_ok() {
                     // For each reg we need to
                     // 1. Ensure registry is in `publish = []`
                     // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
@@ -522,25 +522,7 @@ async fn do_publish_package(
                         // - index url
                         // - user agent if set
                         // - ssh key
-                        let mut envs = HashMap::from([
-                            (format!("{}_INDEX", registry_prefix), index.clone()),
-                            (format!("{}_TOKEN", registry_prefix), token.clone()),
-                            (
-                                "GIT_SSH_COMMAND".to_string(),
-                                format!("ssh -i {}", private_key),
-                            ),
-                            (
-                                "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
-                                "true".to_string(),
-                            ),
-                        ]);
-
-                        if let Ok(user_agent) =
-                            std::env::var(format!("{}_USER_AGENT", registry_prefix))
-                        {
-                            envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent);
-                        }
-
+                        let envs = get_registry_env(registry_name.clone());
                         let mut blacklist_envs = HashSet::from([
                             "GIT_SSH_COMMAND".to_string(),
                             "SSH_AUTH_SOCK".to_string(),
@@ -827,7 +809,8 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
         .with_progress(true)
-        .with_ignore_dev_dependencies(false);
+        .with_ignore_dev_dependencies(true);
+    // .with_ignore_dev_dependencies(false);
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await

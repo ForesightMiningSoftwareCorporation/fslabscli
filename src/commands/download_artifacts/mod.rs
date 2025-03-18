@@ -1,8 +1,8 @@
 use crate::PrettyPrintable;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use octocrab::models::workflows::WorkflowListArtifact;
 use octocrab::Octocrab;
+use octocrab::models::workflows::WorkflowListArtifact;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use std::fs::File;

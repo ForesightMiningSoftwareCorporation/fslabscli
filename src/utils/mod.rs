@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -271,4 +271,34 @@ pub async fn execute_command(
         }
         Err(e) => ("".to_string(), e.to_string(), false),
     }
+}
+
+pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
+    let mut envs = HashMap::from([
+        (
+            "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
+            "true".to_string(),
+        ),
+        ("GIT_SSH_COMMAND".to_string(), "".to_string()),
+        ("SSH_AUTH_SOCK".to_string(), "".to_string()),
+    ]);
+    let registry_prefix =
+        format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
+    if let Ok(index) = std::env::var(format!("{}_INDEX", registry_prefix)) {
+        envs.insert(format!("{}_INDEX", registry_prefix), index.clone());
+    }
+    if let Ok(token) = std::env::var(format!("{}_TOKEN", registry_prefix)) {
+        envs.insert(format!("{}_TOKEN", registry_prefix), token.clone());
+        envs.insert("Authorization".to_string(), token.clone());
+    }
+    if let Ok(user_agent) = std::env::var(format!("{}_USER_AGENT", registry_prefix)) {
+        envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent.clone());
+    }
+    if let Ok(private_key) = std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)) {
+        envs.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            format!("ssh -i {}", private_key.clone()),
+        );
+    }
+    envs
 }

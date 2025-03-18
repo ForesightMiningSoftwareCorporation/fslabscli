@@ -3,28 +3,28 @@ use std::path::PathBuf;
 use std::{env, io};
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use clap_mangen::Man;
 
-use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
-use crate::commands::docker_build_push::{docker_build_push, Options as DockerBuildPushOptions};
+use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
+use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
 use crate::commands::download_artifacts::{
-    download_artifacts, Options as DownloadArtifactsOptions,
+    Options as DownloadArtifactsOptions, download_artifacts,
 };
-use crate::commands::fix_lock_files::{fix_lock_files, Options as CheckLockFilesOptions};
-use crate::commands::generate_wix::{generate_wix, Options as GenerateWixOptions};
-use crate::commands::generate_workflow::{generate_workflow, Options as GenerateWorkflowOptions};
-use crate::commands::github_app_token::{github_app_token, Options as GithubAppTokenOptions};
-use crate::commands::publish::{publish, Options as PublishOptions};
-use crate::commands::tests::{tests, Options as TestsOptions};
+use crate::commands::fix_lock_files::{Options as CheckLockFilesOptions, fix_lock_files};
+use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix};
+use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
+use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
+use crate::commands::publish::{Options as PublishOptions, publish};
+use crate::commands::tests::{Options as TestsOptions, tests};
 
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{
+    Resource,
     logs::SdkLoggerProvider,
     metrics::{MeterProviderBuilder, SdkMeterProvider},
     trace::SdkTracerProvider,
-    Resource,
 };
 use serde::Serialize;
 use tracing_core::Level;
@@ -171,6 +171,7 @@ pub fn setup_logging(verbosity: u8) -> OtelGuard {
         .add_directive("opentelemetry_sdk=off".parse().unwrap())
         .add_directive("tonic=off".parse().unwrap())
         .add_directive("h2=off".parse().unwrap())
+        .add_directive("tower=off".parse().unwrap())
         .add_directive("reqwest=off".parse().unwrap());
 
     let log_provider = init_logs();
