@@ -1,7 +1,7 @@
 use clap::Parser;
+use octocrab::Octocrab;
 use octocrab::models::{InstallationId, InstallationToken};
 use octocrab::params::apps::CreateInstallationAccessToken;
-use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::path::PathBuf;

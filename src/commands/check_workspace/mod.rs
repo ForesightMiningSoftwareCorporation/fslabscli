@@ -1,4 +1,4 @@
-use chrono::{prelude::*, Duration};
+use chrono::{Duration, prelude::*};
 use core::result::Result as CoreResult;
 use std::cmp;
 use std::cmp::Ordering;
@@ -12,11 +12,11 @@ use std::time::Instant;
 use anyhow::Context;
 use cargo_metadata::{DependencyKind, Package, PackageId};
 use clap::Parser;
-use console::{style, Emoji};
+use console::{Emoji, style};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{path::Path as BSPath, ObjectStore};
+use object_store::{ObjectStore, path::Path as BSPath};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -69,7 +69,7 @@ fn serialize_multiline_as_escaped<S>(
 where
     S: Serializer,
 {
-    if let Some(ref v) = value {
+    if let Some(v) = value {
         let escaped = v.replace('\n', "\\n");
         serializer.serialize_some(&escaped)
     } else {
@@ -124,6 +124,8 @@ pub struct Options {
     npm_registry_npmrc_path: Option<String>,
     #[arg(long, default_value_t = false)]
     skip_cargo: bool,
+    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
+    cargo_main_registry: String,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, env)]
@@ -781,11 +783,7 @@ impl Display for Results {
 }
 
 fn bool_to_emoji(value: bool) -> &'static str {
-    if value {
-        "x"
-    } else {
-        ""
-    }
+    if value { "x" } else { "" }
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
@@ -878,7 +876,7 @@ pub async fn check_workspace(
         true => Some(DependencyKind::Normal),
         false => None,
     };
-    let crates = CrateGraph::new(&path, limit_dependency_kind)?;
+    let crates = CrateGraph::new(&path, options.cargo_main_registry, limit_dependency_kind)?;
     let mut packages: HashMap<PackageId, Result> = HashMap::new();
     let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
 
@@ -1234,8 +1232,8 @@ mod tests {
     use git2::Repository;
 
     use crate::{
-        commands::check_workspace::{check_workspace, Options, Result as Package},
-        utils::test::{commit_all_changes, initialize_workspace, FAKE_REGISTRY},
+        commands::check_workspace::{Options, Result as Package, check_workspace},
+        utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
     };
 
     fn create_complex_workspace() -> PathBuf {

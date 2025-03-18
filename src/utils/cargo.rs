@@ -6,8 +6,8 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use toml_edit::{table, value, DocumentMut, Table};
+use toml_edit::{DocumentMut, Table, table, value};
 use walkdir::WalkDir;
 
 const CARGO_DEFAULT_CRATE_URL: &str = "https://crates.io/api/v1/crates/";
@@ -219,11 +219,19 @@ impl Cargo {
                 .clone()
                 .unwrap_or_else(|| "fslabsci".to_string());
 
+            let Some(token) = registry.token.clone() else {
+                return Err(anyhow::anyhow!(
+                    "looking registry information without setting token: {}",
+                    &registry_name
+                ));
+            };
+
             let req = Request::builder()
                 .method(Method::GET)
                 .uri(url.clone())
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
+                .header("Authorization", token)
                 .header("User-Agent", user_agent.clone())
                 .body(Empty::default())?;
 

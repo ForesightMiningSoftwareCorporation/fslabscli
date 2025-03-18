@@ -15,8 +15,8 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Method, Request};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use url::Url;
 
@@ -227,7 +227,7 @@ fn serialize_error_escaped<S>(value: &Option<String>, serializer: S) -> Result<S
 where
     S: Serializer,
 {
-    if let Some(ref v) = value {
+    if let Some(v) = value {
         let escaped = v
             .replace('\\', "\\\\") // Escape backslashes
             .replace('"', "\\\""); // Escape quotes

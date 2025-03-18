@@ -1,5 +1,5 @@
-use crate::utils::github::{generate_github_app_token, InstallationRetrievalMode};
 use crate::PrettyPrintable;
+use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};

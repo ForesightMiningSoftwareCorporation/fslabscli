@@ -2,7 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use indexmap::IndexMap;
 use junit_report::{OffsetDateTime, ReportBuilder, TestCase, TestSuiteBuilder};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
@@ -18,9 +18,9 @@ use std::{
 };
 
 use crate::{
-    commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions},
-    utils::{execute_command, execute_command_without_logging},
     PrettyPrintable,
+    commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+    utils::{execute_command, execute_command_without_logging},
 };
 
 static DB_PASSWORD: &str = "mypassword";

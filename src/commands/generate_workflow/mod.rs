@@ -11,7 +11,7 @@ use clap::Parser;
 use indexmap::IndexMap;
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_with::{formats::PreferOne, serde_as, OneOrMany};
+use serde_with::{OneOrMany, formats::PreferOne, serde_as};
 use serde_yaml::Value;
 use void::Void;
 
@@ -19,16 +19,16 @@ use cargo_metadata::PackageId;
 
 use itertools::Itertools;
 
-use crate::commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions};
-use crate::utils::{deserialize_opt_string_or_map, deserialize_opt_string_or_struct, FromMap};
 use crate::PrettyPrintable;
+use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
+use crate::utils::{FromMap, deserialize_opt_string_or_map, deserialize_opt_string_or_struct};
 
+use self::workflows::Workflow;
 use self::workflows::publish_docker::PublishDockerWorkflow;
 use self::workflows::publish_npm_napi::PublishNpmNapiWorkflow;
 use self::workflows::publish_rust_binary::PublishRustBinaryWorkflow;
 use self::workflows::publish_rust_installer::PublishRustInstallerWorkflow;
 use self::workflows::publish_rust_registry::PublishRustRegistryWorkflow;
-use self::workflows::Workflow;
 
 use super::check_workspace::Results as CheckResults;
 
