@@ -1210,7 +1210,10 @@ pub async fn check_workspace(
     }
     for package_key in package_keys.clone() {
         if let Some(package) = packages.get_mut(&package_key) {
-            if package.changed {
+            // We retest when dependencies change because not doing so has caused us to miss
+            // serious bugs, or even compilation errors until the package is changed. This
+            // results in longer test times, but removing the check is not a solution.
+            if package.changed || package.dependencies_changed {
                 package.perform_test = true;
             }
         }
