@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 use object_store::{
+    ObjectStore,
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
     path::Path,
-    ObjectStore,
 };
 use serde::{Deserialize, Serialize};
 

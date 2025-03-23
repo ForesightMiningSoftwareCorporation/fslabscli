@@ -1,8 +1,8 @@
-use chrono::{prelude::*, Duration};
+use chrono::{Duration, prelude::*};
 use core::result::Result as CoreResult;
 use std::cmp;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,13 +10,13 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Context;
-use cargo_metadata::{DependencyKind, Package};
+use cargo_metadata::{DependencyKind, Package, PackageId};
 use clap::Parser;
-use console::{style, Emoji};
+use console::{Emoji, style};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{path::Path as BSPath, ObjectStore};
+use object_store::{ObjectStore, path::Path as BSPath};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -27,9 +27,11 @@ use strum_macros::EnumString;
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
 use crate::crate_graph::CrateGraph;
+use crate::utils::cargo::Cargo;
 use binary::PackageMetadataFslabsCiPublishBinary;
-use cargo::{Cargo, PackageMetadataFslabsCiPublishCargo};
+use cargo::PackageMetadataFslabsCiPublishCargo;
 use docker::PackageMetadataFslabsCiPublishDocker;
+use nix_binary::PackageMetadataFslabsCiPublishNixBinary;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
 use crate::PrettyPrintable;
@@ -37,6 +39,7 @@ use crate::PrettyPrintable;
 mod binary;
 mod cargo;
 mod docker;
+mod nix_binary;
 mod npm;
 
 static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
@@ -66,7 +69,7 @@ fn serialize_multiline_as_escaped<S>(
 where
     S: Serializer,
 {
-    if let Some(ref v) = value {
+    if let Some(v) = value {
         let escaped = v.replace('\n', "\\n");
         serializer.serialize_some(&escaped)
     } else {
@@ -121,14 +124,8 @@ pub struct Options {
     npm_registry_npmrc_path: Option<String>,
     #[arg(long, default_value_t = false)]
     skip_cargo: bool,
-    #[arg(long)]
-    cargo_registry: Option<String>,
-    #[arg(long)]
-    cargo_registry_url: Option<String>,
-    #[arg(long)]
-    cargo_registry_user_agent: Option<String>,
-    #[arg(long, default_value_t = false)]
-    cargo_default_publish: bool,
+    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
+    cargo_main_registry: String,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, env)]
@@ -155,6 +152,8 @@ pub struct Options {
     fail_unit_error: bool,
     #[arg(long, default_value_t = false)]
     hide_dependencies: bool,
+    #[arg(long, default_value_t = false)]
+    ignore_dev_dependencies: bool,
 }
 
 impl Options {
@@ -162,13 +161,13 @@ impl Options {
         Self::default()
     }
 
-    pub fn with_cargo_default_publish(mut self, cargo_default_publish: bool) -> Self {
-        self.cargo_default_publish = cargo_default_publish;
+    pub fn with_check_changed(mut self, check_changed: bool) -> Self {
+        self.check_changed = check_changed;
         self
     }
 
-    pub fn with_check_changed(mut self, check_changed: bool) -> Self {
-        self.check_changed = check_changed;
+    pub fn with_progress(mut self, progress: bool) -> Self {
+        self.progress = progress;
         self
     }
 
@@ -186,6 +185,11 @@ impl Options {
         self.changed_base_ref = base_ref;
         self
     }
+
+    pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
+        self.ignore_dev_dependencies = ignore_dev_dependencies;
+        self
+    }
 }
 
 fn default_dependency_kind() -> DependencyKind {
@@ -194,6 +198,7 @@ fn default_dependency_kind() -> DependencyKind {
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct ResultDependency {
     pub package: Option<String>,
+    pub package_id: Option<PackageId>,
     pub rename: Option<String>,
     pub path: Option<PathBuf>,
     #[serde(default = "default_dependency_kind")]
@@ -210,6 +215,7 @@ pub struct ResultDependency {
 pub struct Result {
     pub workspace: String,
     pub package: String,
+    pub package_id: Option<PackageId>,
     pub version: String,
     pub path: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
@@ -261,6 +267,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub npm_napi: PackageMetadataFslabsCiPublishNpmNapi,
     #[serde(default = "PackageMetadataFslabsCiPublishBinary::default")]
     pub binary: PackageMetadataFslabsCiPublishBinary,
+    #[serde(default = "PackageMetadataFslabsCiPublishNixBinary::default")]
+    pub nix_binary: PackageMetadataFslabsCiPublishNixBinary,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     #[serde(default, serialize_with = "serialize_multiline_as_escaped")]
@@ -326,6 +334,7 @@ impl Result {
         package: Package,
         root_dir: PathBuf,
         hide_dependencies: bool,
+        dep_to_id: &HashMap<String, PackageId>,
     ) -> anyhow::Result<Self> {
         let path = dunce::canonicalize(package.manifest_path)?
             .parent()
@@ -335,23 +344,20 @@ impl Result {
         let metadata: PackageMetadata =
             from_value(package.metadata.clone()).unwrap_or_else(|_| PackageMetadata::default());
         let mut publish = metadata.clone().fslabs.publish.unwrap_or_default();
-        publish.cargo.registry = match package.publish.clone() {
-            Some(r) => Some(r.clone()),
-            None => {
-                // Should be public registry, double check this is wanted
-                if publish.cargo.allow_public {
-                    Some(vec!["public".to_string()])
-                } else {
-                    Some(vec![])
-                }
-            }
-        };
+        let mut registries = publish.cargo.registries.unwrap_or_default();
+        for r in package.publish.unwrap_or_default() {
+            registries.insert(r.clone());
+        }
+        if publish.cargo.allow_public {
+            registries.insert("crates.io".to_string());
+        }
+        publish.cargo.registries = Some(registries);
 
         publish.cargo.publish = publish
             .cargo
-            .registry
+            .registries
             .clone()
-            .map(|r| r.len() == 1)
+            .map(|r| !r.is_empty())
             .unwrap_or(false);
 
         let dependencies: Vec<ResultDependency> = package
@@ -360,7 +366,8 @@ impl Result {
             // Somehow, we now need to put the devedependencies in the tree
             // .filter(|p| p.kind == DependencyKind::Normal)
             .map(|d| ResultDependency {
-                package: Some(d.name),
+                package: Some(d.name.clone()),
+                package_id: dep_to_id.get(&d.name).cloned(),
                 rename: d.rename,
                 kind: d.kind,
                 path: d.path.map(|p| p.into()),
@@ -395,6 +402,7 @@ impl Result {
         //
         Ok(Self {
             workspace,
+            package_id: Some(package.id.clone()),
             package: package.name,
             version: package.version.to_string(),
             path,
@@ -452,8 +460,9 @@ impl Result {
         release_channel: Option<&str>,
         toolchain: &str,
         version_timestamp: &str,
-        package_versions: &HashMap<String, String>,
+        package_versions: &HashMap<PackageId, String>,
         object_store: &Option<BinaryStore>,
+        dep_to_id: &HashMap<String, PackageId>,
     ) -> anyhow::Result<()> {
         self.update_release_channel(release_channel);
         self.update_ci_runner(toolchain);
@@ -573,31 +582,37 @@ impl Result {
                     self.package,
                     self.publish_detail.binary.launcher.suffix
                 );
-                if let Some(launcher_version) = package_versions.get(&launcher_name) {
-                    let (launcher_blob_dir, launcher_name) = get_blob_name(
-                        &launcher_name,
-                        launcher_version,
-                        toolchain,
-                        &self.publish_detail.release_channel,
-                    );
-                    self.publish_detail.binary.installer.launcher_blob_dir =
-                        Some(launcher_blob_dir);
-                    self.publish_detail.binary.installer.launcher_blob_name = Some(launcher_name);
-                    if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
-                        self.publish_detail.binary.installer.installer_blob_name = Some(
-                            format!("{}.{}.{}.msi", fallback_name, launcher_version, rc_version)
+                if let Some(launcher_package_id) = dep_to_id.get(&launcher_name) {
+                    if let Some(launcher_version) = package_versions.get(launcher_package_id) {
+                        let (launcher_blob_dir, launcher_name) = get_blob_name(
+                            &launcher_name,
+                            launcher_version,
+                            toolchain,
+                            &self.publish_detail.release_channel,
+                        );
+                        self.publish_detail.binary.installer.launcher_blob_dir =
+                            Some(launcher_blob_dir);
+                        self.publish_detail.binary.installer.launcher_blob_name =
+                            Some(launcher_name);
+                        if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
+                            self.publish_detail.binary.installer.installer_blob_name = Some(
+                                format!(
+                                    "{}.{}.{}.msi",
+                                    fallback_name, launcher_version, rc_version
+                                )
                                 .to_lowercase(),
-                        );
-                        self.publish_detail
-                            .binary
-                            .installer
-                            .installer_blob_signed_name = Some(
-                            format!(
-                                "{}.{}.{}-signed.msi",
-                                fallback_name, launcher_version, rc_version
-                            )
-                            .to_lowercase(),
-                        );
+                            );
+                            self.publish_detail
+                                .binary
+                                .installer
+                                .installer_blob_signed_name = Some(
+                                format!(
+                                    "{}.{}.{}-signed.msi",
+                                    fallback_name, launcher_version, rc_version
+                                )
+                                .to_lowercase(),
+                            );
+                        }
                     }
                 }
                 // subapps
@@ -606,14 +621,18 @@ impl Result {
                     let sub_app_full_blob_name: String;
                     if self.publish_detail.release_channel == ReleaseChannel::Nightly {
                         //need to add the nightly epoch to the suffix
-                        if let Some(subapp_version) = package_versions.get(s) {
-                            let (subapp_dir, subapp_name) = get_blob_name(
-                                s,
-                                &format!("{}.{}", subapp_version, version_timestamp),
-                                toolchain,
-                                &self.publish_detail.release_channel,
-                            );
-                            sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                        if let Some(subapp_package_id) = dep_to_id.get(s) {
+                            if let Some(subapp_version) = package_versions.get(subapp_package_id) {
+                                let (subapp_dir, subapp_name) = get_blob_name(
+                                    s,
+                                    &format!("{}.{}", subapp_version, version_timestamp),
+                                    toolchain,
+                                    &self.publish_detail.release_channel,
+                                );
+                                sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                            } else {
+                                continue;
+                            }
                         } else {
                             continue;
                         }
@@ -718,6 +737,12 @@ impl Result {
                     self.publish_detail.binary.error = Some(e.to_string());
                 }
             };
+            match self.publish_detail.nix_binary.check().await {
+                Ok(_) => {}
+                Err(e) => {
+                    self.publish_detail.nix_binary.error = Some(e.to_string());
+                }
+            };
         }
 
         Ok(())
@@ -742,11 +767,15 @@ impl Display for Result {
 }
 
 #[derive(Serialize)]
-pub struct Results(pub(crate) HashMap<String, Result>);
+pub struct Results {
+    pub members: HashMap<PackageId, Result>,
+    #[serde(skip)]
+    pub crate_graph: CrateGraph,
+}
 
 impl Display for Results {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for (k, v) in &self.0 {
+        for (k, v) in &self.members {
             writeln!(f, "{}: {}", k, v)?;
         }
         Ok(())
@@ -754,15 +783,11 @@ impl Display for Results {
 }
 
 fn bool_to_emoji(value: bool) -> &'static str {
-    if value {
-        "x"
-    } else {
-        ""
-    }
+    if value { "x" } else { "" }
 }
 impl PrettyPrintable for Results {
     fn pretty_print(&self) -> String {
-        let mut results: Vec<&Result> = self.0.values().collect();
+        let mut results: Vec<&Result> = self.members.values().collect();
         results.sort_by(|a, b| {
             // Compare primary keys first
             match a.workspace.cmp(&b.workspace) {
@@ -780,10 +805,23 @@ impl PrettyPrintable for Results {
             7,
         );
         let out: Vec<String> = vec![
-            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-"),
-            format!("| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |", "Workspace", "Package", "Version", "Publish", "Tests"),
-            format!("| {:workspace_len$} | {:package_len$} | {:version_len$} | docker | cargo | npm | binary | any | {:^5} |", "", "", "", ""),
-            format!("|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|", "-", "-", "-", "-", "-")];
+            format!(
+                "|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|",
+                "-", "-", "-", "-", "-"
+            ),
+            format!(
+                "| {:^workspace_len$} | {:^package_len$} | {:^version_len$} | {:^35} | {:^5} |",
+                "Workspace", "Package", "Version", "Publish", "Tests"
+            ),
+            format!(
+                "| {:workspace_len$} | {:package_len$} | {:version_len$} | docker | cargo | npm | binary | any | {:^5} |",
+                "", "", "", ""
+            ),
+            format!(
+                "|-{:-^workspace_len$}-|-{:-^package_len$}-|-{:-^version_len$}-|-{:-^35}-|-{:-^5}-|",
+                "-", "-", "-", "-", "-"
+            ),
+        ];
         [out,
          results.iter()
             .map(|v| {
@@ -806,7 +844,7 @@ pub async fn check_workspace(
     options: Box<Options>,
     working_directory: PathBuf,
 ) -> anyhow::Result<Results> {
-    log::info!("Check directory for crates that need publishing");
+    tracing::info!("Check directory for crates that need publishing");
     let started = Instant::now();
     let path = match working_directory.is_absolute() {
         true => working_directory.clone(),
@@ -825,42 +863,57 @@ pub async fn check_workspace(
         options.binary_store_container_name,
         options.binary_store_access_key,
     )?;
-    log::debug!("Base directory: {:?}", path);
+    tracing::debug!("Base directory: {:?}", path);
     // 1. Find all workspaces to investigate
     if options.progress {
         println!(
             "{} {}Resolving workspaces...",
-            style("[1/9]").bold().dim(),
+            style("[1/7]").bold().dim(),
             LOOKING_GLASS
         );
     }
-    let crates = CrateGraph::new(&path)?;
-    let mut packages: HashMap<String, Result> = HashMap::new();
+    let limit_dependency_kind = match options.ignore_dev_dependencies {
+        true => Some(DependencyKind::Normal),
+        false => None,
+    };
+    let crates = CrateGraph::new(&path, options.cargo_main_registry, limit_dependency_kind)?;
+    let mut packages: HashMap<PackageId, Result> = HashMap::new();
+    let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
+
     // 2. For each workspace, find if one of the subcrates needs publishing
     if options.progress {
         println!(
             "{} {}Resolving packages...",
-            style("[2/9]").bold().dim(),
+            style("[2/7]").bold().dim(),
             TRUCK
         );
     }
+
     for workspace in crates.workspaces() {
+        let resolve = workspace.metadata.resolve.as_ref().unwrap();
+        for node in &resolve.nodes {
+            for node_dep in &node.deps {
+                dep_to_id.insert(node_dep.name.clone(), node_dep.pkg.clone());
+            }
+        }
+
         for package in workspace.metadata.workspace_packages() {
             match Result::new(
                 workspace.path.to_string_lossy().into(),
                 package.clone(),
                 working_directory.clone(),
                 options.hide_dependencies,
+                &dep_to_id,
             ) {
                 Ok(package) => {
-                    packages.insert(package.package.clone(), package);
+                    packages.insert(package.package_id.clone().unwrap().clone(), package);
                 }
                 Err(e) => {
                     let error_msg = format!("Could not check package {}: {}", package.name, e);
                     if options.fail_unit_error {
                         anyhow::bail!(error_msg)
                     } else {
-                        log::warn!("{}", error_msg);
+                        tracing::warn!("{}", error_msg);
                         continue;
                     }
                 }
@@ -868,13 +921,13 @@ pub async fn check_workspace(
         }
     }
 
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
+    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
 
     // 5. Compute Runtime information
     if options.progress {
         println!(
             "{} {}Compute runtime information...",
-            style("[5/9]").bold().dim(),
+            style("[3/7]").bold().dim(),
             TRUCK
         );
     }
@@ -885,7 +938,7 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
-    let mut package_versions: HashMap<String, String> = HashMap::new();
+    let mut package_versions: HashMap<PackageId, String> = HashMap::new();
     package_versions.extend(packages.iter().map(|(k, v)| (k.clone(), v.version.clone())));
     for package_key in package_keys.clone() {
         if let Some(ref pb) = pb {
@@ -903,16 +956,70 @@ pub async fn check_workspace(
                     &timestamp,
                     &package_versions,
                     &binary_store,
+                    &dep_to_id,
                 )
                 .await?;
         }
     }
 
+    // Check Alt Registries Settings
+    // If package A needs to be published to an alt registry, all of its dependencies should be as well
+    if options.progress {
+        println!(
+            "{} {}Back-feeding alt registry settings...",
+            style("[4/7]").bold().dim(),
+            PAPER
+        );
+    }
+    let mut pb: Option<ProgressBar> = None;
+    if options.progress {
+        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+        ));
+    }
+
+    let mut packages_registries: HashMap<PackageId, HashSet<String>> = HashMap::new();
+    let mut all_packages_registries: HashSet<String> = HashSet::new();
+    for package_key in package_keys.clone() {
+        if let Some(package) = packages.get(&package_key) {
+            if let Some(registries) = &package.publish_detail.cargo.registries {
+                packages_registries.insert(package_key.clone(), registries.clone());
+                all_packages_registries.extend(registries.clone());
+            }
+        }
+    }
+    for (package_key, registries) in packages_registries {
+        if let Some(ref pb) = pb {
+            pb.inc(1);
+        }
+        if !registries.is_empty() {
+            let transitive_dependencies = crates
+                .dependency_graph()
+                .get_transitive_dependencies(package_key.clone());
+            // The package should be publish to some alt registries
+            // Let's set that in all it's dependent
+            // Let's update each transitive dep with the list of registries
+            for dep_id in transitive_dependencies {
+                if let Some(dep) = packages.get_mut(&dep_id) {
+                    let mut dep_registries = dep
+                        .publish_detail
+                        .cargo
+                        .registries
+                        .clone()
+                        .unwrap_or_default();
+                    for registry in &registries {
+                        dep_registries.insert(registry.clone());
+                    }
+                    dep.publish_detail.cargo.registries = Some(dep_registries);
+                }
+            }
+        }
+    }
     // Check Release status
     if options.progress {
         println!(
             "{} {}Checking published status...",
-            style("[6/9]").bold().dim(),
+            style("[5/7]").bold().dim(),
             PAPER
         );
     }
@@ -923,17 +1030,7 @@ pub async fn check_workspace(
         options.npm_registry_npmrc_path.clone(),
         true,
     )?;
-    let mut cargo = Cargo::new(None)?;
-    if let (Some(private_registry), Some(private_registry_url)) = (
-        options.cargo_registry.clone(),
-        options.cargo_registry_url.clone(),
-    ) {
-        cargo.add_registry(
-            private_registry,
-            private_registry_url,
-            options.cargo_registry_user_agent.clone(),
-        )?;
-    }
+    let cargo = Cargo::new(&all_packages_registries)?;
     let mut docker = Docker::new(None)?;
     if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
         options.docker_registry.clone(),
@@ -981,7 +1078,7 @@ pub async fn check_workspace(
                         if options.fail_unit_error {
                             anyhow::bail!(error_msg)
                         } else {
-                            log::warn!("{}", error_msg);
+                            tracing::warn!("{}", error_msg);
                             continue;
                         }
                     }
@@ -1022,7 +1119,7 @@ pub async fn check_workspace(
     if options.progress {
         println!(
             "{} {}Resolving packages dependencies...",
-            style("[3/9]").bold().dim(),
+            style("[6/7]").bold().dim(),
             TRUCK
         );
     }
@@ -1032,7 +1129,7 @@ pub async fn check_workspace(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
     }
-    let publish_status: HashMap<String, bool> = packages
+    let publish_status: HashMap<PackageId, bool> = packages
         .clone()
         .into_iter()
         .map(|(k, v)| (k, v.publish))
@@ -1046,11 +1143,13 @@ pub async fn check_workspace(
             if let Some(ref pb) = pb {
                 pb.set_message(format!("{} : {}", package.workspace, package.package));
             }
-            package
-                .dependencies
-                .retain(|d| d.package.as_ref().is_some_and(|p| package_keys.contains(p)));
+            package.dependencies.retain(|d| {
+                d.package_id
+                    .as_ref()
+                    .is_some_and(|p| package_keys.contains(p))
+            });
             for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package {
+                if let Some(package_name) = &dep.package_id {
                     if let Some(dep_p) = publish_status.get(package_name) {
                         dep.publishable = *dep_p;
                     }
@@ -1058,13 +1157,13 @@ pub async fn check_workspace(
             }
         }
     }
-    let package_keys: Vec<String> = packages.keys().cloned().collect();
-    log::info!("Package list: {package_keys:#?}");
+    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
+    tracing::debug!("Package list: {package_keys:#?}");
 
     if options.progress {
         println!(
             "{} {}Checking if packages changed...",
-            style("[8/9]").bold().dim(),
+            style("[7/7]").bold().dim(),
             TRUCK
         );
     }
@@ -1078,12 +1177,12 @@ pub async fn check_workspace(
         // Check changed from a git pov
         let changed_package_paths =
             crates.changed_packages(&options.changed_base_ref, &options.changed_head_ref)?;
-        log::info!("Changed packages: {changed_package_paths:#?}");
+        tracing::info!("Changed packages: {changed_package_paths:#?}");
         // Any packages that transitively depend on changed packages are also considered "changed".
         let changed_closure = crates
             .dependency_graph()
             .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
-        log::info!("Changed closure: {changed_closure:#?}");
+        tracing::info!("Changed closure: {changed_closure:#?}");
 
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
@@ -1096,14 +1195,14 @@ pub async fn check_workspace(
                 if options.check_publish && package.publish {
                     // mark package as changed
                     package.changed = true;
-                    log::info!("Marking package as changed for publish: {:?}", package.path);
+                    tracing::info!("Marking package as changed for publish: {:?}", package.path);
                     continue;
                 }
                 if changed_package_paths.contains(&package.path) {
-                    log::info!("Detected change in {:?}", package.path);
+                    tracing::info!("Detected change in {:?}", package.path);
                     package.changed = true;
                 } else if changed_closure.contains(&package.path) {
-                    log::info!("A dependency changed for {:?}", package.path);
+                    tracing::info!("A dependency changed for {:?}", package.path);
                     package.dependencies_changed = true;
                 }
             }
@@ -1123,5 +1222,133 @@ pub async fn check_workspace(
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
 
-    Ok(Results(packages))
+    Ok(Results {
+        members: packages,
+        crate_graph: crates,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, process::Command};
+
+    use git2::Repository;
+
+    use crate::{
+        commands::check_workspace::{Options, Result as Package, check_workspace},
+        utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
+    };
+
+    fn create_complex_workspace() -> PathBuf {
+        let tmp = assert_fs::TempDir::new()
+            .unwrap()
+            .into_persistent()
+            .to_path_buf();
+
+        let repo = Repository::init(&tmp).expect("Failed to init repo");
+
+        // Configure Git user info (required for commits)
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Test User")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "test@example.com")
+            .unwrap();
+        repo.config().unwrap().set_str("gpg.sign", "false").unwrap();
+
+        initialize_workspace(
+            &tmp,
+            "workspace_a",
+            vec!["crates_a", "crates_b", "crates_c"],
+            vec![],
+        );
+        initialize_workspace(&tmp, "workspace_d", vec!["crates_e", "crates_f"], vec![]);
+        initialize_workspace(&tmp, "crates_g", vec![], vec!["some_other_registries"]);
+
+        // Setup Deps
+        // workspace_d/crates_e -> workspace_a/crates_a
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../../../workspace_a/crates/crates_a")
+            .arg("workspace_a__crates_a")
+            .current_dir(tmp.join("workspace_d").join("crates").join("crates_e"))
+            .output()
+            .expect("Failed to add workspace_a__crates_a to workspace_d__crates_e");
+        // crates_g ->  workspace_d/crates_e
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../workspace_d/crates/crates_e")
+            .arg("workspace_d__crates_e")
+            .current_dir(tmp.join("crates_g"))
+            .output()
+            .expect("Failed to add workspace_d__crates_e");
+        // crates_g ->  workspace_a/crates_b
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../workspace_a/crates/crates_b")
+            .arg("workspace_a__crates_b")
+            .current_dir(tmp.join("crates_g"))
+            .output()
+            .expect("Failed to add workspace_a__crates_b");
+        // Stage and commit initial crate
+        commit_all_changes(&tmp, "Initial commit");
+        dunce::canonicalize(tmp).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_alternate_registry_back_feeding() {
+        let ws = create_complex_workspace();
+
+        // Check workspace information
+        let check_workspace_options = Options::new();
+        let results = check_workspace(Box::new(check_workspace_options), ws.clone())
+            .await
+            .unwrap();
+
+        fn check_registry_condition(v: &Package, should_have_registry: bool) {
+            let has_alt_reg = v
+                .publish_detail
+                .cargo
+                .registries
+                .clone()
+                .unwrap_or_default()
+                .contains("some_other_registries");
+            assert_eq!(has_alt_reg, should_have_registry);
+        }
+
+        for v in results.members.values() {
+            match v.package.as_str() {
+                "workspace_a__crates_a" => {
+                    check_registry_condition(v, true);
+                }
+                "workspace_a__crates_b" => {
+                    check_registry_condition(v, true);
+                }
+                "workspace_a__crates_c" => {
+                    check_registry_condition(v, false);
+                }
+                "workspace_d__crates_f" => {
+                    check_registry_condition(v, false);
+                }
+                "crates_g" => {
+                    check_registry_condition(v, true);
+                }
+                _ => {}
+            }
+        }
+    }
 }

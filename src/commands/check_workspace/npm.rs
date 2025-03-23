@@ -8,8 +8,8 @@ use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper::{Method, Request, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +38,7 @@ impl PackageMetadataFslabsCiPublishNpmNapi {
             None => "".to_string(),
         };
         let package_name = format!("{}{}", npm_package_prefix, package.clone());
-        log::debug!(
+        tracing::debug!(
             "NPM: checking if version {} of {} already exists",
             version,
             package_name

@@ -1,5 +1,7 @@
-use cargo_metadata::{semver::Version, Metadata, MetadataCommand, Package, PackageId};
-use git2::{build::CheckoutBuilder, DiffDelta, Repository};
+use cargo_metadata::{
+    DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
+};
+use git2::{DiffDelta, Repository, build::CheckoutBuilder};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -7,12 +9,14 @@ use std::{
     path::{Path, PathBuf, StripPrefixError},
 };
 
+use crate::utils::get_registry_env;
+
 /// The (directed acyclic) graph of crates in a multi-workspace repo.
 #[derive(Clone, Debug)]
 pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
-    dependencies: DependencyGraph,
+    pub dependencies: DependencyGraph,
 }
 
 impl CrateGraph {
@@ -25,16 +29,29 @@ impl CrateGraph {
     /// # Errors
     ///
     /// Returns error if a manifest is found that cannot be parsed.
-    pub fn new(repo_root: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    pub fn new(
+        repo_root: impl Into<PathBuf>,
+        main_registry: impl Into<String> + Clone,
+        dep_kind: Option<DependencyKind>,
+    ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
-        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces)?;
+        Self::new_recursive(
+            &repo_root,
+            &ignore,
+            &repo_root,
+            main_registry,
+            &mut workspaces,
+        )?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
-        let dependencies = DependencyGraph::new(&repo_root, &workspaces);
+        let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
+        if let Some(cycles) = dependencies.detect_cycles() {
+            return Err(anyhow::anyhow!("Cycle detected: {:?}", cycles));
+        }
         Ok(Self {
             repo_root,
             workspaces,
@@ -46,6 +63,7 @@ impl CrateGraph {
         repo_root: &Path,
         ignore: &Gitignore,
         dir: &Path,
+        main_registry: impl Into<String> + Clone,
         workspaces: &mut Vec<Workspace>,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name() {
@@ -63,8 +81,13 @@ impl CrateGraph {
         let manifest_path = dir.join("Cargo.toml");
         if std::fs::exists(&manifest_path)? {
             // Found a manifest. Get metadata.
-
-            let metadata = MetadataCommand::new().current_dir(dir).exec()?;
+            let envs = get_registry_env(main_registry.clone().into());
+            let mut command = MetadataCommand::new();
+            command.current_dir(dir);
+            for (k, v) in envs {
+                command.env(k, v);
+            }
+            let metadata = command.exec()?;
 
             let has_explicit_members = if metadata.root_package().is_some() {
                 metadata.workspace_members.len() > 1
@@ -89,7 +112,13 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces)?;
+                Self::new_recursive(
+                    repo_root,
+                    ignore,
+                    &entry.path(),
+                    main_registry.clone(),
+                    workspaces,
+                )?;
             }
         }
 
@@ -299,13 +328,17 @@ pub struct DependencyGraph {
     id_to_path: HashMap<PackageId, PathBuf>,
 
     /// "KEY depends on VALUE"
-    dependencies: HashMap<PackageId, Vec<PackageId>>,
+    pub dependencies: HashMap<PackageId, Vec<PackageId>>,
     /// "KEY is depended on by VALUE"
     reverse_dependencies: HashMap<PackageId, Vec<PackageId>>,
 }
 
 impl DependencyGraph {
-    pub fn new(repo_root: &Path, workspaces: &[Workspace]) -> Self {
+    pub fn new(
+        repo_root: &Path,
+        workspaces: &[Workspace],
+        dep_kind: Option<DependencyKind>,
+    ) -> Self {
         let mut me = Self::default();
 
         for w in workspaces {
@@ -318,16 +351,31 @@ impl DependencyGraph {
                 me.reverse_dependencies
                     .insert(p.id.clone(), Default::default());
             }
+        }
 
+        for w in workspaces {
             // Create the M:N bidirectional dependency map between package IDs.
             let resolve = w.metadata.resolve.as_ref().unwrap();
             for node in &resolve.nodes {
                 if me.id_to_path.contains_key(&node.id) {
                     let deps = me.dependencies.get_mut(&node.id).unwrap();
-                    for d in &node.dependencies {
-                        if me.id_to_path.contains_key(d) {
-                            let reverse_deps = me.reverse_dependencies.get_mut(d).unwrap();
-                            deps.push(d.clone());
+                    for node_dep in &node.deps {
+                        let dep_id = &node_dep.pkg;
+                        let is_accepted_dep = match dep_kind {
+                            Some(kind) => {
+                                let mut is_accepted_dep = false;
+                                for dep_kind in &node_dep.dep_kinds {
+                                    if dep_kind.kind == kind {
+                                        is_accepted_dep = true;
+                                    }
+                                }
+                                is_accepted_dep
+                            }
+                            None => true,
+                        };
+                        if is_accepted_dep && me.id_to_path.contains_key(dep_id) {
+                            let reverse_deps = me.reverse_dependencies.get_mut(dep_id).unwrap();
+                            deps.push(dep_id.clone());
                             reverse_deps.push(node.id.clone());
                         }
                     }
@@ -365,6 +413,85 @@ impl DependencyGraph {
         closure.sort();
         closure
     }
+
+    pub fn get_transitive_dependencies(&self, root: PackageId) -> HashSet<PackageId> {
+        let mut visited = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(current_package) = stack.pop() {
+            if let Some(deps) = self.dependencies.get(&current_package) {
+                for dep in deps {
+                    if !visited.contains(&dep.clone()) {
+                        visited.insert(dep.clone());
+                        stack.push(dep.clone());
+                    }
+                }
+            }
+        }
+        visited
+    }
+
+    pub fn detect_cycles(&self) -> Option<Vec<PackageId>> {
+        // used to prevent duplicate cycle trasversal
+        let mut visited = HashSet::new();
+        // used to detect if there is a cycle in the current trasversal
+        let mut recursion_stack = HashSet::new();
+        let mut cycle_path = Vec::new();
+
+        // Helper function for DFS traversal, returns true if a cycle is detected
+        fn dfs(
+            graph: &DependencyGraph,
+            package: &PackageId,
+            visited: &mut HashSet<PackageId>,
+            recursion_stack: &mut HashSet<PackageId>,
+            cycle_path: &mut Vec<PackageId>,
+        ) -> bool {
+            if recursion_stack.contains(package) {
+                // Cycle detected, record the cycle path
+                cycle_path.push(package.clone());
+                return true;
+            }
+
+            if visited.contains(package) {
+                return false;
+            }
+
+            // Mark the package as visited
+            visited.insert(package.clone());
+            recursion_stack.insert(package.clone());
+
+            // Traverse the dependencies
+            if let Some(deps) = graph.dependencies.get(package) {
+                for dep in deps {
+                    if dfs(graph, dep, visited, recursion_stack, cycle_path) {
+                        cycle_path.push(package.clone());
+                        return true;
+                    }
+                }
+            }
+
+            // Backtrack
+            recursion_stack.remove(package);
+            false
+        }
+
+        // Try to detect cycles for each package in the graph
+        for package in self.dependencies.keys() {
+            if !visited.contains(&package.clone())
+                && dfs(
+                    self,
+                    package,
+                    &mut visited,
+                    &mut recursion_stack,
+                    &mut cycle_path,
+                )
+            {
+                cycle_path.reverse();
+                return Some(cycle_path);
+            }
+        }
+
+        None // No cycle detected
+    }
 }
 
 /// The path to `package`, relative to `repo_root`.
@@ -378,12 +505,8 @@ pub fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path>
 
 fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, StripPrefixError> {
     // In MacOs temp folders can be /var/private or /private (symlink between the two)
-    let canonical_root = root
-        .canonicalize()
-        .expect("Failed to canonicalize root path");
-    let canonical_path = path
-        .canonicalize()
-        .expect("Failed to canonicalize package path");
+    let canonical_root = dunce::canonicalize(root).expect("Failed to canonicalize root path");
+    let canonical_path = dunce::canonicalize(path).expect("Failed to canonicalize package path");
 
     match canonical_path.strip_prefix(&canonical_root)? {
         p if p == Path::new("") => Ok(Cow::Owned(PathBuf::from("."))),
@@ -393,6 +516,8 @@ fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, Strip
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::test::{commit_all_changes, commit_repo, modify_file, stage_file};
+
     use super::*;
     use std::process::Command;
 
@@ -400,7 +525,7 @@ mod tests {
     fn test_discover_standalone_workspace() {
         let repo = initialize_repo().join("standalone");
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].path, Path::new("."));
@@ -417,7 +542,7 @@ mod tests {
     fn test_discover_many_workspaces() {
         let repo = initialize_repo();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         let workspaces = graph.workspaces();
         assert_eq!(workspaces.len(), 5);
         let mut i = workspaces.iter();
@@ -495,7 +620,7 @@ mod tests {
     #[test]
     fn test_detect_changed_packages() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         // These revision strings rely on an understanding of the test repo's git log.
         // We know that the most recent revision makes changes to files in foo and bar.
@@ -506,7 +631,7 @@ mod tests {
     #[test]
     fn test_detect_changed_package_single_rust_crate() {
         let repo = create_simple_rust_crate();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
@@ -516,7 +641,7 @@ mod tests {
     fn test_detect_changed_package_unstaged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
 
         let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
@@ -527,7 +652,7 @@ mod tests {
     fn test_detect_changed_package_staged_file() {
         let repo = create_simple_rust_crate();
 
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
         modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
         stage_file(&repo, "src/lib.rs");
 
@@ -538,7 +663,7 @@ mod tests {
     #[test]
     fn test_fix_lock_files() {
         let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo).unwrap();
+        let graph = CrateGraph::new(&repo, "", None).unwrap();
 
         // Remove lock files created from running cargo-metadata.
         for workspace in graph.workspaces() {
@@ -617,67 +742,50 @@ mod tests {
         commit_repo(&tmp, "Added new function");
         tmp
     }
-    fn commit_all_changes(repo_path: &PathBuf, message: &str) {
-        stage_all(repo_path);
-        commit_repo(repo_path, message);
-    }
+    #[test]
+    fn test_get_transitive_dependencies() {
+        // Set up a simple graph
+        let mut graph = DependencyGraph::default();
 
-    fn modify_file(repo_path: &Path, file_path: &str, content: &str) {
-        let full_path = repo_path.join(file_path);
-
-        // Ensure the directory exists
-        std::fs::create_dir_all(full_path.parent().unwrap()).expect("Failed to create directories");
-
-        // Modify the file
-        std::fs::write(&full_path, content).expect("Failed to write to file");
-    }
-
-    fn stage_file(repo_path: &PathBuf, file_path: &str) {
-        let repo = Repository::open(repo_path).expect("Failed to open repo");
-        let mut index = repo.index().unwrap();
-        index
-            .add_all([file_path].iter(), git2::IndexAddOption::DEFAULT, None)
-            .expect("Failed to add files to index");
-        index.write().expect("Failed to write index");
-    }
-
-    fn stage_all(repo_path: &PathBuf) {
-        stage_file(repo_path, "*");
-    }
-
-    fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
-        let repo = Repository::open(repo_path).expect("Failed to open repo");
-        let mut index = repo.index().unwrap();
-
-        let oid = index.write_tree().unwrap();
-        let signature = repo.signature().unwrap();
-        let tree = repo.find_tree(oid).unwrap();
-        let parent_commit = repo
-            .head()
-            .ok()
-            .and_then(|r| r.target())
-            .and_then(|oid| repo.find_commit(oid).ok());
-
-        if let Some(parent) = parent_commit {
-            repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                commit_message,
-                &tree,
-                &[&parent],
-            )
-            .unwrap();
-        } else {
-            repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                commit_message,
-                &tree,
-                &[],
-            )
-            .unwrap();
+        // Example data (add your actual data)
+        let package_1 = PackageId {
+            repr: "1".to_string(),
         };
+        let package_2 = PackageId {
+            repr: "2".to_string(),
+        };
+        let package_3 = PackageId {
+            repr: "3".to_string(),
+        };
+        let package_4 = PackageId {
+            repr: "4".to_string(),
+        };
+
+        // Package 1 depends on Package 2 and Package 3
+        graph.dependencies.insert(
+            package_1.clone(),
+            vec![package_2.clone(), package_3.clone()],
+        );
+
+        // Package 2 depends on Package 4
+        graph
+            .dependencies
+            .insert(package_2.clone(), vec![package_4.clone()]);
+
+        // Package 3 has no dependencies
+        graph.dependencies.insert(package_3.clone(), vec![]);
+
+        // Package 4 has no dependencies
+        graph.dependencies.insert(package_4.clone(), vec![]);
+
+        // Test: Get all transitive dependencies of Package 1
+        let transitive_deps = graph.get_transitive_dependencies(package_1);
+
+        // Expected transitive dependencies for Package 1: {2, 3, 4}
+        let expected_deps: HashSet<PackageId> =
+            vec![package_2, package_3, package_4].into_iter().collect();
+
+        // Assert that the returned transitive dependencies match the expected ones
+        assert_eq!(transitive_deps, expected_deps);
     }
 }

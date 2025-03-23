@@ -1,12 +1,24 @@
 use std::fmt;
-use std::fmt::Display;
 use std::marker::PhantomData;
 use std::str::FromStr;
 
 use indexmap::IndexMap;
 use serde::de::{Error as SerdeError, MapAccess, Visitor};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    path::PathBuf,
+    process::Stdio,
+};
+use tokio::io::AsyncBufReadExt;
+
 use void::Void;
+
+pub mod cargo;
+pub mod github;
+#[cfg(test)]
+pub mod test;
 
 pub trait FromMap {
     fn from_map(map: IndexMap<String, String>) -> Result<Self, Void>
@@ -179,4 +191,114 @@ where
     }
 
     deserializer.deserialize_any(StringOrStruct(PhantomData))
+}
+
+/// [`execute_command`] with intermediate logging disabled.
+pub async fn execute_command_without_logging(
+    command: &str,
+    dir: &PathBuf,
+    envs: &HashMap<String, String>,
+    envs_remove: &HashSet<String>,
+) -> (String, String, bool) {
+    execute_command(command, dir, envs, envs_remove, None, None).await
+}
+
+/// Execute the `command`, returning stdout and stderr as strings, and success state as a boolean.
+///
+/// Optionally, stdout and stderr can be logged asynchronously to the current process's stdout
+/// during command execution. This is useful in cases where the command might hang. If the command
+/// does hang, the partially complete output would never be visible without enabling this logging.
+pub async fn execute_command(
+    command: &str,
+    dir: &PathBuf,
+    envs: &HashMap<String, String>,
+    envs_remove: &HashSet<String>,
+    log_stdout: Option<tracing::Level>,
+    log_stderr: Option<tracing::Level>,
+) -> (String, String, bool) {
+    let shell = if cfg!(target_os = "windows") {
+        "powershell.exe"
+    } else {
+        "bash"
+    };
+
+    let mut c = tokio::process::Command::new(shell);
+    c.arg("-c")
+        .arg(command)
+        .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    for env in envs_remove {
+        c.env_remove(env);
+    }
+    c.envs(envs);
+
+    let mut child = c.spawn().expect("Unmable to spawn command");
+
+    let stdout = child.stdout.take().expect("Failed to get stdout");
+    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
+    let mut stdout_string = String::new();
+
+    let stderr = child.stderr.take().expect("Failed to get stderr");
+    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
+    let mut stderr_string = String::new();
+
+    loop {
+        tokio::select! {
+            Ok(Some(line)) = stdout_stream.next_line() =>  {
+                stdout_string.push_str(&format!("{}\n", line));
+                if log_stdout.is_some() {
+                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                }
+            },
+            Ok(Some(line)) = stderr_stream.next_line() =>  {
+                stderr_string.push_str(&format!("{}\n", line));
+                if log_stderr.is_some() {
+                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                }
+            },
+            else => break,
+        }
+    }
+
+    let status = child.wait().await;
+
+    match status {
+        Ok(output) => {
+            let exit_code = output.code().unwrap_or(1);
+            (stdout_string.to_string(), stderr_string, exit_code == 0)
+        }
+        Err(e) => ("".to_string(), e.to_string(), false),
+    }
+}
+
+pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
+    let mut envs = HashMap::from([
+        (
+            "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
+            "true".to_string(),
+        ),
+        ("GIT_SSH_COMMAND".to_string(), "".to_string()),
+        ("SSH_AUTH_SOCK".to_string(), "".to_string()),
+    ]);
+    let registry_prefix =
+        format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
+    if let Ok(index) = std::env::var(format!("{}_INDEX", registry_prefix)) {
+        envs.insert(format!("{}_INDEX", registry_prefix), index.clone());
+    }
+    if let Ok(token) = std::env::var(format!("{}_TOKEN", registry_prefix)) {
+        envs.insert(format!("{}_TOKEN", registry_prefix), token.clone());
+        envs.insert("Authorization".to_string(), token.clone());
+    }
+    if let Ok(user_agent) = std::env::var(format!("{}_USER_AGENT", registry_prefix)) {
+        envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent.clone());
+    }
+    if let Ok(private_key) = std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)) {
+        envs.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            format!("ssh -i {}", private_key.clone()),
+        );
+    }
+    envs
 }

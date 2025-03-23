@@ -2,32 +2,32 @@ use anyhow::Context;
 use clap::Parser;
 use indexmap::IndexMap;
 use junit_report::{OffsetDateTime, ReportBuilder, TestCase, TestSuiteBuilder};
+use opentelemetry::{KeyValue, global};
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use serde_yaml::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     fmt::{Display, Formatter},
     fs::File,
     path::PathBuf,
-    process::Stdio,
     thread::sleep,
     time::Duration,
 };
-use tokio::io::AsyncBufReadExt;
 
 use crate::{
-    commands::check_workspace::{check_workspace, Options as CheckWorkspaceOptions},
     PrettyPrintable,
+    commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+    utils::{execute_command, execute_command_without_logging},
 };
 
 static DB_PASSWORD: &str = "mypassword";
 static DB_NAME: &str = "tests";
 
 #[derive(Debug, Parser, Default)]
-#[command(about = "Run rust tests")]
+#[command(about = "Run tests")]
 pub struct Options {
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
@@ -67,85 +67,23 @@ struct FslabsTest {
     pub envs: HashMap<String, String>,
 }
 
-/// [`execute_command`] with intermediate logging disabled.
-async fn execute_command_without_logging(
-    command: &str,
-    dir: &PathBuf,
-    envs: &HashMap<String, String>,
-) -> (String, String, bool) {
-    execute_command(command, dir, envs, None, None).await
-}
-
-/// Execute the `command`, returning stdout and stderr as strings, and success state as a boolean.
-///
-/// Optionally, stdout and stderr can be logged asynchronously to the current process's stdout
-/// during command execution. This is useful in cases where the command might hang. If the command
-/// does hang, the partially complete output would never be visible without enabling this logging.
-async fn execute_command(
-    command: &str,
-    dir: &PathBuf,
-    envs: &HashMap<String, String>,
-    log_stdout: Option<log::Level>,
-    log_stderr: Option<log::Level>,
-) -> (String, String, bool) {
-    let shell = if cfg!(target_os = "windows") {
-        "powershell.exe"
-    } else {
-        "bash"
-    };
-
-    let mut child = tokio::process::Command::new(shell)
-        .arg("-c")
-        .arg(command)
-        .current_dir(dunce::canonicalize(dir).expect("Failed to canonicalize"))
-        .envs(envs)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Unable to spawn command");
-
-    let stdout = child.stdout.take().expect("Failed to get stdout");
-    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
-    let mut stdout_string = String::new();
-
-    let stderr = child.stderr.take().expect("Failed to get stderr");
-    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
-    let mut stderr_string = String::new();
-
-    loop {
-        tokio::select! {
-            Ok(Some(line)) = stdout_stream.next_line() =>  {
-                stdout_string.push_str(&line);
-                if let Some(level) = log_stdout {
-                    log::log!(level," │ {}", line)
-                }
-            },
-            Ok(Some(line)) = stderr_stream.next_line() =>  {
-                stderr_string.push_str(&line);
-                if let Some(level) = log_stderr {
-                    log::log!(level," │ {}", line)
-                }
-            },
-            else => break,
-        }
-    }
-
-    let status = child.wait().await;
-
-    match status {
-        Ok(output) => {
-            let exit_code = output.code().unwrap_or(1);
-            (stdout_string.to_string(), stderr_string, exit_code == 0)
-        }
-        Err(e) => ("".to_string(), e.to_string(), false),
-    }
-}
-
 async fn teardown_container(container_id: String) {
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
-    execute_command_without_logging(&format!("docker stop {container_id}"), &path, &envs).await;
-    execute_command_without_logging(&format!("docker rm {container_id}"), &path, &envs).await;
+    execute_command_without_logging(
+        &format!("docker stop {container_id}"),
+        &path,
+        &envs,
+        &HashSet::new(),
+    )
+    .await;
+    execute_command_without_logging(
+        &format!("docker rm {container_id}"),
+        &path,
+        &envs,
+        &HashSet::new(),
+    )
+    .await;
 }
 
 async fn create_docker_container(
@@ -163,6 +101,7 @@ async fn create_docker_container(
         &format!("docker run --name={container_name} -d {env} {port} {options} {image}"),
         &path,
         &envs,
+        &HashSet::new(),
     )
     .await;
     if !success {
@@ -174,6 +113,7 @@ async fn create_docker_container(
         &format!("docker ps -q -f name={container_name}"),
         &path,
         &envs,
+        &HashSet::new(),
     )
     .await;
     if !success {
@@ -192,14 +132,21 @@ fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<b
     test_args.get(arg).and_then(|v| v.as_bool())
 }
 
-pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
+pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
+    let meter = global::meter("tests");
+    let overall_duration_h = meter.f64_histogram("rust_tests_workspace").build();
+    let overall_counter = meter.u64_counter("rust_tests_workspace").build();
+    let member_duration_h = meter.f64_histogram("rust_tests_member").build();
+    let member_counter = meter.u64_counter("rust_tests_member").build();
+    let test_duration_h = meter.f64_histogram("rust_tests_test").build();
+    let test_counter = meter.u64_counter("rust_tests_test").build();
     let overall_start_time = OffsetDateTime::now_utc();
     // Get Directory information
-    log::info!("Running the tests with the following arguments:");
-    log::info!("* `check_changed`: true");
-    log::info!("* `check_publish`: false");
-    log::info!("* `changed_head_ref`: {}", options.pull_pull_sha);
-    log::info!("* `changed_base_ref`: {}", options.pull_base_sha);
+    tracing::info!("Running the tests with the following arguments:");
+    tracing::info!("* `check_changed`: true");
+    tracing::info!("* `check_publish`: false");
+    tracing::info!("* `changed_head_ref`: {}", options.pull_pull_sha);
+    tracing::info!("* `changed_base_ref`: {}", options.pull_base_sha);
 
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(true)
@@ -207,10 +154,10 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         .with_changed_head_ref(options.pull_pull_sha)
         .with_changed_base_ref(options.pull_base_sha);
 
-    let members = check_workspace(Box::new(check_workspace_options), repo_root.clone())
+    let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
         .map_err(|e| {
-            log::error!("Check directory for crates that need publishing: {}", e);
+            tracing::error!("Check directory for crates that need publishing: {}", e);
             e
         })
         .with_context(|| "Could not get directory information")?;
@@ -220,7 +167,8 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
     // Global fail tracker
     let mut failed = false;
 
-    for (_, member) in members.0 {
+    for (_, member) in results.members {
+        let member_start_time = OffsetDateTime::now_utc();
         let workspace_name = member.workspace;
         let package_name = member.package;
         let package_version = member.version;
@@ -236,8 +184,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         }
 
         let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
-        log::info!("Testing {ts_name}");
-        log::info!("");
+        tracing::info!("Testing {ts_name}");
         let mut ts_mandatory = TestSuiteBuilder::new(&format!("Mandatory {ts_name}"))
             .set_timestamp(OffsetDateTime::now_utc())
             .build();
@@ -247,7 +194,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
         // Handle service database
         if !failed && get_test_arg_bool(&test_args, "service_database") == Some(true) {
-            log::info!("Setting up service database");
+            tracing::info!("Setting up service database");
             let start_time = OffsetDateTime::now_utc();
             let pg_port = free_local_port().unwrap();
             let service_db_container = create_docker_container(
@@ -282,7 +229,7 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         }
         // Handle service azurite
         if !failed && get_test_arg_bool(&test_args, "service_azurite") == Some(true) {
-            log::info!("Setting up service azurite");
+            tracing::info!("Setting up service azurite");
             let start_time = OffsetDateTime::now_utc();
             let azurite_container = create_docker_container(
                 "azurite".to_string(),
@@ -315,30 +262,31 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         // Handle cache miss (this should be dropped and only additional script)
         if !failed {
             if let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
-                log::info!("Running cache miss command");
+                tracing::info!("Running cache miss command");
                 let start_time = OffsetDateTime::now_utc();
                 let mut envs: HashMap<String, String> = HashMap::new();
                 if let Some(db_url) = database_url.clone() {
                     envs.insert("DATABASE_URL".to_string(), db_url.clone());
                 }
-                let (stdout, stderr, success) =
-                    execute_command_without_logging(&cache_miss_command, &package_path, &envs)
-                        .await;
+                let (stdout, stderr, success) = execute_command_without_logging(
+                    &cache_miss_command,
+                    &package_path,
+                    &envs,
+                    &HashSet::new(),
+                )
+                .await;
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
-                log::debug!("cache_miss: {stdout}");
-                let cache_miss_tc = match success {
+                tracing::debug!("cache_miss: {stdout}");
+                let mut cache_miss_tc = match success {
                     true => TestCase::success(&cache_miss_command, duration),
                     false => {
                         failed = true;
-                        TestCase::failure(
-                            &cache_miss_command,
-                            duration,
-                            "cache_miss",
-                            stderr.as_str(),
-                        )
+                        TestCase::failure(&cache_miss_command, duration, "", "required")
                     }
                 };
+                cache_miss_tc.set_system_out(&stderr);
+                cache_miss_tc.set_system_err(&stdout);
                 ts_mandatory.add_testcase(cache_miss_tc);
             }
         }
@@ -346,41 +294,48 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
         // Handle Additional Script
         if !failed {
             if let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
-                log::info!("Running additional script command");
+                tracing::info!("Running additional script command");
                 let start_time = OffsetDateTime::now_utc();
                 let mut envs: HashMap<String, String> = HashMap::new();
                 if let Some(db_url) = database_url.clone() {
                     envs.insert("DATABASE_URL".to_string(), db_url.clone());
                 }
-                let mut sub_fail: Option<String> = None;
+                let mut a_stdout: String = "".to_string();
+                let mut a_stderr: String = "".to_string();
+                let mut sub_failed = false;
+
                 for line in additional_scripts.split("\n") {
                     if line.is_empty() {
                         continue;
                     }
-                    if sub_fail.is_some() {
+                    if sub_failed {
                         continue;
                     }
-                    let (stdout, stderr, success) =
-                        execute_command_without_logging(line, &package_path, &envs).await;
-                    log::debug!("additional_script: {line} {stdout}");
+                    let (stdout, stderr, success) = execute_command_without_logging(
+                        line,
+                        &package_path,
+                        &envs,
+                        &HashSet::new(),
+                    )
+                    .await;
+                    a_stdout = format!("{a_stdout}\n{stdout}",);
+                    a_stderr = format!("{a_stderr}\n{stderr}",);
+                    tracing::debug!("additional_script: {line} {stdout}");
                     if !success {
-                        sub_fail = Some(stderr);
+                        sub_failed = true;
                     }
                 }
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
-                let additional_script_tc = match sub_fail {
-                    None => TestCase::success("additional_script", duration),
-                    Some(stderr) => {
+                let mut additional_script_tc = match sub_failed {
+                    false => TestCase::success("additional_script", duration),
+                    true => {
                         failed = true;
-                        TestCase::failure(
-                            "additional_script",
-                            duration,
-                            "additional_script",
-                            stderr.as_str(),
-                        )
+                        TestCase::failure("additional_script", duration, "", "required")
                     }
                 };
+                additional_script_tc.set_system_out(&a_stderr);
+                additional_script_tc.set_system_err(&a_stdout);
                 ts_mandatory.add_testcase(additional_script_tc);
             }
         }
@@ -415,30 +370,65 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
         for fslabs_test in fslabs_tests {
             if failed {
-                log::info!("╭────────────────────────────────────────────────────────────────╮");
-                log::info!("│ {:60}   │", fslabs_test.command);
-                log::info!("╰─┬──────────────────────────────────────────────────────────────╯");
-                log::info!("  ╰───────⏵ ⏭ SKIPPED");
+                tracing::info!(
+                    "╭────────────────────────────────────────────────────────────────╮"
+                );
+                tracing::info!("│ {:60}   │", fslabs_test.command);
+                tracing::info!(
+                    "╰─┬──────────────────────────────────────────────────────────────╯"
+                );
+                tracing::info!("  ╰───────⏵ ⏭ SKIPPED");
+
+                test_duration_h.record(
+                    0.0,
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", "SKIPPED"),
+                    ],
+                );
+                test_counter.add(
+                    1,
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", "SKIPPED"),
+                    ],
+                );
                 let tc = TestCase::skipped(fslabs_test.command.as_str());
                 match fslabs_test.optional {
                     true => ts_optional.add_testcase(tc),
                     false => ts_mandatory.add_testcase(tc),
                 };
             } else {
-                log::info!("╭────────────────────────────────────────────────────────────────╮");
-                log::info!("│ {:60}   │", fslabs_test.command);
-                log::info!("╰─┬──────────────────────────────────────────────────────────────╯");
+                tracing::info!(
+                    "╭────────────────────────────────────────────────────────────────╮"
+                );
+                tracing::info!("│ {:60}   │", fslabs_test.command);
+                tracing::info!(
+                    "╰─┬──────────────────────────────────────────────────────────────╯"
+                );
                 let start_time = OffsetDateTime::now_utc();
                 if let Some(pre_command) = fslabs_test.pre_command {
-                    execute_command_without_logging(&pre_command, &package_path, &fslabs_test.envs)
-                        .await;
+                    execute_command_without_logging(
+                        &pre_command,
+                        &package_path,
+                        &fslabs_test.envs,
+                        &HashSet::new(),
+                    )
+                    .await;
                 }
                 let (stdout, stderr, success) = execute_command(
                     &fslabs_test.command,
                     &package_path,
                     &fslabs_test.envs,
-                    Some(log::Level::Debug),
-                    Some(log::Level::Debug),
+                    &HashSet::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
                 )
                 .await;
                 if let Some(post_command) = fslabs_test.post_command {
@@ -446,21 +436,24 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                         &post_command,
                         &package_path,
                         &fslabs_test.envs,
+                        &HashSet::new(),
                     )
                     .await;
                 }
                 let end_time = OffsetDateTime::now_utc();
                 let duration = end_time - start_time;
 
+                let mut status = "PASS";
                 let mut tc = match success {
                     true => {
-                        log::info!("  ╰───────⏵ 🟢 PASS in {}", duration);
-                        log::info!("");
+                        tracing::info!("  ╰───────⏵ 🟢 PASS in {}", duration);
+                        tracing::info!("");
                         TestCase::success(&fslabs_test.command, duration)
                     }
                     false => {
-                        log::info!("  ╰───────⏵ 🟥 FAIL in {}", duration);
-                        log::info!("");
+                        tracing::info!("  ╰───────⏵ 🟥 FAIL in {}", duration);
+                        status = "FAIL";
+                        tracing::info!("");
                         failed = !fslabs_test.optional; // fail all if not optional
                         TestCase::failure(
                             &fslabs_test.command,
@@ -474,6 +467,27 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
                         )
                     }
                 };
+
+                test_duration_h.record(
+                    duration.as_seconds_f64(),
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", status),
+                    ],
+                );
+                test_counter.add(
+                    1,
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", status),
+                    ],
+                );
                 tc.set_system_out(&stderr);
                 tc.set_system_err(&stdout);
                 match fslabs_test.optional {
@@ -485,23 +499,58 @@ pub async fn rust_tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Re
 
         // Tear down docker containers
         if let Some(container_id) = service_database_container_id {
-            log::info!("Tearing down service database");
+            tracing::info!("Tearing down service database");
             teardown_container(container_id).await;
         }
         if let Some(container_id) = service_azurite_container_id {
-            log::info!("Tearing down service azurite");
+            tracing::info!("Tearing down service azurite");
             teardown_container(container_id).await;
         }
         junit_report.add_testsuite(ts_mandatory);
         junit_report.add_testsuite(ts_optional);
+
+        let member_end_time = OffsetDateTime::now_utc();
+        let member_duration = member_end_time - member_start_time;
+        member_duration_h.record(
+            member_duration.as_seconds_f64(),
+            &[
+                KeyValue::new("workspace_name", workspace_name.clone()),
+                KeyValue::new("package_name", package_name.clone()),
+                KeyValue::new("package_version", package_version.clone()),
+                KeyValue::new("success", !failed),
+            ],
+        );
+        member_counter.add(
+            1,
+            &[
+                KeyValue::new("workspace_name", workspace_name.clone()),
+                KeyValue::new("package_name", package_name.clone()),
+                KeyValue::new("package_version", package_version.clone()),
+                KeyValue::new("success", !failed),
+            ],
+        );
     }
     let mut junit_file = File::create(options.artifacts.join("junit.rust.xml"))?;
     junit_report.write_xml(&mut junit_file)?;
     let overall_end_time = OffsetDateTime::now_utc();
     let overall_duration = overall_end_time - overall_start_time;
-    log::info!("Workspace tests ran in {}", overall_duration);
+    tracing::info!("Workspace tests ran in {}", overall_duration);
     match failed {
-        false => Ok(TestResult {}),
-        true => Err(anyhow::anyhow!("tests failed")),
+        false => {
+            overall_duration_h.record(
+                overall_duration.as_seconds_f64(),
+                &[KeyValue::new("status", "success")],
+            );
+            overall_counter.add(1, &[KeyValue::new("success", true)]);
+            Ok(TestResult {})
+        }
+        true => {
+            overall_duration_h.record(
+                overall_duration.as_seconds_f64(),
+                &[KeyValue::new("status", "failed")],
+            );
+            overall_counter.add(1, &[KeyValue::new("success", false)]);
+            Err(anyhow::anyhow!("tests failed"))
+        }
     }
 }
