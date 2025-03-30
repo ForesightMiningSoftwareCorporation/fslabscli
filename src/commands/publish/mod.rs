@@ -1,6 +1,7 @@
 use anyhow::Context;
 use cargo_metadata::PackageId;
 use clap::Parser;
+use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
 use octocrab::Octocrab;
 use serde::Serialize;
@@ -65,6 +66,8 @@ pub struct Options {
     cargo_main_registry: String,
     #[arg(long, env, default_value = "false")]
     dry_run: bool,
+    #[arg(long, env, default_value = "false")]
+    handle_tags: bool,
 }
 
 #[derive(Serialize, Default, Clone)]
@@ -125,12 +128,13 @@ pub struct PublishResult {
     pub docker: PublishDetailResult,
     pub cargo: HashMap<String, PublishDetailResult>, // HashMap on Registries
     pub nix_binary: PublishDetailResult,
+    pub git_tag: PublishDetailResult,
     pub start_time: Option<SystemTime>,
     pub end_time: Option<SystemTime>,
 }
 
 impl PublishResult {
-    pub fn new(package: &Package, registries: HashSet<String>) -> Self {
+    pub fn new(package: &Package, registries: HashSet<String>, options: Box<Options>) -> Self {
         let mut s = Self {
             should_publish: package.publish,
             docker: PublishDetailResult {
@@ -143,6 +147,12 @@ impl PublishResult {
                 name: "nix build .#release".to_string(),
                 key: "nix".to_string(),
                 should_publish: package.publish_detail.nix_binary.publish,
+                ..Default::default()
+            },
+            git_tag: PublishDetailResult {
+                name: "git tag".to_string(),
+                key: "git".to_string(),
+                should_publish: options.handle_tags,
                 ..Default::default()
             },
             ..Default::default()
@@ -196,7 +206,11 @@ impl PublishResults {
             let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
             let mut ts = TestSuiteBuilder::new(&ts_name).build();
             if let Some(publish_result) = self.published_members.get(package_id) {
-                let mut results = vec![&publish_result.nix_binary, &publish_result.docker];
+                let mut results = vec![
+                    &publish_result.nix_binary,
+                    &publish_result.docker,
+                    &publish_result.git_tag,
+                ];
                 for cargo in publish_result.cargo.values() {
                     results.push(cargo);
                 }
@@ -410,7 +424,8 @@ async fn publish_package(
             }
             if mark_failed {
                 let mut map = statuses.write().expect("RwLock posoned");
-                let failed_result = PublishResult::new(&package, registries).with_failed(true);
+                let failed_result =
+                    PublishResult::new(&package, registries, options).with_failed(true);
                 *map.entry(package_id.clone()).or_insert(None) = Some(failed_result);
                 drop(map);
                 return;
@@ -450,7 +465,7 @@ async fn do_publish_package(
     options: Box<Options>,
     registries: HashSet<String>,
 ) -> PublishResult {
-    let mut result = PublishResult::new(&package, registries);
+    let mut result = PublishResult::new(&package, registries, options.clone());
     result.start_time = Some(SystemTime::now());
     if !package.publish {
         result.end_time = Some(SystemTime::now());
@@ -702,6 +717,31 @@ async fn do_publish_package(
             }
         }
         result.docker.end_time = Some(SystemTime::now());
+    }
+    if !is_failed && result.git_tag.should_publish {
+        result.git_tag.start_time = Some(SystemTime::now());
+        let tagged: Result<(), git2::Error> = (|| {
+            let tag = format!("{}-{}", package.package, package.version);
+            result.git_tag.stdout = format!("{}\nCreating tag {}", result.git_tag.stdout, tag);
+            let repository = Repository::open(&repo_root)?;
+            result.git_tag.stdout = format!(
+                "{}\nOpened repository at {:?}",
+                result.git_tag.stdout, repo_root
+            );
+            let obj = repository.revparse_single("HEAD")?;
+            result.git_tag.stdout = format!("{}\nFound commit for HEAD", result.git_tag.stdout);
+            repository.tag_lightweight(&tag, &obj, true)?;
+            result.git_tag.stdout = format!("{}\nPushed lightweight tag", result.git_tag.stdout);
+            Ok(())
+        })();
+        if let Err(err) = tagged {
+            result.git_tag.stderr = format!("{}\n{}", result.git_tag.stderr, err);
+            result.git_tag.success = false;
+            is_failed = true;
+        } else {
+            result.git_tag.success = true;
+        }
+        result.git_tag.end_time = Some(SystemTime::now());
     }
     result.success = !is_failed;
     result.end_time = Some(SystemTime::now());
