@@ -731,7 +731,7 @@ async fn do_publish_package(
             let obj = repository.revparse_single("HEAD")?;
             result.git_tag.stdout = format!("{}\nFound commit for HEAD", result.git_tag.stdout);
             repository.tag_lightweight(&tag, &obj, true)?;
-            result.git_tag.stdout = format!("{}\nPushed lightweight tag", result.git_tag.stdout);
+            result.git_tag.stdout = format!("{}\nCreated lightweight tag", result.git_tag.stdout);
             Ok(())
         })();
         if let Err(err) = tagged {
@@ -739,7 +739,23 @@ async fn do_publish_package(
             result.git_tag.success = false;
             is_failed = true;
         } else {
-            result.git_tag.success = true;
+            let (stdout, stderr, success) = execute_command(
+                "git push origin --tags",
+                &repo_root,
+                &HashMap::new(),
+                &HashSet::new(),
+                Some(tracing::Level::DEBUG),
+                Some(tracing::Level::DEBUG),
+            )
+            .await;
+            result.git_tag.stdout = format!("{}\nPushed tags\n{}", result.git_tag.stdout, stdout);
+
+            if success {
+                result.git_tag.success = true;
+            } else {
+                result.git_tag.success = false;
+                result.git_tag.stderr = format!("{}\n{}", result.git_tag.stderr, stderr);
+            }
         }
         result.git_tag.end_time = Some(SystemTime::now());
     }
