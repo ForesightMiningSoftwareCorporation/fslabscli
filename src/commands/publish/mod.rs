@@ -726,6 +726,16 @@ async fn do_publish_package(
             if let (Some(github_app_id), Some(github_app_private_key)) =
                 (options.github_app_id, options.github_app_private_key)
             {
+                let Some(head) = Repository::open(&repo_root)
+                    .ok()
+                    .as_ref()
+                    .and_then(|r| r.head().ok())
+                    .as_ref()
+                    .and_then(|head| head.shorthand())
+                    .map(|head| head.to_string())
+                else {
+                    return Err(anyhow::Error::msg("Failed to get head"));
+                };
                 let github_token = generate_github_app_token(
                     github_app_id,
                     github_app_private_key.clone(),
@@ -735,9 +745,7 @@ async fn do_publish_package(
                 .await?;
                 let octocrab = Octocrab::builder().personal_token(github_token).build()?;
                 let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
-                let publish_ref = repo.get_ref(&Reference::Tag("publish".to_string())).await?;
-                repo.create_ref(&Reference::Tag(tag), publish_ref.ref_field)
-                    .await?;
+                repo.create_ref(&Reference::Tag(tag), head).await?;
             } else {
                 tracing::debug!("Github credentials not set, not doing anything");
             }
