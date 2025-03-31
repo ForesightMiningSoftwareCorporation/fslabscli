@@ -4,6 +4,7 @@ use clap::Parser;
 use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
 use octocrab::Octocrab;
+use octocrab::params::repos::Reference;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -720,42 +721,35 @@ async fn do_publish_package(
     }
     if !is_failed && result.git_tag.should_publish {
         result.git_tag.start_time = Some(SystemTime::now());
-        let tagged: Result<(), git2::Error> = (|| {
+        let tagged: anyhow::Result<()> = (async || {
             let tag = format!("{}-{}", package.package, package.version);
-            result.git_tag.stdout = format!("{}\nCreating tag {}", result.git_tag.stdout, tag);
-            let repository = Repository::open(&repo_root)?;
-            result.git_tag.stdout = format!(
-                "{}\nOpened repository at {:?}",
-                result.git_tag.stdout, repo_root
-            );
-            let obj = repository.revparse_single("HEAD")?;
-            result.git_tag.stdout = format!("{}\nFound commit for HEAD", result.git_tag.stdout);
-            repository.tag_lightweight(&tag, &obj, true)?;
-            result.git_tag.stdout = format!("{}\nCreated lightweight tag", result.git_tag.stdout);
+            if let (Some(github_app_id), Some(github_app_private_key)) =
+                (options.github_app_id, options.github_app_private_key)
+            {
+                let github_token = generate_github_app_token(
+                    github_app_id,
+                    github_app_private_key.clone(),
+                    InstallationRetrievalMode::Organization,
+                    Some(options.repo_owner.clone()),
+                )
+                .await?;
+                let octocrab = Octocrab::builder().personal_token(github_token).build()?;
+                let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
+                let publish_ref = repo.get_ref(&Reference::Tag("publish".to_string())).await?;
+                repo.create_ref(&Reference::Tag(tag), publish_ref.ref_field)
+                    .await?;
+            } else {
+                tracing::debug!("Github credentials not set, not doing anything");
+            }
             Ok(())
-        })();
+        })()
+        .await;
         if let Err(err) = tagged {
             result.git_tag.stderr = format!("{}\n{}", result.git_tag.stderr, err);
             result.git_tag.success = false;
             is_failed = true;
         } else {
-            let (stdout, stderr, success) = execute_command(
-                "git push origin --tags",
-                &repo_root,
-                &HashMap::new(),
-                &HashSet::new(),
-                Some(tracing::Level::DEBUG),
-                Some(tracing::Level::DEBUG),
-            )
-            .await;
-            result.git_tag.stdout = format!("{}\nPushed tags\n{}", result.git_tag.stdout, stdout);
-
-            if success {
-                result.git_tag.success = true;
-            } else {
-                result.git_tag.success = false;
-                result.git_tag.stderr = format!("{}\n{}", result.git_tag.stderr, stderr);
-            }
+            result.git_tag.success = true;
         }
         result.git_tag.end_time = Some(SystemTime::now());
     }
