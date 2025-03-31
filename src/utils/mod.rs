@@ -279,7 +279,7 @@ pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
             "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
             "true".to_string(),
         ),
-        ("GIT_SSH_COMMAND".to_string(), "".to_string()),
+        ("GIT_SSH_COMMAND".to_string(), "ssh -vvv".to_string()),
         ("SSH_AUTH_SOCK".to_string(), "".to_string()),
     ]);
     let registry_prefix =
@@ -297,7 +297,7 @@ pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
     if let Ok(private_key) = std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)) {
         envs.insert(
             "GIT_SSH_COMMAND".to_string(),
-            format!("ssh -i {}", private_key.clone()),
+            format!("ssh -vvv -i {}", private_key.clone()),
         );
     }
     envs
