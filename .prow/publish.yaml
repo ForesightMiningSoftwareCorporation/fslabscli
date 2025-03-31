@@ -1,0 +1,19 @@
+postsubmits:
+  - name: test-publish-handle-tags
+    decorate: true
+    branches:
+      - ^test-publish$
+    labels:
+      preset-rust-credentials: "true"
+      preset-github-token: "true"
+    spec:
+      containers:
+        - image: ghcr.io/foresightminingsoftwarecorporation/prow-tests:2e8e50a67867ce1b1aaa00f6757a3bc45f5a27e6@sha256:4ab402c7598a46f8374c98ec6c3033cac96c734bda492e609b3f86dfb23a2f75
+          env:
+            - name: HANDLE_TAGS
+              value: "true"
+          command:
+            - cargo
+            - run
+            - --
+            - publish
