@@ -726,6 +726,7 @@ async fn do_publish_package(
             if let (Some(github_app_id), Some(github_app_private_key)) =
                 (options.github_app_id, options.github_app_private_key)
             {
+                result.git_tag.stdout = format!("{}\nRetrieving git HEAD", result.git_tag.stdout);
                 let Some(head) = Repository::open(&repo_root)
                     .ok()
                     .as_ref()
@@ -734,8 +735,11 @@ async fn do_publish_package(
                     .and_then(|head| head.shorthand())
                     .map(|head| head.to_string())
                 else {
-                    return Err(anyhow::Error::msg("Failed to get head"));
+                    return Err(anyhow::Error::msg("Failed to get git HEAD"));
                 };
+                result.git_tag.stdout = format!("{}\nHEAD: {}", result.git_tag.stdout, head);
+
+                result.git_tag.stdout = format!("{}\nGenerating GitHub token", result.git_tag.stdout);
                 let github_token = generate_github_app_token(
                     github_app_id,
                     github_app_private_key.clone(),
@@ -745,6 +749,7 @@ async fn do_publish_package(
                 .await?;
                 let octocrab = Octocrab::builder().personal_token(github_token).build()?;
                 let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
+                result.git_tag.stdout = format!("{}\nCreating tag {} at {}", result.git_tag.stdout, tag, head);
                 repo.create_ref(&Reference::Tag(tag), head).await?;
             } else {
                 tracing::debug!("Github credentials not set, not doing anything");
