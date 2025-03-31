@@ -732,8 +732,8 @@ async fn do_publish_package(
                     .as_ref()
                     .and_then(|r| r.head().ok())
                     .as_ref()
-                    .and_then(|head| head.shorthand())
-                    .map(|head| head.to_string())
+                    .and_then(|head| head.peel_to_commit().ok())
+                    .map(|head| head.id().to_string())
                 else {
                     return Err(anyhow::Error::msg("Failed to get git HEAD"));
                 };
