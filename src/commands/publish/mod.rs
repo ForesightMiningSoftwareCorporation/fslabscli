@@ -739,7 +739,8 @@ async fn do_publish_package(
                 };
                 result.git_tag.stdout = format!("{}\nHEAD: {}", result.git_tag.stdout, head);
 
-                result.git_tag.stdout = format!("{}\nGenerating GitHub token", result.git_tag.stdout);
+                result.git_tag.stdout =
+                    format!("{}\nGenerating GitHub token", result.git_tag.stdout);
                 let github_token = generate_github_app_token(
                     github_app_id,
                     github_app_private_key.clone(),
@@ -749,7 +750,10 @@ async fn do_publish_package(
                 .await?;
                 let octocrab = Octocrab::builder().personal_token(github_token).build()?;
                 let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
-                result.git_tag.stdout = format!("{}\nCreating tag {} at {}", result.git_tag.stdout, tag, head);
+                result.git_tag.stdout = format!(
+                    "{}\nCreating tag {} at {}",
+                    result.git_tag.stdout, tag, head
+                );
                 repo.create_ref(&Reference::Tag(tag), head).await?;
             } else {
                 tracing::debug!("Github credentials not set, not doing anything");
