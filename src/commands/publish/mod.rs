@@ -721,7 +721,7 @@ async fn do_publish_package(
     }
     if !is_failed && result.git_tag.should_publish {
         result.git_tag.start_time = Some(SystemTime::now());
-        let tagged: anyhow::Result<()> = (async || {
+        let tagged: anyhow::Result<()> = async {
             let tag = format!("{}-{}", package.package, package.version);
             if let (Some(github_app_id), Some(github_app_private_key)) =
                 (options.github_app_id, options.github_app_private_key)
@@ -750,7 +750,7 @@ async fn do_publish_package(
                 tracing::debug!("Github credentials not set, not doing anything");
             }
             Ok(())
-        })()
+        }
         .await;
         if let Err(err) = tagged {
             result.git_tag.stderr = format!("{}\n{}", result.git_tag.stderr, err);
