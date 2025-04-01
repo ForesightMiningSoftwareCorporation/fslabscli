@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.18.0"
+version = "2.18.1"
 
 [package.metadata]
 

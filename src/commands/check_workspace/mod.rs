@@ -190,6 +190,11 @@ impl Options {
         self.ignore_dev_dependencies = ignore_dev_dependencies;
         self
     }
+
+    pub fn with_cargo_main_registry(mut self, registry: String) -> Self {
+        self.cargo_main_registry = registry;
+        self
+    }
 }
 
 fn default_dependency_kind() -> DependencyKind {

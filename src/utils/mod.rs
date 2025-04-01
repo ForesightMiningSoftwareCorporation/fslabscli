@@ -1,3 +1,4 @@
+use std::env::VarError;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -12,6 +13,7 @@ use std::{
     process::Stdio,
 };
 use tokio::io::AsyncBufReadExt;
+use tracing::info;
 
 use void::Void;
 
@@ -273,31 +275,37 @@ pub async fn execute_command(
     }
 }
 
+pub fn get_env_or_log(env_name: String) -> Result<String, VarError> {
+    std::env::var(&env_name).map_err(|e| {
+        info!("Failed to load env `{}` {}", env_name, e);
+        e
+    })
+}
 pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
     let mut envs = HashMap::from([
         (
             "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
             "true".to_string(),
         ),
-        ("GIT_SSH_COMMAND".to_string(), "ssh -vvv".to_string()),
+        ("GIT_SSH_COMMAND".to_string(), "ssh".to_string()),
         ("SSH_AUTH_SOCK".to_string(), "".to_string()),
     ]);
     let registry_prefix =
         format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
-    if let Ok(index) = std::env::var(format!("{}_INDEX", registry_prefix)) {
+    if let Ok(index) = get_env_or_log(format!("{}_INDEX", registry_prefix)) {
         envs.insert(format!("{}_INDEX", registry_prefix), index.clone());
     }
-    if let Ok(token) = std::env::var(format!("{}_TOKEN", registry_prefix)) {
+    if let Ok(token) = get_env_or_log(format!("{}_TOKEN", registry_prefix)) {
         envs.insert(format!("{}_TOKEN", registry_prefix), token.clone());
         envs.insert("Authorization".to_string(), token.clone());
     }
-    if let Ok(user_agent) = std::env::var(format!("{}_USER_AGENT", registry_prefix)) {
+    if let Ok(user_agent) = get_env_or_log(format!("{}_USER_AGENT", registry_prefix)) {
         envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent.clone());
     }
-    if let Ok(private_key) = std::env::var(format!("{}_PRIVATE_KEY", registry_prefix)) {
+    if let Ok(private_key) = get_env_or_log(format!("{}_PRIVATE_KEY", registry_prefix)) {
         envs.insert(
             "GIT_SSH_COMMAND".to_string(),
-            format!("ssh -vvv -i {}", private_key.clone()),
+            format!("ssh -i {}", private_key.clone()),
         );
     }
     envs
