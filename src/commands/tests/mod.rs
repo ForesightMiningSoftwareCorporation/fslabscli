@@ -2,7 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use indexmap::IndexMap;
 use junit_report::{OffsetDateTime, ReportBuilder, TestCase, TestSuiteBuilder};
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{KeyValue, global, metrics::MeterProvider};
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
@@ -20,6 +20,7 @@ use std::{
 use crate::{
     PrettyPrintable,
     commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+    init_metrics,
     utils::{execute_command, execute_command_without_logging},
 };
 
@@ -141,6 +142,11 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let test_duration_h = meter.f64_histogram("rust_tests_test").build();
     let test_counter = meter.u64_counter("rust_tests_test").build();
     let changed_counter = meter.u64_counter("rust_tests_changed").build();
+    let common_meter = init_metrics(false).meter("common_tests");
+    let common_member_duration_h = common_meter
+        .f64_histogram("rust_tests_common_member")
+        .build();
+    let common_member_counter = common_meter.u64_counter("rust_tests_common_member").build();
     let overall_start_time = OffsetDateTime::now_utc();
     // Get Directory information
     tracing::info!("Running the tests with the following arguments:");
@@ -533,6 +539,24 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
             ],
         );
         member_counter.add(
+            1,
+            &[
+                KeyValue::new("workspace_name", workspace_name.clone()),
+                KeyValue::new("package_name", package_name.clone()),
+                KeyValue::new("package_version", package_version.clone()),
+                KeyValue::new("success", !failed),
+            ],
+        );
+        common_member_duration_h.record(
+            member_duration.as_seconds_f64(),
+            &[
+                KeyValue::new("workspace_name", workspace_name.clone()),
+                KeyValue::new("package_name", package_name.clone()),
+                KeyValue::new("package_version", package_version.clone()),
+                KeyValue::new("success", !failed),
+            ],
+        );
+        common_member_counter.add(
             1,
             &[
                 KeyValue::new("workspace_name", workspace_name.clone()),

@@ -93,43 +93,48 @@ enum Commands {
     ManPage,
 }
 
-fn get_resource() -> Resource {
-    Resource::builder()
-        .with_service_name(env!("CARGO_PKG_NAME"))
-        .with_attributes(
+fn get_resource(with_unique_attributes: bool) -> Resource {
+    let mut attributes = [
+        env::var("CARGO_PKG_VERSION").map(|v| KeyValue::new("service_version", v)),
+        env::var("JOB_NAME").map(|v| KeyValue::new("prow_job_name", v)),
+        env::var("JOB_TYPE").map(|v| KeyValue::new("prow_job_type", v)),
+        env::var("REPO_OWNER").map(|v| KeyValue::new("repo_owner", v)),
+        env::var("REPO_NAME").map(|v| KeyValue::new("repo_name", v)),
+    ]
+    .into_iter()
+    .filter_map(|x| x.ok())
+    .collect::<Vec<_>>();
+    if with_unique_attributes {
+        attributes.extend(
             [
-                env::var("CARGO_PKG_VERSION").map(|v| KeyValue::new("service_version", v)),
-                env::var("JOB_NAME").map(|v| KeyValue::new("prow_job_name", v)),
-                env::var("JOB_TYPE").map(|v| KeyValue::new("prow_job_type", v)),
                 env::var("PROW_JOB_ID").map(|v| KeyValue::new("prow_job_id", v)),
                 env::var("BUILD_ID").map(|v| KeyValue::new("prow_build_id", v)),
-                env::var("REPO_OWNER").map(|v| KeyValue::new("repo_owner", v)),
-                env::var("REPO_NAME").map(|v| KeyValue::new("repo_name", v)),
                 env::var("PULL_BASE_REF").map(|v| KeyValue::new("pull_base_ref", v)),
                 env::var("PULL_BASE_SHA").map(|v| KeyValue::new("pull_base_sha", v)),
                 env::var("PULL_NUMBER").map(|v| KeyValue::new("pull_number", v)),
             ]
             .into_iter()
             .filter_map(|x| x.ok()),
-        )
+        );
+    }
+
+    Resource::builder()
+        .with_service_name(env!("CARGO_PKG_NAME"))
+        .with_attributes(attributes)
         .build()
 }
 
-fn init_metrics() -> SdkMeterProvider {
+fn init_metrics(with_unique_attributes: bool) -> SdkMeterProvider {
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         .with_temporality(Temporality::Delta)
         .build()
         .unwrap();
 
-    let meter_provider = MeterProviderBuilder::default()
-        .with_resource(get_resource())
+    MeterProviderBuilder::default()
+        .with_resource(get_resource(with_unique_attributes))
         .with_periodic_exporter(exporter)
-        .build();
-
-    global::set_meter_provider(meter_provider.clone());
-
-    meter_provider
+        .build()
 }
 
 fn init_traces() -> SdkTracerProvider {
@@ -139,7 +144,7 @@ fn init_traces() -> SdkTracerProvider {
         .unwrap();
 
     SdkTracerProvider::builder()
-        .with_resource(get_resource())
+        .with_resource(get_resource(true))
         .with_batch_exporter(exporter)
         .build()
 }
@@ -151,7 +156,7 @@ fn init_logs() -> SdkLoggerProvider {
         .unwrap();
 
     SdkLoggerProvider::builder()
-        .with_resource(get_resource())
+        .with_resource(get_resource(true))
         .with_batch_exporter(exporter)
         .build()
 }
@@ -189,7 +194,7 @@ pub fn setup_logging(verbosity: u8) -> OtelGuard {
 
     let traces_provider = init_traces();
     global::set_tracer_provider(traces_provider.clone());
-    let metrics_provider = init_metrics();
+    let metrics_provider = init_metrics(true);
     global::set_meter_provider(metrics_provider.clone());
 
     OtelGuard {
