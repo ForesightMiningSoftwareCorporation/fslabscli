@@ -180,7 +180,7 @@
             LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
           };
 
-        individualPackages =
+        individualCrossPackages =
           let
             packageName = "cargo-fslabscli";
             filteredTargets = lib.attrsets.filterAttrs (
@@ -189,11 +189,8 @@
           in
           lib.attrsets.mapAttrs' (
             arch: _:
-            let
-              shouldCross = arch != system;
-            in
             lib.nameValuePair (packageName + "-" + arch) (
-              if shouldCross then (mkCrossRustPackage arch packageName) else (mkRustPackage packageName)
+              mkCrossRustPackage arch packageName
             )
           ) filteredTargets;
 
@@ -209,13 +206,13 @@
       {
         formatter = treefmt.config.build.wrapper;
 
-        packages = individualPackages // {
-          default = individualPackages."cargo-fslabscli-${system}";
+        packages = individualCrossPackages // {
+          default = mkRustPackage "cargo-fslabscli";
           release = pkgs.runCommand "release-binaries" { } ''
             mkdir -p "$out/bin"
             for pkg in ${
               builtins.concatStringsSep " " (
-                map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualPackages [ "release" ]))
+                map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualCrossPackages [ "release" ]))
               )
             }; do
               for file in "$pkg"/*; do
