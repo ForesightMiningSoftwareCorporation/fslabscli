@@ -140,6 +140,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let member_counter = meter.u64_counter("rust_tests_member").build();
     let test_duration_h = meter.f64_histogram("rust_tests_test").build();
     let test_counter = meter.u64_counter("rust_tests_test").build();
+    let changed_counter = meter.u64_counter("rust_tests_changed").build();
     let overall_start_time = OffsetDateTime::now_utc();
     // Get Directory information
     tracing::info!("Running the tests with the following arguments:");
@@ -178,6 +179,17 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         let mut service_database_container_id: Option<String> = None;
         let mut database_url: Option<String> = None;
         let mut service_azurite_container_id: Option<String> = None;
+
+        if member.changed {
+            changed_counter.add(
+                1,
+                &[
+                    KeyValue::new("workspace_name", workspace_name.clone()),
+                    KeyValue::new("package_name", package_name.clone()),
+                    KeyValue::new("package_version", package_version.clone()),
+                ],
+            );
+        }
 
         if failed || member.test_detail.skip.unwrap_or_default() || !member.perform_test {
             continue;
