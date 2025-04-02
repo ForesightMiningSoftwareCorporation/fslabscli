@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.18.3"
+version = "2.18.4"
 
 [package.metadata]
 
@@ -79,7 +79,9 @@ clap_mangen = "0.2.26"
 regex = "1.11.1"
 toml_edit = "0.22.24"
 walkdir = "2.5.0"
-self_update = { version = "0.42.0", default-features = false, features = ["rustls"] }
+self_update = { version = "0.42.0", default-features = false, features = [
+    "rustls",
+] }
 tempfile = "3.19"
 cargo-util = "0.2"
 

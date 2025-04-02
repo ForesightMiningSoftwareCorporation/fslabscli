@@ -23,7 +23,7 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{
     Resource,
     logs::SdkLoggerProvider,
-    metrics::{MeterProviderBuilder, SdkMeterProvider, Temporality},
+    metrics::{MeterProviderBuilder, SdkMeterProvider},
     trace::SdkTracerProvider,
 };
 use serde::Serialize;
@@ -129,7 +129,6 @@ fn get_resource(with_unique_attributes: bool) -> Resource {
 fn init_metrics(with_unique_attributes: bool) -> SdkMeterProvider {
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
-        .with_temporality(Temporality::Delta)
         .build()
         .unwrap();
 
