@@ -57,6 +57,8 @@ struct Cli {
     cargo_subcommand: CargoSubcommand,
     #[command(subcommand)]
     command: Commands,
+    #[arg(env, long)]
+    fslabscli_auto_update: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
@@ -242,8 +244,24 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let cli = Cli::parse();
+
+    if cli.fslabscli_auto_update {
+        if let Err(err) = utils::auto_update::auto_update() {
+            println!("Error trying to update:{err:?}");
+        }
+    }
+
+    // Expansion of #[tokio::main]
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async { async_main().await })
+}
+
+async fn async_main() {
     let cli = Cli::parse();
 
     // generate man pages and completions upon request and exit

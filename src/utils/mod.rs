@@ -17,6 +17,7 @@ use tracing::info;
 
 use void::Void;
 
+pub mod auto_update;
 pub mod cargo;
 pub mod github;
 #[cfg(test)]
