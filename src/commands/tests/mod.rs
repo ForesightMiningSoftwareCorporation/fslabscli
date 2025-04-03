@@ -1,8 +1,12 @@
 use anyhow::Context;
 use clap::Parser;
+use humanize_duration::{Truncate, prelude::DurationExt};
 use indexmap::IndexMap;
-use junit_report::{OffsetDateTime, ReportBuilder, TestCase, TestSuiteBuilder};
-use opentelemetry::{KeyValue, global, metrics::MeterProvider};
+use junit_report::{OffsetDateTime, Report, ReportBuilder, TestCase, TestSuiteBuilder};
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram, MeterProvider},
+};
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
@@ -13,9 +17,11 @@ use std::{
     fmt::{Display, Formatter},
     fs::File,
     path::PathBuf,
+    sync::Arc,
     thread::sleep,
     time::Duration,
 };
+use tokio::sync::Semaphore;
 
 use crate::{
     PrettyPrintable,
@@ -27,7 +33,7 @@ use crate::{
 static DB_PASSWORD: &str = "mypassword";
 static DB_NAME: &str = "tests";
 
-#[derive(Debug, Parser, Default)]
+#[derive(Debug, Parser, Default, Clone)]
 #[command(about = "Run tests")]
 pub struct Options {
     #[clap(long, env, default_value = ".")]
@@ -42,6 +48,10 @@ pub struct Options {
         default_value = "https://raw.githubusercontent.com/ForesightMiningSoftwareCorporation/github/main/deny.toml"
     )]
     default_deny_location: String,
+    #[arg(long, env, default_value = "1")]
+    job_limit: usize,
+    #[arg(long, env, default_value = "0")]
+    inner_job_limit: usize,
 }
 
 #[derive(Serialize)]
@@ -158,8 +168,8 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(true)
         .with_check_publish(false)
-        .with_changed_head_ref(options.pull_pull_sha)
-        .with_changed_base_ref(options.pull_base_sha);
+        .with_changed_head_ref(options.pull_pull_sha.clone())
+        .with_changed_base_ref(options.pull_base_sha.clone());
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
@@ -169,409 +179,56 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         })
         .with_context(|| "Could not get directory information")?;
 
-    let mut junit_report = ReportBuilder::new().build();
+    let mut global_junit_report = ReportBuilder::new().build();
 
     // Global fail tracker
-    let mut failed = false;
+    let mut global_failed = false;
+
+    let metrics = Metrics {
+        member_duration_h,
+        member_counter,
+        test_duration_h,
+        test_counter,
+        common_member_duration_h,
+        common_member_counter,
+        changed_counter,
+    };
+    let semaphore = Arc::new(Semaphore::new(options.job_limit));
+    let mut handles = vec![];
 
     for (_, member) in results.members {
-        let member_start_time = OffsetDateTime::now_utc();
-        let workspace_name = member.workspace;
-        let package_name = member.package;
-        let package_version = member.version;
-        let package_path = repo_root.join(member.path);
-        let test_args = member.test_detail.args.unwrap_or_default();
-        let additional_args = get_test_arg(&test_args, "additional_args").unwrap_or_default();
-        let mut service_database_container_id: Option<String> = None;
-        let mut database_url: Option<String> = None;
-        let mut service_azurite_container_id: Option<String> = None;
-
-        if member.changed {
-            changed_counter.add(
-                1,
-                &[
-                    KeyValue::new("workspace_name", workspace_name.clone()),
-                    KeyValue::new("package_name", package_name.clone()),
-                    KeyValue::new("package_version", package_version.clone()),
-                ],
-            );
-        }
-
-        if failed || member.test_detail.skip.unwrap_or_default() || !member.perform_test {
-            continue;
-        }
-
-        let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
-        tracing::info!("Testing {ts_name}");
-        let mut ts_mandatory = TestSuiteBuilder::new(&format!("Mandatory {ts_name}"))
-            .set_timestamp(OffsetDateTime::now_utc())
-            .build();
-        let mut ts_optional = TestSuiteBuilder::new(&format!("Optional {ts_name}"))
-            .set_timestamp(OffsetDateTime::now_utc())
-            .build();
-
-        // Handle service database
-        if !failed && get_test_arg_bool(&test_args, "service_database") == Some(true) {
-            tracing::info!("Setting up service database");
-            let start_time = OffsetDateTime::now_utc();
-            let pg_port = free_local_port().unwrap();
-            let service_db_container = create_docker_container(
-                "postgres".to_string(),
-                format!("-e POSTGRES_PASSWORD={DB_PASSWORD} -e POSTGRES_DB={DB_NAME}"),
-                format!("-p {pg_port}:5432"),
-                "".to_string(),
-                "postgres:alpine".to_string(),
-            )
-            .await;
-            let end_time = OffsetDateTime::now_utc();
-            let duration = end_time - start_time;
-            let service_db_tc = match service_db_container {
-                Ok(container_id) => {
-                    service_database_container_id = Some(container_id);
-                    database_url = Some(format!(
-                        "postgres://postgres:{DB_PASSWORD}@localhost:{pg_port}/{DB_NAME}"
-                    ));
-                    TestCase::success("service_database", duration)
-                }
-                Err(e) => {
-                    failed = true;
-                    TestCase::failure(
-                        "service_database",
-                        duration,
-                        "service_database",
-                        e.to_string().as_str(),
-                    )
-                }
-            };
-            ts_mandatory.add_testcase(service_db_tc);
-        }
-        // Handle service azurite
-        if !failed && get_test_arg_bool(&test_args, "service_azurite") == Some(true) {
-            tracing::info!("Setting up service azurite");
-            let start_time = OffsetDateTime::now_utc();
-            let azurite_container = create_docker_container(
-                "azurite".to_string(),
-                "".to_string(),
-                "-p 10000:10000 -p 10001:10001 -p 10002:10002".to_string(),
-                "".to_string(),
-                "mcr.microsoft.com/azure-storage/azurite".to_string(),
-            )
-            .await;
-            let end_time = OffsetDateTime::now_utc();
-            let duration = end_time - start_time;
-            let service_azurite_tc = match azurite_container {
-                Ok(container_id) => {
-                    service_azurite_container_id = Some(container_id);
-                    TestCase::success("service_azurite", duration)
-                }
-                Err(e) => {
-                    failed = true;
-                    TestCase::failure(
-                        "service_azurite",
-                        duration,
-                        "service_azurite",
-                        e.to_string().as_str(),
-                    )
-                }
-            };
-            ts_mandatory.add_testcase(service_azurite_tc);
-        }
-
-        // Handle cache miss (this should be dropped and only additional script)
-        if !failed {
-            if let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
-                tracing::info!("Running cache miss command");
-                let start_time = OffsetDateTime::now_utc();
-                let mut envs: HashMap<String, String> = HashMap::new();
-                if let Some(db_url) = database_url.clone() {
-                    envs.insert("DATABASE_URL".to_string(), db_url.clone());
-                }
-                let (stdout, stderr, success) = execute_command_without_logging(
-                    &cache_miss_command,
-                    &package_path,
-                    &envs,
-                    &HashSet::new(),
-                )
-                .await;
-                let end_time = OffsetDateTime::now_utc();
-                let duration = end_time - start_time;
-                tracing::debug!("cache_miss: {stdout}");
-                let mut cache_miss_tc = match success {
-                    true => TestCase::success(&cache_miss_command, duration),
-                    false => {
-                        failed = true;
-                        TestCase::failure(&cache_miss_command, duration, "", "required")
-                    }
-                };
-                cache_miss_tc.set_system_out(&stderr);
-                cache_miss_tc.set_system_err(&stdout);
-                ts_mandatory.add_testcase(cache_miss_tc);
-            }
-        }
-
-        // Handle Additional Script
-        if !failed {
-            if let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
-                tracing::info!("Running additional script command");
-                let start_time = OffsetDateTime::now_utc();
-                let mut envs: HashMap<String, String> = HashMap::new();
-                if let Some(db_url) = database_url.clone() {
-                    envs.insert("DATABASE_URL".to_string(), db_url.clone());
-                }
-                let mut a_stdout: String = "".to_string();
-                let mut a_stderr: String = "".to_string();
-                let mut sub_failed = false;
-
-                for line in additional_scripts.split("\n") {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if sub_failed {
-                        continue;
-                    }
-                    let (stdout, stderr, success) = execute_command_without_logging(
-                        line,
-                        &package_path,
-                        &envs,
-                        &HashSet::new(),
-                    )
-                    .await;
-                    a_stdout = format!("{a_stdout}\n{stdout}",);
-                    a_stderr = format!("{a_stderr}\n{stderr}",);
-                    tracing::debug!("additional_script: {line} {stdout}");
-                    if !success {
-                        sub_failed = true;
-                    }
-                }
-                let end_time = OffsetDateTime::now_utc();
-                let duration = end_time - start_time;
-                let mut additional_script_tc = match sub_failed {
-                    false => TestCase::success("additional_script", duration),
-                    true => {
-                        failed = true;
-                        TestCase::failure("additional_script", duration, "", "required")
-                    }
-                };
-                additional_script_tc.set_system_out(&a_stderr);
-                additional_script_tc.set_system_err(&a_stdout);
-                ts_mandatory.add_testcase(additional_script_tc);
-            }
-        }
-        // Handle Tests
-        let fslabs_tests: Vec<FslabsTest> = vec![
-            FslabsTest {
-                command: "cargo fmt --verbose -- --check".to_string(),
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo check --all-targets {additional_args}"),
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo clippy --all-targets {additional_args} -- -D warnings"),
-                ..Default::default()
-            },
-            FslabsTest {
-                command: "cargo doc --no-deps".to_string(),
-                envs: HashMap::from([("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]),
-                ..Default::default()
-            },
-            FslabsTest {
-                command: format!("cargo test --all-targets {additional_args}"),
-                pre_command: database_url
-                    .clone()
-                    .map(|d| format!("echo DATABASE_URL={d} > .env")),
-                post_command: database_url.clone().map(|_| "rm .env".to_string()),
-                ..Default::default()
-            },
-        ];
-
-        for fslabs_test in fslabs_tests {
-            if failed {
-                tracing::info!(
-                    "╭────────────────────────────────────────────────────────────────╮"
-                );
-                tracing::info!("│ {:60}   │", fslabs_test.command);
-                tracing::info!(
-                    "╰─┬──────────────────────────────────────────────────────────────╯"
-                );
-                tracing::info!("  ╰───────⏵ ⏭ SKIPPED");
-
-                test_duration_h.record(
-                    0.0,
-                    &[
-                        KeyValue::new("workspace_name", workspace_name.clone()),
-                        KeyValue::new("package_name", package_name.clone()),
-                        KeyValue::new("package_version", package_version.clone()),
-                        KeyValue::new("test_command", fslabs_test.command.clone()),
-                        KeyValue::new("status", "SKIPPED"),
-                    ],
-                );
-                test_counter.add(
-                    1,
-                    &[
-                        KeyValue::new("workspace_name", workspace_name.clone()),
-                        KeyValue::new("package_name", package_name.clone()),
-                        KeyValue::new("package_version", package_version.clone()),
-                        KeyValue::new("test_command", fslabs_test.command.clone()),
-                        KeyValue::new("status", "SKIPPED"),
-                    ],
-                );
-                let tc = TestCase::skipped(fslabs_test.command.as_str());
-                match fslabs_test.optional {
-                    true => ts_optional.add_testcase(tc),
-                    false => ts_mandatory.add_testcase(tc),
-                };
-            } else {
-                tracing::info!(
-                    "╭────────────────────────────────────────────────────────────────╮"
-                );
-                tracing::info!("│ {:60}   │", fslabs_test.command);
-                tracing::info!(
-                    "╰─┬──────────────────────────────────────────────────────────────╯"
-                );
-                let start_time = OffsetDateTime::now_utc();
-                if let Some(pre_command) = fslabs_test.pre_command {
-                    execute_command_without_logging(
-                        &pre_command,
-                        &package_path,
-                        &fslabs_test.envs,
-                        &HashSet::new(),
-                    )
-                    .await;
-                }
-                let (stdout, stderr, success) = execute_command(
-                    &fslabs_test.command,
-                    &package_path,
-                    &fslabs_test.envs,
-                    &HashSet::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
-                )
-                .await;
-                if let Some(post_command) = fslabs_test.post_command {
-                    execute_command_without_logging(
-                        &post_command,
-                        &package_path,
-                        &fslabs_test.envs,
-                        &HashSet::new(),
-                    )
-                    .await;
-                }
-                let end_time = OffsetDateTime::now_utc();
-                let duration = end_time - start_time;
-
-                let mut status = "PASS";
-                let mut tc = match success {
-                    true => {
-                        tracing::info!("  ╰───────⏵ 🟢 PASS in {}", duration);
-                        tracing::info!("");
-                        TestCase::success(&fslabs_test.command, duration)
-                    }
-                    false => {
-                        tracing::info!("  ╰───────⏵ 🟥 FAIL in {}", duration);
-                        status = "FAIL";
-                        tracing::info!("");
-                        failed = !fslabs_test.optional; // fail all if not optional
-                        TestCase::failure(
-                            &fslabs_test.command,
-                            duration,
-                            &fslabs_test.command,
-                            if fslabs_test.optional {
-                                "optional"
-                            } else {
-                                "required"
-                            },
-                        )
-                    }
-                };
-
-                test_duration_h.record(
-                    duration.as_seconds_f64(),
-                    &[
-                        KeyValue::new("workspace_name", workspace_name.clone()),
-                        KeyValue::new("package_name", package_name.clone()),
-                        KeyValue::new("package_version", package_version.clone()),
-                        KeyValue::new("test_command", fslabs_test.command.clone()),
-                        KeyValue::new("status", status),
-                    ],
-                );
-                test_counter.add(
-                    1,
-                    &[
-                        KeyValue::new("workspace_name", workspace_name.clone()),
-                        KeyValue::new("package_name", package_name.clone()),
-                        KeyValue::new("package_version", package_version.clone()),
-                        KeyValue::new("test_command", fslabs_test.command.clone()),
-                        KeyValue::new("status", status),
-                    ],
-                );
-                tc.set_system_out(&stderr);
-                tc.set_system_err(&stdout);
-                match fslabs_test.optional {
-                    true => ts_optional.add_testcase(tc),
-                    false => ts_mandatory.add_testcase(tc),
-                };
-            }
-        }
-
-        // Tear down docker containers
-        if let Some(container_id) = service_database_container_id {
-            tracing::info!("Tearing down service database");
-            teardown_container(container_id).await;
-        }
-        if let Some(container_id) = service_azurite_container_id {
-            tracing::info!("Tearing down service azurite");
-            teardown_container(container_id).await;
-        }
-        junit_report.add_testsuite(ts_mandatory);
-        junit_report.add_testsuite(ts_optional);
-
-        let member_end_time = OffsetDateTime::now_utc();
-        let member_duration = member_end_time - member_start_time;
-        member_duration_h.record(
-            member_duration.as_seconds_f64(),
-            &[
-                KeyValue::new("workspace_name", workspace_name.clone()),
-                KeyValue::new("package_name", package_name.clone()),
-                KeyValue::new("package_version", package_version.clone()),
-                KeyValue::new("success", !failed),
-            ],
-        );
-        member_counter.add(
-            1,
-            &[
-                KeyValue::new("workspace_name", workspace_name.clone()),
-                KeyValue::new("package_name", package_name.clone()),
-                KeyValue::new("package_version", package_version.clone()),
-                KeyValue::new("success", !failed),
-            ],
-        );
-        common_member_duration_h.record(
-            member_duration.as_seconds_f64(),
-            &[
-                KeyValue::new("workspace_name", workspace_name.clone()),
-                KeyValue::new("package_name", package_name.clone()),
-                KeyValue::new("package_version", package_version.clone()),
-                KeyValue::new("success", !failed),
-            ],
-        );
-        common_member_counter.add(
-            1,
-            &[
-                KeyValue::new("workspace_name", workspace_name.clone()),
-                KeyValue::new("package_name", package_name.clone()),
-                KeyValue::new("package_version", package_version.clone()),
-                KeyValue::new("success", !failed),
-            ],
-        );
+        let task_handle = tokio::spawn(do_test_on_package(
+            options.clone(),
+            repo_root.clone(),
+            member,
+            metrics.clone(),
+            semaphore.clone(),
+        ));
+        handles.push(task_handle);
     }
+
+    // using `select_all` to allow fast failure
+    while !handles.is_empty() {
+        let (result, _, remaining) = futures::future::select_all(handles).await;
+        handles = remaining;
+        if let Ok((failed, junit_report)) = result {
+            global_junit_report.add_testsuites(junit_report.testsuites().clone());
+            global_failed &= failed;
+            if failed {
+                break;
+            }
+        } else {
+            global_failed = true;
+            break;
+        }
+    }
+
     let mut junit_file = File::create(options.artifacts.join("junit.rust.xml"))?;
-    junit_report.write_xml(&mut junit_file)?;
+    global_junit_report.write_xml(&mut junit_file)?;
     let overall_end_time = OffsetDateTime::now_utc();
     let overall_duration = overall_end_time - overall_start_time;
     tracing::info!("Workspace tests ran in {}", overall_duration);
-    match failed {
+    match global_failed {
         false => {
             overall_duration_h.record(
                 overall_duration.as_seconds_f64(),
@@ -589,4 +246,445 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
             Err(anyhow::anyhow!("tests failed"))
         }
     }
+}
+
+#[derive(Clone)]
+struct Metrics {
+    member_duration_h: Histogram<f64>,
+    member_counter: Counter<u64>,
+    test_duration_h: Histogram<f64>,
+    test_counter: Counter<u64>,
+    changed_counter: Counter<u64>,
+    common_member_duration_h: Histogram<f64>,
+    common_member_counter: Counter<u64>,
+}
+
+async fn do_test_on_package(
+    options: Box<Options>,
+    repo_root: PathBuf,
+    member: super::check_workspace::Result,
+    metrics: Metrics,
+    semaphore: Arc<Semaphore>,
+) -> (bool, Report) {
+    let permit = semaphore.acquire().await;
+
+    let mut junit_report = ReportBuilder::new().build();
+    let mut failed = false;
+
+    let member_start_time = OffsetDateTime::now_utc();
+    let workspace_name = member.workspace;
+    let package_name = member.package;
+    let package_version = member.version;
+    let package_path = repo_root.join(member.path);
+    let test_args = member.test_detail.args.unwrap_or_default();
+    let additional_args = get_test_arg(&test_args, "additional_args").unwrap_or_default();
+    let mut service_database_container_id: Option<String> = None;
+    let mut database_url: Option<String> = None;
+    let mut service_azurite_container_id: Option<String> = None;
+
+    if member.changed {
+        metrics.changed_counter.add(
+            1,
+            &[
+                KeyValue::new("workspace_name", workspace_name.clone()),
+                KeyValue::new("package_name", package_name.clone()),
+                KeyValue::new("package_version", package_version.clone()),
+            ],
+        );
+    }
+
+    // if failed || member.test_detail.skip.unwrap_or_default() || !member.perform_test {
+    //     continue;
+    // }
+
+    let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
+    tracing::info!("Testing {ts_name}");
+    let mut ts_mandatory = TestSuiteBuilder::new(&format!("Mandatory {ts_name}"))
+        .set_timestamp(OffsetDateTime::now_utc())
+        .build();
+    let mut ts_optional = TestSuiteBuilder::new(&format!("Optional {ts_name}"))
+        .set_timestamp(OffsetDateTime::now_utc())
+        .build();
+
+    // Handle service database
+    if !failed && get_test_arg_bool(&test_args, "service_database") == Some(true) {
+        tracing::info!("Setting up service database");
+        let start_time = OffsetDateTime::now_utc();
+        let pg_port = free_local_port().unwrap();
+        let service_db_container = create_docker_container(
+            "postgres".to_string(),
+            format!("-e POSTGRES_PASSWORD={DB_PASSWORD} -e POSTGRES_DB={DB_NAME}"),
+            format!("-p {pg_port}:5432"),
+            "".to_string(),
+            "postgres:alpine".to_string(),
+        )
+        .await;
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        let service_db_tc = match service_db_container {
+            Ok(container_id) => {
+                service_database_container_id = Some(container_id);
+                database_url = Some(format!(
+                    "postgres://postgres:{DB_PASSWORD}@localhost:{pg_port}/{DB_NAME}"
+                ));
+                TestCase::success("service_database", duration)
+            }
+            Err(e) => {
+                failed = true;
+                TestCase::failure(
+                    "service_database",
+                    duration,
+                    "service_database",
+                    e.to_string().as_str(),
+                )
+            }
+        };
+        ts_mandatory.add_testcase(service_db_tc);
+    }
+    // Handle service azurite
+    if !failed && get_test_arg_bool(&test_args, "service_azurite") == Some(true) {
+        tracing::info!("Setting up service azurite");
+        let start_time = OffsetDateTime::now_utc();
+        let azurite_container = create_docker_container(
+            "azurite".to_string(),
+            "".to_string(),
+            "-p 10000:10000 -p 10001:10001 -p 10002:10002".to_string(),
+            "".to_string(),
+            "mcr.microsoft.com/azure-storage/azurite".to_string(),
+        )
+        .await;
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        let service_azurite_tc = match azurite_container {
+            Ok(container_id) => {
+                service_azurite_container_id = Some(container_id);
+                TestCase::success("service_azurite", duration)
+            }
+            Err(e) => {
+                failed = true;
+                TestCase::failure(
+                    "service_azurite",
+                    duration,
+                    "service_azurite",
+                    e.to_string().as_str(),
+                )
+            }
+        };
+        ts_mandatory.add_testcase(service_azurite_tc);
+    }
+
+    // Handle cache miss (this should be dropped and only additional script)
+    if !failed {
+        if let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
+            tracing::info!("Running cache miss command");
+            let start_time = OffsetDateTime::now_utc();
+            let mut envs: HashMap<String, String> = HashMap::new();
+            if let Some(db_url) = database_url.clone() {
+                envs.insert("DATABASE_URL".to_string(), db_url.clone());
+            }
+            let (stdout, stderr, success) = execute_command_without_logging(
+                &cache_miss_command,
+                &package_path,
+                &envs,
+                &HashSet::new(),
+            )
+            .await;
+            let end_time = OffsetDateTime::now_utc();
+            let duration = end_time - start_time;
+            tracing::debug!("cache_miss: {stdout}");
+            let mut cache_miss_tc = match success {
+                true => TestCase::success(&cache_miss_command, duration),
+                false => {
+                    failed = true;
+                    TestCase::failure(&cache_miss_command, duration, "", "required")
+                }
+            };
+            cache_miss_tc.set_system_out(&stderr);
+            cache_miss_tc.set_system_err(&stdout);
+            ts_mandatory.add_testcase(cache_miss_tc);
+        }
+    }
+
+    // Handle Additional Script
+    if !failed {
+        if let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
+            tracing::info!("Running additional script command");
+            let start_time = OffsetDateTime::now_utc();
+            let mut envs: HashMap<String, String> = HashMap::new();
+            if let Some(db_url) = database_url.clone() {
+                envs.insert("DATABASE_URL".to_string(), db_url.clone());
+            }
+            let mut a_stdout: String = "".to_string();
+            let mut a_stderr: String = "".to_string();
+            let mut sub_failed = false;
+
+            for line in additional_scripts.split("\n") {
+                if line.is_empty() {
+                    continue;
+                }
+                if sub_failed {
+                    continue;
+                }
+                let (stdout, stderr, success) =
+                    execute_command_without_logging(line, &package_path, &envs, &HashSet::new())
+                        .await;
+                a_stdout = format!("{a_stdout}\n{stdout}",);
+                a_stderr = format!("{a_stderr}\n{stderr}",);
+                tracing::debug!("additional_script: {line} {stdout}");
+                if !success {
+                    sub_failed = true;
+                }
+            }
+            let end_time = OffsetDateTime::now_utc();
+            let duration = end_time - start_time;
+            let mut additional_script_tc = match sub_failed {
+                false => TestCase::success("additional_script", duration),
+                true => {
+                    failed = true;
+                    TestCase::failure("additional_script", duration, "", "required")
+                }
+            };
+            additional_script_tc.set_system_out(&a_stderr);
+            additional_script_tc.set_system_err(&a_stdout);
+            ts_mandatory.add_testcase(additional_script_tc);
+        }
+    }
+    // Handle Tests
+    let fslabs_tests: Vec<FslabsTest> = vec![
+        FslabsTest {
+            command: "cargo fmt --verbose -- --check".to_string(),
+            ..Default::default()
+        },
+        FslabsTest {
+            command: format!(
+                "cargo check --all-targets {additional_args} {}",
+                if options.inner_job_limit != 0 {
+                    format!("--jobs {}", options.inner_job_limit)
+                } else {
+                    "".to_string()
+                }
+            ),
+            ..Default::default()
+        },
+        FslabsTest {
+            command: format!("cargo clippy --all-targets {additional_args} -- -D warnings"),
+            ..Default::default()
+        },
+        FslabsTest {
+            command: format!(
+                "cargo doc --no-deps {}",
+                if options.inner_job_limit != 0 {
+                    format!("--jobs {}", options.inner_job_limit)
+                } else {
+                    "".to_string()
+                }
+            ),
+            envs: HashMap::from([("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]),
+            ..Default::default()
+        },
+        FslabsTest {
+            command: format!(
+                "cargo test --all-targets {additional_args} {}",
+                if options.inner_job_limit != 0 {
+                    format!("--jobs {}", options.inner_job_limit)
+                } else {
+                    "".to_string()
+                }
+            ),
+            pre_command: database_url
+                .clone()
+                .map(|d| format!("echo DATABASE_URL={d} > .env")),
+            post_command: database_url.clone().map(|_| "rm .env".to_string()),
+            ..Default::default()
+        },
+    ];
+
+    let test_steps = fslabs_tests.len();
+
+    for (mut i, fslabs_test) in fslabs_tests.into_iter().enumerate() {
+        i += 1;
+        if failed {
+            tracing::info!(
+                "│ {:30} {i}/{test_steps} | {:50} │ ⏭ SKIPPED",
+                package_name,
+                fslabs_test.command
+            );
+
+            metrics.test_duration_h.record(
+                0.0,
+                &[
+                    KeyValue::new("workspace_name", workspace_name.clone()),
+                    KeyValue::new("package_name", package_name.clone()),
+                    KeyValue::new("package_version", package_version.clone()),
+                    KeyValue::new("test_command", fslabs_test.command.clone()),
+                    KeyValue::new("status", "SKIPPED"),
+                ],
+            );
+            metrics.test_counter.add(
+                1,
+                &[
+                    KeyValue::new("workspace_name", workspace_name.clone()),
+                    KeyValue::new("package_name", package_name.clone()),
+                    KeyValue::new("package_version", package_version.clone()),
+                    KeyValue::new("test_command", fslabs_test.command.clone()),
+                    KeyValue::new("status", "SKIPPED"),
+                ],
+            );
+            let tc = TestCase::skipped(fslabs_test.command.as_str());
+            match fslabs_test.optional {
+                true => ts_optional.add_testcase(tc),
+                false => ts_mandatory.add_testcase(tc),
+            };
+        } else {
+            tracing::info!(
+                "│ {:30} {i}/{test_steps} | {:50} │ ► START",
+                package_name,
+                fslabs_test.command
+            );
+            let start_time = OffsetDateTime::now_utc();
+            if let Some(pre_command) = fslabs_test.pre_command {
+                execute_command_without_logging(
+                    &pre_command,
+                    &package_path,
+                    &fslabs_test.envs,
+                    &HashSet::new(),
+                )
+                .await;
+            }
+            let (stdout, stderr, success) = execute_command(
+                &fslabs_test.command,
+                &package_path,
+                &fslabs_test.envs,
+                &HashSet::new(),
+                Some(tracing::Level::DEBUG),
+                Some(tracing::Level::DEBUG),
+            )
+            .await;
+            if let Some(post_command) = fslabs_test.post_command {
+                execute_command_without_logging(
+                    &post_command,
+                    &package_path,
+                    &fslabs_test.envs,
+                    &HashSet::new(),
+                )
+                .await;
+            }
+            let end_time = OffsetDateTime::now_utc();
+            let duration = end_time - start_time;
+
+            let mut status = "PASS";
+            let mut tc = match success {
+                true => {
+                    tracing::info!(
+                        "│ {:30} {i}/{test_steps} | {:50} │ 🟢 PASS in {}",
+                        package_name,
+                        fslabs_test.command,
+                        duration.human(Truncate::Second)
+                    );
+                    TestCase::success(&fslabs_test.command, duration)
+                }
+                false => {
+                    tracing::info!(
+                        "│ {:30} {i}/{test_steps} | {:50} │ 🟥 FAIL in {}",
+                        package_name,
+                        fslabs_test.command,
+                        duration.human(Truncate::Second)
+                    );
+                    status = "FAIL";
+                    failed = !fslabs_test.optional; // fail all if not optional
+                    TestCase::failure(
+                        &fslabs_test.command,
+                        duration,
+                        &fslabs_test.command,
+                        if fslabs_test.optional {
+                            "optional"
+                        } else {
+                            "required"
+                        },
+                    )
+                }
+            };
+
+            metrics.test_duration_h.record(
+                duration.as_seconds_f64(),
+                &[
+                    KeyValue::new("workspace_name", workspace_name.clone()),
+                    KeyValue::new("package_name", package_name.clone()),
+                    KeyValue::new("package_version", package_version.clone()),
+                    KeyValue::new("test_command", fslabs_test.command.clone()),
+                    KeyValue::new("status", status),
+                ],
+            );
+            metrics.test_counter.add(
+                1,
+                &[
+                    KeyValue::new("workspace_name", workspace_name.clone()),
+                    KeyValue::new("package_name", package_name.clone()),
+                    KeyValue::new("package_version", package_version.clone()),
+                    KeyValue::new("test_command", fslabs_test.command.clone()),
+                    KeyValue::new("status", status),
+                ],
+            );
+            tc.set_system_out(&stderr);
+            tc.set_system_err(&stdout);
+            match fslabs_test.optional {
+                true => ts_optional.add_testcase(tc),
+                false => ts_mandatory.add_testcase(tc),
+            };
+        }
+    }
+
+    // Tear down docker containers
+    if let Some(container_id) = service_database_container_id {
+        tracing::info!("Tearing down service database");
+        teardown_container(container_id).await;
+    }
+    if let Some(container_id) = service_azurite_container_id {
+        tracing::info!("Tearing down service azurite");
+        teardown_container(container_id).await;
+    }
+    junit_report.add_testsuite(ts_mandatory);
+    junit_report.add_testsuite(ts_optional);
+
+    let member_end_time = OffsetDateTime::now_utc();
+    let member_duration = member_end_time - member_start_time;
+    metrics.member_duration_h.record(
+        member_duration.as_seconds_f64(),
+        &[
+            KeyValue::new("workspace_name", workspace_name.clone()),
+            KeyValue::new("package_name", package_name.clone()),
+            KeyValue::new("package_version", package_version.clone()),
+            KeyValue::new("success", !failed),
+        ],
+    );
+    metrics.member_counter.add(
+        1,
+        &[
+            KeyValue::new("workspace_name", workspace_name.clone()),
+            KeyValue::new("package_name", package_name.clone()),
+            KeyValue::new("package_version", package_version.clone()),
+            KeyValue::new("success", !failed),
+        ],
+    );
+    metrics.common_member_duration_h.record(
+        member_duration.as_seconds_f64(),
+        &[
+            KeyValue::new("workspace_name", workspace_name.clone()),
+            KeyValue::new("package_name", package_name.clone()),
+            KeyValue::new("package_version", package_version.clone()),
+            KeyValue::new("success", !failed),
+        ],
+    );
+    metrics.common_member_counter.add(
+        1,
+        &[
+            KeyValue::new("workspace_name", workspace_name.clone()),
+            KeyValue::new("package_name", package_name.clone()),
+            KeyValue::new("package_version", package_version.clone()),
+            KeyValue::new("success", !failed),
+        ],
+    );
+    drop(permit);
+    // drop(package_span);
+    (failed, junit_report)
 }
