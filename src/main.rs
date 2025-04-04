@@ -244,9 +244,16 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let fslabscli_auto_update = Cli::command()
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .ignore_errors(true)
+        .try_get_matches()
+        .ok()
+        .and_then(|matches| matches.get_one::<bool>("fslabscli_auto_update").cloned())
+        .unwrap_or_default();
 
-    if cli.fslabscli_auto_update {
+    if fslabscli_auto_update {
         if let Err(err) = utils::auto_update::auto_update() {
             println!("Error trying to update:{err:?}");
         }
