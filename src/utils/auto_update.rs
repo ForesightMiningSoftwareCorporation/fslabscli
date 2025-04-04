@@ -1,7 +1,4 @@
-use std::{
-    error,
-    fs::{File, remove_file},
-};
+use std::{error, fs::File};
 
 use http::header;
 use self_update::{
@@ -32,18 +29,29 @@ pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
         if let Some(release_asset) = release_asset_for_arch {
             println!("Updating to version {latest_version} (from {current_version}).");
 
+            // Preparing temp files
             let tmp_archive_dir = TempDir::new()?;
-            let tmp_archive_path = tmp_archive_dir.path().join("cargo-fslabscli");
-            let mut tmp_archive = File::create(&tmp_archive_path)?;
+            let tmp_archive_path_a = tmp_archive_dir.path().join("downloaded");
+            let tmp_archive_path_b = tmp_archive_dir.path().join("backup");
+            let mut tmp_archive = File::create(&tmp_archive_path_a)?;
 
+            // Downloading the latest release
             let mut download = Download::from_url(&release_asset.download_url);
             download.set_header(header::ACCEPT, "application/octet-stream".parse().unwrap());
             download.download_to(&mut tmp_archive)?;
 
-            // Replace the current executable with the downloaded one, and run it.
-            self_replace(&tmp_archive_path)?;
-            remove_file(&tmp_archive_path)?;
-            cargo_util::ProcessBuilder::new(std::env::current_exe()?)
+            // Preparing a copy in temp folder with the correct permissions
+            std::fs::copy(&tmp_archive_path_a, &tmp_archive_path_b)?;
+            let current_exe = File::open(std::env::current_exe()?)?;
+            let permissions = current_exe.metadata()?.permissions();
+            let new_exe = File::open(&tmp_archive_path_b)?;
+            new_exe.set_permissions(permissions)?;
+
+            // Replace the current executable with the new one
+            self_replace(&tmp_archive_path_a)?;
+
+            // Run the new version from the temp copy
+            cargo_util::ProcessBuilder::new(tmp_archive_path_b)
                 .args(&std::env::args_os().skip(1).collect::<Vec<_>>())
                 .exec_replace()?;
         } else {
