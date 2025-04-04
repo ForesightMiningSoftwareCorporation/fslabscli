@@ -236,6 +236,8 @@ pub async fn execute_command(
         c.env_remove(env);
     }
     c.envs(envs);
+    // disable colors in log to get clean strings
+    c.env("NO_COLOR", "true");
 
     let mut child = c.spawn().expect("Unmable to spawn command");
 
