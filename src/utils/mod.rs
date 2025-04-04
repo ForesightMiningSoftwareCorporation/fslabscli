@@ -239,7 +239,7 @@ pub async fn execute_command(
     // disable colors in log to get clean strings
     c.env("NO_COLOR", "true");
 
-    let mut child = c.spawn().expect("Unmable to spawn command");
+    let mut child = c.spawn().expect("Unable to spawn command");
 
     let stdout = child.stdout.take().expect("Failed to get stdout");
     let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
