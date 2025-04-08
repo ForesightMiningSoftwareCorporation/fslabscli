@@ -308,7 +308,7 @@ async fn do_test_on_package(
 
     // Handle service database
     if !failed && get_test_arg_bool(&test_args, "service_database") == Some(true) {
-        tracing::info!("Setting up service database");
+        tracing::info!("│ {:30.30}     │ Setting up service database", package_name);
         let start_time = OffsetDateTime::now_utc();
         let pg_port = free_local_port().unwrap();
         let service_db_container = create_docker_container(
@@ -343,7 +343,7 @@ async fn do_test_on_package(
     }
     // Handle service azurite
     if !failed && get_test_arg_bool(&test_args, "service_azurite") == Some(true) {
-        tracing::info!("Setting up service azurite");
+        tracing::info!("│ {:30.30}     │ Setting up service azurite", package_name);
         let start_time = OffsetDateTime::now_utc();
         let azurite_container = create_docker_container(
             "azurite".to_string(),
@@ -376,7 +376,7 @@ async fn do_test_on_package(
     // Handle cache miss (this should be dropped and only additional script)
     if !failed {
         if let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
-            tracing::info!("Running cache miss command");
+            tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
             let start_time = OffsetDateTime::now_utc();
             let mut envs: HashMap<String, String> = HashMap::new();
             if let Some(db_url) = database_url.clone() {
@@ -408,7 +408,10 @@ async fn do_test_on_package(
     // Handle Additional Script
     if !failed {
         if let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
-            tracing::info!("Running additional script command");
+            tracing::info!(
+                "│ {:30.30}     │ Running additional script command",
+                package_name
+            );
             let start_time = OffsetDateTime::now_utc();
             let mut envs: HashMap<String, String> = HashMap::new();
             if let Some(db_url) = database_url.clone() {
@@ -505,7 +508,7 @@ async fn do_test_on_package(
         i += 1;
         if failed {
             tracing::info!(
-                "│ {:30} {i}/{test_steps} | {:50} │ ⏭ SKIPPED",
+                "│ {:30.30} {i}/{test_steps} │ {:50.50} │ ⏭ SKIPPED",
                 package_name,
                 fslabs_test.command
             );
@@ -537,7 +540,7 @@ async fn do_test_on_package(
             };
         } else {
             tracing::info!(
-                "│ {:30} {i}/{test_steps} | {:50} │ ► START",
+                "│ {:30.30} {i}/{test_steps} │ {:50.50} │ ► START",
                 package_name,
                 fslabs_test.command
             );
@@ -576,7 +579,7 @@ async fn do_test_on_package(
             let mut tc = match success {
                 true => {
                     tracing::info!(
-                        "│ {:30} {i}/{test_steps} | {:50} │ 🟢 PASS in {}",
+                        "│ {:30.30} {i}/{test_steps} │ {:50.50} │ 🟢 PASS in {}",
                         package_name,
                         fslabs_test.command,
                         duration.human(Truncate::Second)
@@ -585,7 +588,7 @@ async fn do_test_on_package(
                 }
                 false => {
                     tracing::info!(
-                        "│ {:30} {i}/{test_steps} | {:50} │ 🟥 FAIL in {}",
+                        "│ {:30.30} {i}/{test_steps} │ {:50.50} │ 🟥 FAIL in {}",
                         package_name,
                         fslabs_test.command,
                         duration.human(Truncate::Second)
@@ -636,11 +639,17 @@ async fn do_test_on_package(
 
     // Tear down docker containers
     if let Some(container_id) = service_database_container_id {
-        tracing::info!("Tearing down service database");
+        tracing::info!(
+            "│ {:30.30}     │ Tearing down service database",
+            package_name
+        );
         teardown_container(container_id).await;
     }
     if let Some(container_id) = service_azurite_container_id {
-        tracing::info!("Tearing down service azurite");
+        tracing::info!(
+            "│ {:30.30}     │ Tearing down service azurite",
+            package_name
+        );
         teardown_container(container_id).await;
     }
     junit_report.add_testsuite(ts_mandatory);
