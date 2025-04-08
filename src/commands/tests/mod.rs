@@ -196,7 +196,11 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
     let mut handles = vec![];
 
-    for (_, member) in results.members {
+    for (_, member) in results
+        .members
+        .into_iter()
+        .filter(|(_, member)| !member.test_detail.skip.unwrap_or_default() && member.perform_test)
+    {
         let task_handle = tokio::spawn(do_test_on_package(
             options.clone(),
             repo_root.clone(),
@@ -292,10 +296,6 @@ async fn do_test_on_package(
             ],
         );
     }
-
-    // if failed || member.test_detail.skip.unwrap_or_default() || !member.perform_test {
-    //     continue;
-    // }
 
     let ts_name = format!("{workspace_name} - {package_name} - {package_version}");
     tracing::info!("Testing {ts_name}");
