@@ -227,11 +227,21 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         }
     }
 
+    let total_duration = global_junit_report
+        .testsuites()
+        .iter()
+        .flat_map(|ts| ts.testcases().iter().map(|tc| tc.time()))
+        .sum::<junit_report::Duration>();
+
     let mut junit_file = File::create(options.artifacts.join("junit.rust.xml"))?;
     global_junit_report.write_xml(&mut junit_file)?;
     let overall_end_time = OffsetDateTime::now_utc();
     let overall_duration = overall_end_time - overall_start_time;
-    tracing::info!("Workspace tests ran in {}", overall_duration);
+    tracing::info!(
+        "Workspace tests ran in {} (for a cumulated duration of {})",
+        overall_duration,
+        total_duration
+    );
     match global_failed {
         false => {
             overall_duration_h.record(
