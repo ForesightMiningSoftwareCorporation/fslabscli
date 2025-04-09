@@ -398,7 +398,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "port_check",
- "quick-xml 0.37.3",
+ "quick-xml 0.37.4",
  "rand 0.9.0",
  "regex",
  "rust-toolchain-file",
@@ -1982,7 +1982,7 @@ dependencies = [
  "itertools 0.14.0",
  "parking_lot",
  "percent-encoding",
- "quick-xml 0.37.3",
+ "quick-xml 0.37.4",
  "rand 0.8.5",
  "reqwest",
  "ring",
@@ -2365,9 +2365,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.37.3"
+version = "0.37.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf763ab1c7a3aa408be466efc86efe35ed1bd3dd74173ed39d6b0d0a6f0ba148"
+checksum = "a4ce8c88de324ff838700f36fb6ab86c96df0e3c4ab6ef3a9b2044465cce1369"
 dependencies = [
  "memchr",
  "serde",
@@ -2869,7 +2869,7 @@ dependencies = [
  "hyper",
  "indicatif",
  "log",
- "quick-xml 0.37.3",
+ "quick-xml 0.37.4",
  "regex",
  "reqwest",
  "self-replace",
@@ -3968,7 +3968,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
