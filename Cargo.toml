@@ -99,7 +99,7 @@
 
   [dependencies.quick-xml]
     features = ["serialize"]
-    version = "0.37.2"
+    version = "0.37.4"
 
   [dependencies.rustls]
     default-features = false
