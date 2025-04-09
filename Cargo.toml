@@ -30,7 +30,7 @@ nightly = []
 prod = []
 
 [dependencies]
-base64 = "0.21"
+base64 = "0.21.7"
 bytes = "1.10.1"
 cargo_metadata = "0.19.2"
 chrono = "0.4"
