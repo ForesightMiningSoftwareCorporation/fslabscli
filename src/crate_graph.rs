@@ -187,8 +187,11 @@ impl CrateGraph {
             // Returning early from a callback will propagate an error for some
             // reason. Ignore it.
             let _ = diff_old_new.foreach(&mut file_cb, None, None, None);
-            let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
-            let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
+            if new_rev == "HEAD" {
+                // Only check changes on staged and unstaged when not specifying a commit
+                let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
+                let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
+            }
         }
         changed.sort();
         changed.dedup(); // Remove duplicates if package changed in multiple diffs
