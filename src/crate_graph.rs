@@ -166,33 +166,46 @@ impl CrateGraph {
 
         // Check each package path against each file paths in git diff.
         let mut changed = Vec::new();
-        for package in self.packages() {
-            let package_path = package_path(&self.repo_root, package).into_owned();
+        let mut packages = self.packages().collect::<Vec<_>>();
+        // Sort packages so that we look at the subpackages first:
+        // - workspace/crate_a/subcrate
+        // - workspace/crate_a
+        // - workspace/crate_b
+        // - workspace
+        packages.sort_by_key(|package| package_path(&self.repo_root, package).iter().count());
+        packages.reverse();
 
-            // If package_path is ".", treat it as the entire repo
-            let is_repo_root = package_path == Path::new(".");
+        // For each change, find the most specific package modified
+        let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
+            for delta_path in [delta.old_file().path(), delta.new_file().path()]
+                .into_iter()
+                .flatten()
+            {
+                for package in &packages {
+                    let package_path = package_path(&self.repo_root, package).into_owned();
 
-            let mut file_cb = |delta: DiffDelta, _: f32| -> bool {
-                for delta_path in [delta.old_file().path(), delta.new_file().path()]
-                    .into_iter()
-                    .flatten()
-                {
+                    // If package_path is ".", treat it as the entire repo
+                    let is_repo_root = package_path == Path::new(".");
+
                     if is_repo_root || delta_path.starts_with(&package_path) {
                         changed.push(package_path.clone());
-                        return false;
+                        // Stop processing this change, we found the most specific package impacted
+                        // Returning true will continue matching other file changed in case a commit targets several packages
+                        return true;
                     }
                 }
-                true
-            };
-            // Returning early from a callback will propagate an error for some
-            // reason. Ignore it.
-            let _ = diff_old_new.foreach(&mut file_cb, None, None, None);
-            if new_rev == "HEAD" {
-                // Only check changes on staged and unstaged when not specifying a commit
-                let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
-                let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
             }
+            true
+        };
+        // Returning early from a callback will propagate an error for some
+        // reason. Ignore it.
+        let _ = diff_old_new.foreach(&mut file_cb, None, None, None);
+        if new_rev == "HEAD" {
+            // Only check changes on staged and unstaged when not specifying a commit
+            let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
+            let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
         }
+
         changed.sort();
         changed.dedup(); // Remove duplicates if package changed in multiple diffs
 
