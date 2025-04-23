@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.18.8"
+version = "2.19.0"
 
 [package.metadata]
 
@@ -152,4 +152,4 @@ assert_fs = "1.1.2"
 indoc = "2.0"
 serial_test = "3.2.0"
 testcontainers = "0.15"
-wiremock = "0.6"
+wiremock = "0.6.3"
