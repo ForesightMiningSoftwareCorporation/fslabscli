@@ -16,6 +16,7 @@ use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix}
 use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
 use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
 use crate::commands::publish::{Options as PublishOptions, publish};
+use crate::commands::summaries::{Options as SummariesOptions, summaries};
 use crate::commands::tests::{Options as TestsOptions, tests};
 
 use opentelemetry::{KeyValue, global};
@@ -75,6 +76,8 @@ enum Commands {
     CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
+    /// Summarize a github action run
+    Summaries(Box<SummariesOptions>),
     /// Download github run artifacts
     DownloadArtifacts(Box<DownloadArtifactsOptions>),
     /// Generate a github token for an github app
@@ -311,6 +314,9 @@ async fn async_main() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::GenerateWix(options) => generate_wix(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Summaries(options) => summaries(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DownloadArtifacts(options) => download_artifacts(options, working_directory)

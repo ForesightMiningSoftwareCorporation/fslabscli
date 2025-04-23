@@ -240,6 +240,7 @@
                   self.packages.${system}.default
                   updatecli
                   cargo-deny
+                  cargo-edit
                   xunit-viewer
                 ];
                 languages = {
