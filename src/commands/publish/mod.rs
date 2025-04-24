@@ -472,7 +472,7 @@ async fn do_publish_package(
         result.end_time = Some(SystemTime::now());
         return result;
     }
-    let workspace_name = &package.workspace;
+    // let workspace_name = &package.workspace;
     let package_version = &package.version;
     let package_name = &package.package;
     let package_path = repo_root.join(&package.path);
@@ -603,7 +603,11 @@ async fn do_publish_package(
                 .publish_detail
                 .docker
                 .dockerfile
-                .unwrap_or_else(|| format!("{}/Dockerfile", workspace_name));
+                .map(|s| PathBuf::from(s))
+                .unwrap_or_else(|| package_path.join("Dockerfile"))
+                .to_str()
+                .unwrap()
+                .to_string();
             let image_name = format!("{}/{}:{}", registry, package_name, package_version);
             let image_latest = format!("{}/{}:latest", registry, package_name);
             let mut args = vec![
@@ -648,7 +652,7 @@ async fn do_publish_package(
                     "--secret id=cargo_private_registry_token,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_TOKEN".to_string(),
                 );
                 args.push(
-                    "--secret id=argo_private_registry_name,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME".to_string(),
+                    "--secret id=cargo_private_registry_name,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME".to_string(),
                 );
             }
             args.push(context.clone());
