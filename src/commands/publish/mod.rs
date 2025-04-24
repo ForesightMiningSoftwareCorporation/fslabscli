@@ -655,7 +655,7 @@ async fn do_publish_package(
             // First we build
             let (stdout, stderr, success) = execute_command(
                 &format!("docker build -t {}", args.join(" ")),
-                &package_path,
+                &repo_root,
                 &HashMap::new(),
                 &HashSet::new(),
                 Some(tracing::Level::DEBUG),
@@ -670,7 +670,7 @@ async fn do_publish_package(
                 // Tag as latest
                 let (stdout, stderr, success) = execute_command(
                     &format!("docker tag {} {}", image_name, image_latest),
-                    &package_path,
+                    &repo_root,
                     &HashMap::new(),
                     &HashSet::new(),
                     Some(tracing::Level::DEBUG),
@@ -685,7 +685,7 @@ async fn do_publish_package(
                     // Push image
                     let (stdout, stderr, success) = execute_command(
                         &format!("docker push {}", image_name),
-                        &package_path,
+                        &repo_root,
                         &HashMap::new(),
                         &HashSet::new(),
                         Some(tracing::Level::DEBUG),
@@ -700,7 +700,7 @@ async fn do_publish_package(
                         // Push latest
                         let (stdout, stderr, success) = execute_command(
                             &format!("docker push {}", image_latest),
-                            &package_path,
+                            &repo_root,
                             &HashMap::new(),
                             &HashSet::new(),
                             Some(tracing::Level::DEBUG),
