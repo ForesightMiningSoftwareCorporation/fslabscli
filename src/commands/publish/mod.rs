@@ -654,7 +654,7 @@ async fn do_publish_package(
             args.push(context.clone());
             // First we build
             let (stdout, stderr, success) = execute_command(
-                &format!("docker build {}", args.join(" ")),
+                &format!("docker build -t {}", args.join(" ")),
                 &package_path,
                 &HashMap::new(),
                 &HashSet::new(),
