@@ -18,6 +18,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tokio::sync::Semaphore;
+use tracing::info;
 
 use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
@@ -611,6 +612,7 @@ async fn do_publish_package(
             let image_name = format!("{}/{}:{}", registry, package_name, package_version);
             let image_latest = format!("{}/{}:latest", registry, package_name);
             let mut args = vec![
+                "-t".to_string(),
                 image_name.to_string(),
                 "-f".to_string(),
                 dockerfile.clone(),
@@ -633,32 +635,30 @@ async fn do_publish_package(
                 env::var(format!("{}_USER_AGENT", main_registry_prefix)),
                 env::var(format!("{}_TOKEN", main_registry_prefix)),
             ) {
-                envs.insert(
-                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_USER_AGENT",
-                    user_agent,
-                );
-                envs.insert(
-                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_TOKEN",
-                    token,
-                );
-                envs.insert(
-                    "CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME",
-                    "foresight-mining-software-corporation".to_string(),
-                );
-                args.push(
-                    "--secret id=cargo_private_registry_user_agent,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_USER_AGENT".to_string(),
-                );
-                args.push(
-                    "--secret id=cargo_private_registry_token,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_TOKEN".to_string(),
-                );
-                args.push(
-                    "--secret id=cargo_private_registry_name,env=CARGO_REGISTRIES_FORESIGHT_MINING_SOFTWARE_CORPORATION_NAME".to_string(),
-                );
+                let user_agent_env = format!("{}_USER_AGENT", main_registry_prefix);
+                let token_env = format!("{}_TOKEN", main_registry_prefix);
+                let name_env = format!("{}_NAME", main_registry_prefix);
+                envs.insert(&user_agent_env, user_agent);
+                envs.insert(&token_env, token);
+                envs.insert(&name_env, options.cargo_main_registry.clone());
+                args.push(format!(
+                    "--secret id=cargo_private_registry_user_agent,env={}",
+                    user_agent_env
+                ));
+                args.push(format!(
+                    "--secret id=cargo_private_registry_token,env={}",
+                    token_env
+                ));
+                args.push(format!(
+                    "--secret id=cargo_private_registry_name,env={}",
+                    name_env
+                ));
             }
             args.push(context.clone());
+            info!("Building docker image with args: {:?}", args);
             // First we build
             let (stdout, stderr, success) = execute_command(
-                &format!("docker build -t {}", args.join(" ")),
+                &format!("docker build {}", args.join(" ")),
                 &repo_root,
                 &HashMap::new(),
                 &HashSet::new(),
@@ -666,9 +666,9 @@ async fn do_publish_package(
                 Some(tracing::Level::DEBUG),
             )
             .await;
-            result.nix_binary.success = success;
-            result.nix_binary.stdout = stdout;
-            result.nix_binary.stderr = stderr;
+            result.docker.success = success;
+            result.docker.stdout = stdout;
+            result.docker.stderr = stderr;
             is_failed = !success;
             if !is_failed {
                 // Tag as latest
@@ -681,9 +681,9 @@ async fn do_publish_package(
                     Some(tracing::Level::DEBUG),
                 )
                 .await;
-                result.nix_binary.success = success;
-                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                result.docker.success = success;
+                result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
+                result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
                 is_failed = !success;
                 if !is_failed {
                     // Push image
@@ -696,9 +696,9 @@ async fn do_publish_package(
                         Some(tracing::Level::DEBUG),
                     )
                     .await;
-                    result.nix_binary.success = success;
-                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                    result.docker.success = success;
+                    result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
+                    result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
                     is_failed = !success;
                     if !is_failed {
                         // Push latest
@@ -711,11 +711,9 @@ async fn do_publish_package(
                             Some(tracing::Level::DEBUG),
                         )
                         .await;
-                        result.nix_binary.success = success;
-                        result.nix_binary.stdout =
-                            format!("{}\n{}", result.nix_binary.stdout, stdout);
-                        result.nix_binary.stderr =
-                            format!("{}\n{}", result.nix_binary.stderr, stderr);
+                        result.docker.success = success;
+                        result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
+                        result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
                         is_failed = !success;
                     }
                 }
