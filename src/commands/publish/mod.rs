@@ -503,7 +503,7 @@ async fn do_publish_package(
                 result.nix_binary.stderr = stderr;
                 is_failed = !success;
                 if !is_failed {
-                    let (stdout, stderr, mut success) = execute_command(
+                    let (stdout, stderr, success) = execute_command(
                         &format!("attic use central:{}", atticd_cache),
                         &package_path,
                         &HashMap::new(),
@@ -512,10 +512,6 @@ async fn do_publish_package(
                         Some(tracing::Level::DEBUG),
                     )
                     .await;
-                    if success {
-                        // Let's copy the artifacts to the
-                        success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
-                    }
                     result.nix_binary.success = success;
                     result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
                     result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
@@ -707,11 +703,7 @@ async fn do_publish_package(
             .to_uppercase();
             if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
                 args.push("--ssh".to_string());
-                args.push(format!(
-                    "{}={}",
-                    options.cargo_main_registry.clone(),
-                    ssh_key
-                ));
+                args.push(format!("default={}", ssh_key));
             }
 
             if let (Ok(user_agent), Ok(token)) = (
