@@ -619,6 +619,14 @@ async fn do_publish_package(
                 "--ssh=default".to_string(),
             ];
             let mut envs = HashMap::new();
+            let mut blacklist_envs =
+                HashSet::from(["GIT_SSH_COMMAND".to_string(), "SSH_AUTH_SOCK".to_string()]);
+            for (key, _) in std::env::vars() {
+                if key.starts_with("CARGO_REGISTRIES_") {
+                    blacklist_envs.insert(key);
+                }
+            }
+
             if let (Some(_), Some(npm_ghcr_token)) = (
                 options.npm_ghcr_scope.clone(),
                 options.npm_ghcr_token.clone(),
@@ -631,6 +639,10 @@ async fn do_publish_package(
                 options.cargo_main_registry.replace("-", "_")
             )
             .to_uppercase();
+            if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
+                args.push(format!("--ssh={}", ssh_key));
+            }
+
             if let (Ok(user_agent), Ok(token)) = (
                 env::var(format!("{}_USER_AGENT", main_registry_prefix)),
                 env::var(format!("{}_TOKEN", main_registry_prefix)),
@@ -661,7 +673,7 @@ async fn do_publish_package(
                 &format!("docker build {}", args.join(" ")),
                 &repo_root,
                 &envs,
-                &HashSet::new(),
+                &blacklist_envs,
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
             )
