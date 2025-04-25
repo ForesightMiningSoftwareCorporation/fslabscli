@@ -4,9 +4,9 @@ description = "Command line interface for helping FSLABS ci"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
-publish = ["fsl"]
+# publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.19.7"
+version = "2.19.8"
 
 [package.metadata]
 

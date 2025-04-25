@@ -483,11 +483,15 @@ async fn do_publish_package(
         if options.dry_run {
             result.nix_binary.success = true;
         } else {
-            if let Ok(cachix_cache_name) = env::var("CACHIX_CACHE_NAME") {
+            if let (Ok(atticd_url), Ok(atticd_cache), Ok(atticd_token)) = (
+                env::var("ATTICD_URL"),
+                env::var("ATTICD_CACHE"),
+                env::var("ATTICD_TOKEN"),
+            ) {
                 // Let's make sure we use it
                 // Tag as latest
                 let (stdout, stderr, success) = execute_command(
-                    &format!("cachix use {}", cachix_cache_name),
+                    &format!("attic login central {}/ {}", atticd_url, atticd_token),
                     &repo_root,
                     &HashMap::new(),
                     &HashSet::new(),
@@ -499,6 +503,25 @@ async fn do_publish_package(
                 result.nix_binary.stdout = stdout;
                 result.nix_binary.stderr = stderr;
                 is_failed = !success;
+                if !is_failed {
+                    let (stdout, stderr, mut success) = execute_command(
+                        &format!("attic use central:{}", atticd_cache),
+                        &package_path,
+                        &HashMap::new(),
+                        &HashSet::new(),
+                        Some(tracing::Level::DEBUG),
+                        Some(tracing::Level::DEBUG),
+                    )
+                    .await;
+                    if success {
+                        // Let's copy the artifacts to the
+                        success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+                    }
+                    result.nix_binary.success = success;
+                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                    is_failed = !success;
+                }
             }
             if !is_failed {
                 let (stdout, stderr, mut success) = execute_command(
@@ -519,27 +542,20 @@ async fn do_publish_package(
                 result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
                 is_failed = !success;
             }
-            if let (Ok(cachix_cache_name), Ok(cachix_token)) =
-                (env::var("CACHIX_CACHE_NAME"), env::var("CACHIX_AUTH_TOKEN"))
-            {
+            if let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
                 // Let's push the store to cachix by rebuilding and pushing
-                let envs = HashMap::from([("CACHIX_AUTH_TOKEN".to_string(), cachix_token)]);
-                let (stdout, stderr, mut success) = execute_command(
+                let (stdout, stderr, success) = execute_command(
                     &format!(
-                        "nix build --no-link --print-out-paths .#release | cachix push {}",
-                        cachix_cache_name
+                        "attic push {} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')",
+                        atticd_cache
                     ),
                     &package_path,
-                    &envs,
+                    &HashMap::new(),
                     &HashSet::new(),
                     Some(tracing::Level::DEBUG),
                     Some(tracing::Level::DEBUG),
                 )
                 .await;
-                if success {
-                    // Let's copy the artifacts to the
-                    success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
-                }
                 result.nix_binary.success = success;
                 result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
                 result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
@@ -659,9 +675,18 @@ async fn do_publish_package(
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),
+                "--cache-to".to_string(),
+                format!(
+                    "type=registry,ref={}/{}-cache[,parameters...]",
+                    registry, package_name
+                ),
+                "--cache-from".to_string(),
+                format!(
+                    "type=registry,ref={}/{}-cache[,parameters...]",
+                    registry, package_name
+                ),
                 "-f".to_string(),
                 dockerfile.clone(),
-                "--ssh=default".to_string(),
             ];
             let mut envs = HashMap::new();
             let mut blacklist_envs =
@@ -686,7 +711,11 @@ async fn do_publish_package(
             .to_uppercase();
             if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
                 args.push("--ssh".to_string());
-                args.push(format!("default={}", ssh_key));
+                args.push(format!(
+                    "{}={}",
+                    options.cargo_main_registry.clone(),
+                    ssh_key
+                ));
             }
 
             if let (Ok(user_agent), Ok(token)) = (

@@ -242,6 +242,7 @@
                   cargo-deny
                   cargo-edit
                   xunit-viewer
+                  attic-client
                 ];
                 languages = {
                   nix.enable = true;
