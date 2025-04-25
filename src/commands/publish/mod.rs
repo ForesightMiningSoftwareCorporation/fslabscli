@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use tokio::sync::Semaphore;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
@@ -441,7 +441,7 @@ async fn publish_package(
 
         // Acquire a permit from the semaphore to limit the number of concurrent tasks
         let permit = semaphore.acquire().await;
-        println!("Doing package: {}", package.package);
+        debug!("Doing package: {}", package.package);
         let success = do_publish_package(
             repo_root.clone(),
             package.clone(),
@@ -451,7 +451,7 @@ async fn publish_package(
             registries,
         )
         .await;
-        println!("Done package: {}", package.package);
+        debug!("Done package: {}", package.package);
         let mut map = statuses.write().expect("RwLock poisoned");
         *map.entry(package_id.clone()).or_insert(None) = Some(success);
         drop(permit);
@@ -488,8 +488,7 @@ async fn do_publish_package(
                 env::var("ATTICD_CACHE"),
                 env::var("ATTICD_TOKEN"),
             ) {
-                // Let's make sure we use it
-                // Tag as latest
+                info!("Login to atticd");
                 let (stdout, stderr, success) = execute_command(
                     &format!("attic login central {}/ {}", atticd_url, atticd_token),
                     &repo_root,
@@ -529,8 +528,8 @@ async fn do_publish_package(
                     &package_path,
                     &HashMap::new(),
                     &HashSet::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::INFO),
+                    Some(tracing::Level::INFO),
                 )
                 .await;
                 if success {
@@ -542,9 +541,11 @@ async fn do_publish_package(
                 result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
                 is_failed = !success;
             }
-            if let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
-                // Let's push the store to cachix by rebuilding and pushing
-                let (stdout, stderr, success) = execute_command(
+            if !is_failed {
+                if let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
+                    // Let's push the store to cachix by rebuilding and pushing
+                    info!("Pushing to atticd");
+                    let (stdout, stderr, success) = execute_command(
                     &format!(
                         "attic push {} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')",
                         atticd_cache
@@ -552,14 +553,15 @@ async fn do_publish_package(
                     &package_path,
                     &HashMap::new(),
                     &HashSet::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::INFO),
+                    Some(tracing::Level::INFO),
                 )
                 .await;
-                result.nix_binary.success = success;
-                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
-                is_failed = !success;
+                    result.nix_binary.success = success;
+                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                    is_failed = !success;
+                }
             }
         }
         result.nix_binary.end_time = Some(SystemTime::now());
@@ -625,8 +627,8 @@ async fn do_publish_package(
                             &package_path,
                             &envs,
                             &blacklist_envs,
-                            Some(tracing::Level::DEBUG),
-                            Some(tracing::Level::DEBUG),
+                            Some(tracing::Level::INFO),
+                            Some(tracing::Level::INFO),
                         )
                         .await;
                         r.success = success;
@@ -676,15 +678,9 @@ async fn do_publish_package(
                 "-t".to_string(),
                 image_name.to_string(),
                 "--cache-to".to_string(),
-                format!(
-                    "type=registry,ref={}/{}-cache[,parameters...]",
-                    registry, package_name
-                ),
+                format!("type=registry,ref={}/{}-cache", registry, package_name),
                 "--cache-from".to_string(),
-                format!(
-                    "type=registry,ref={}/{}-cache[,parameters...]",
-                    registry, package_name
-                ),
+                format!("type=registry,ref={}/{}-cache", registry, package_name),
                 "-f".to_string(),
                 dockerfile.clone(),
             ];
@@ -742,15 +738,14 @@ async fn do_publish_package(
                 ));
             }
             args.push(context.clone());
-            info!("Building docker image with args: {:?}", args);
             // First we build
             let (stdout, stderr, success) = execute_command(
                 &format!("docker build {}", args.join(" ")),
                 &repo_root,
                 &envs,
                 &blacklist_envs,
-                Some(tracing::Level::DEBUG),
-                Some(tracing::Level::DEBUG),
+                Some(tracing::Level::INFO),
+                Some(tracing::Level::INFO),
             )
             .await;
             result.docker.success = success;
@@ -764,8 +759,8 @@ async fn do_publish_package(
                     &repo_root,
                     &HashMap::new(),
                     &HashSet::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::INFO),
+                    Some(tracing::Level::INFO),
                 )
                 .await;
                 result.docker.success = success;
@@ -779,8 +774,8 @@ async fn do_publish_package(
                         &repo_root,
                         &HashMap::new(),
                         &HashSet::new(),
-                        Some(tracing::Level::DEBUG),
-                        Some(tracing::Level::DEBUG),
+                        Some(tracing::Level::INFO),
+                        Some(tracing::Level::INFO),
                     )
                     .await;
                     result.docker.success = success;
@@ -794,8 +789,8 @@ async fn do_publish_package(
                             &repo_root,
                             &HashMap::new(),
                             &HashSet::new(),
-                            Some(tracing::Level::DEBUG),
-                            Some(tracing::Level::DEBUG),
+                            Some(tracing::Level::INFO),
+                            Some(tracing::Level::INFO),
                         )
                         .await;
                         result.docker.success = success;
@@ -875,8 +870,8 @@ pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result
             repo_root,
             &HashMap::new(),
 &HashSet::new(),
-            Some(tracing::Level::DEBUG),
-            Some(tracing::Level::DEBUG),
+            Some(tracing::Level::INFO),
+            Some(tracing::Level::INFO),
         )
         .await;
         if !success {
@@ -892,8 +887,8 @@ pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result
             repo_root,
             &HashMap::new(),
             &HashSet::new(),
-            Some(tracing::Level::DEBUG),
-            Some(tracing::Level::DEBUG),
+            Some(tracing::Level::INFO),
+            Some(tracing::Level::INFO),
         )
         .await;
         if !success {

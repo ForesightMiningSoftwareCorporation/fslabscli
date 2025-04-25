@@ -13,7 +13,7 @@ use std::{
     process::Stdio,
 };
 use tokio::io::AsyncBufReadExt;
-use tracing::info;
+use tracing::{debug, error, info, trace, warn};
 
 use void::Void;
 
@@ -232,6 +232,8 @@ pub async fn execute_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    info!("Running: {}", command);
+
     for env in envs_remove {
         c.env_remove(env);
     }
@@ -253,14 +255,28 @@ pub async fn execute_command(
         tokio::select! {
             Ok(Some(line)) = stdout_stream.next_line() =>  {
                 stdout_string.push_str(&format!("{}\n", line));
-                if log_stdout.is_some() {
-                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                if let Some(l) = log_stdout {
+                    let stdout = format!(" | {}", line);
+                    match l {
+                        tracing::Level::ERROR => error!(stdout),
+                        tracing::Level::WARN => warn!(stdout),
+                        tracing::Level::INFO => info!(stdout),
+                        tracing::Level::DEBUG => debug!(stdout),
+                        tracing::Level::TRACE => trace!(stdout),
+                    }
                 }
             },
             Ok(Some(line)) = stderr_stream.next_line() =>  {
                 stderr_string.push_str(&format!("{}\n", line));
-                if log_stderr.is_some() {
-                    tracing::event!(tracing::Level::DEBUG, " │ {}", line)
+                if let Some(l) = log_stderr {
+                    let stderr = format!(" | {}", line);
+                    match l {
+                        tracing::Level::ERROR => error!(stderr),
+                        tracing::Level::WARN => warn!(stderr),
+                        tracing::Level::INFO => info!(stderr),
+                        tracing::Level::DEBUG => debug!(stderr),
+                        tracing::Level::TRACE => trace!(stderr),
+                    }
                 }
             },
             else => break,
