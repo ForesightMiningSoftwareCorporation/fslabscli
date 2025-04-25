@@ -623,7 +623,7 @@ async fn do_publish_package(
                 options.npm_ghcr_scope.clone(),
                 options.npm_ghcr_token.clone(),
             ) {
-                envs.insert("NPM_GHCR_TOKEN", npm_ghcr_token);
+                envs.insert("NPM_GHCR_TOKEN".to_string(), npm_ghcr_token);
                 args.push("--secret id=node_auth_token,env=NPM_GHCR_TOKEN".to_string());
             }
             let main_registry_prefix = format!(
@@ -638,9 +638,9 @@ async fn do_publish_package(
                 let user_agent_env = format!("{}_USER_AGENT", main_registry_prefix);
                 let token_env = format!("{}_TOKEN", main_registry_prefix);
                 let name_env = format!("{}_NAME", main_registry_prefix);
-                envs.insert(&user_agent_env, user_agent);
-                envs.insert(&token_env, token);
-                envs.insert(&name_env, options.cargo_main_registry.clone());
+                envs.insert(user_agent_env.clone(), user_agent);
+                envs.insert(token_env.clone(), token);
+                envs.insert(name_env.clone(), options.cargo_main_registry.clone());
                 args.push(format!(
                     "--secret id=cargo_private_registry_user_agent,env={}",
                     user_agent_env
@@ -660,7 +660,7 @@ async fn do_publish_package(
             let (stdout, stderr, success) = execute_command(
                 &format!("docker build {}", args.join(" ")),
                 &repo_root,
-                &HashMap::new(),
+                &envs,
                 &HashSet::new(),
                 Some(tracing::Level::DEBUG),
                 Some(tracing::Level::DEBUG),
