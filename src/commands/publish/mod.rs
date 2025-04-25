@@ -483,23 +483,68 @@ async fn do_publish_package(
         if options.dry_run {
             result.nix_binary.success = true;
         } else {
-            let (stdout, stderr, mut success) = execute_command(
-                "nix build .#release",
-                &package_path,
-                &HashMap::new(),
-                &HashSet::new(),
-                Some(tracing::Level::DEBUG),
-                Some(tracing::Level::DEBUG),
-            )
-            .await;
-            if success {
-                // Let's copy the artifacts to the
-                success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+            if let Ok(cachix_cache_name) = env::var("CACHIX_CACHE_NAME") {
+                // Let's make sure we use it
+                // Tag as latest
+                let (stdout, stderr, success) = execute_command(
+                    &format!("cachix use {}", cachix_cache_name),
+                    &repo_root,
+                    &HashMap::new(),
+                    &HashSet::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
+                )
+                .await;
+                result.nix_binary.success = success;
+                result.nix_binary.stdout = stdout;
+                result.nix_binary.stderr = stderr;
+                is_failed = !success;
             }
-            result.nix_binary.success = success;
-            result.nix_binary.stdout = stdout;
-            result.nix_binary.stderr = stderr;
-            is_failed = !success;
+            if !is_failed {
+                let (stdout, stderr, mut success) = execute_command(
+                    "nix build .#release",
+                    &package_path,
+                    &HashMap::new(),
+                    &HashSet::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
+                )
+                .await;
+                if success {
+                    // Let's copy the artifacts to the
+                    success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+                }
+                result.nix_binary.success = success;
+                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                is_failed = !success;
+            }
+            if let (Ok(cachix_cache_name), Ok(cachix_token)) =
+                (env::var("CACHIX_CACHE_NAME"), env::var("CACHIX_AUTH_TOKEN"))
+            {
+                // Let's push the store to cachix by rebuilding and pushing
+                let envs = HashMap::from([("CACHIX_AUTH_TOKEN".to_string(), cachix_token)]);
+                let (stdout, stderr, mut success) = execute_command(
+                    &format!(
+                        "nix build --no-link --print-out-paths .#release | cachix push {}",
+                        cachix_cache_name
+                    ),
+                    &package_path,
+                    &envs,
+                    &HashSet::new(),
+                    Some(tracing::Level::DEBUG),
+                    Some(tracing::Level::DEBUG),
+                )
+                .await;
+                if success {
+                    // Let's copy the artifacts to the
+                    success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+                }
+                result.nix_binary.success = success;
+                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                is_failed = !success;
+            }
         }
         result.nix_binary.end_time = Some(SystemTime::now());
     }
@@ -640,7 +685,8 @@ async fn do_publish_package(
             )
             .to_uppercase();
             if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
-                args.push(format!("--ssh={}", ssh_key));
+                args.push("--ssh".to_string());
+                args.push(format!("default={}", ssh_key));
             }
 
             if let (Ok(user_agent), Ok(token)) = (
