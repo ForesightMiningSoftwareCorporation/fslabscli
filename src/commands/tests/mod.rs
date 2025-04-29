@@ -217,7 +217,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         handles = remaining;
         if let Ok((failed, junit_report)) = result {
             global_junit_report.add_testsuites(junit_report.testsuites().clone());
-            global_failed &= failed;
+            global_failed |= failed;
             if failed {
                 break;
             }
