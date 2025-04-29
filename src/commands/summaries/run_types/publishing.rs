@@ -1,6 +1,6 @@
-use humanize_duration::prelude::DurationExt;
 use humanize_duration::Truncate;
-use octocrab::{models::RunId, params::actions::ArchiveFormat, Octocrab};
+use humanize_duration::prelude::DurationExt;
+use octocrab::{Octocrab, models::RunId, params::actions::ArchiveFormat};
 use std::{
     fmt::{Display, Formatter, Result as FmtResult},
     io::{Cursor, Read},

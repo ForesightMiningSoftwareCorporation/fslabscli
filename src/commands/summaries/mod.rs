@@ -7,8 +7,8 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::{Method, Request};
 use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
 use run_types::{JobType, RunTypeOutput};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,9 @@ use strum_macros::EnumString;
 
 use self::run_types::JobResult;
 use self::run_types::{
+    Run,
     checks::{CheckJobType, CheckRunOutput},
     publishing::{PublishingJobType, PublishingRunOutput},
-    Run,
 };
 use self::template::{Summary, SummaryTableCell};
 use crate::PrettyPrintable;

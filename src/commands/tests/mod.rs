@@ -69,13 +69,15 @@ impl PrettyPrintable for TestResult {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct FslabsTest {
+    pub id: String,
     pub optional: bool,
     pub command: String,
     pub pre_command: Option<String>,
     pub post_command: Option<String>,
     pub envs: HashMap<String, String>,
+    pub skip: bool,
 }
 
 async fn teardown_container(container_id: String) {
@@ -465,10 +467,12 @@ async fn do_test_on_package(
     // Handle Tests
     let fslabs_tests: Vec<FslabsTest> = vec![
         FslabsTest {
+            id: "cargo_fmt".to_string(),
             command: "cargo fmt --verbose -- --check".to_string(),
             ..Default::default()
         },
         FslabsTest {
+            id: "cargo_check".to_string(),
             command: format!(
                 "cargo check --all-targets {additional_args} {}",
                 if options.inner_job_limit != 0 {
@@ -480,10 +484,12 @@ async fn do_test_on_package(
             ..Default::default()
         },
         FslabsTest {
+            id: "cargo_clippy".to_string(),
             command: format!("cargo clippy --all-targets {additional_args} -- -D warnings"),
             ..Default::default()
         },
         FslabsTest {
+            id: "cargo_doc".to_string(),
             command: format!(
                 "cargo doc --no-deps {}",
                 if options.inner_job_limit != 0 {
@@ -496,6 +502,7 @@ async fn do_test_on_package(
             ..Default::default()
         },
         FslabsTest {
+            id: "cargo_test".to_string(),
             command: format!(
                 "cargo test --all-targets {additional_args} {}",
                 if options.inner_job_limit != 0 {
@@ -510,12 +517,27 @@ async fn do_test_on_package(
             post_command: database_url.clone().map(|_| "rm .env".to_string()),
             ..Default::default()
         },
-    ];
+    ]
+    .iter()
+    .cloned()
+    .map(|mut t| {
+        // Let's check if the test need to be skip
+        let skip_env = format!("SKIP_{}_TEST", t.id).to_uppercase();
+        if let Ok(skip) = env::var(skip_env) {
+            t.skip = skip == "true";
+        }
+        t
+    })
+    .collect();
 
     let test_steps = fslabs_tests.len();
 
     for (mut i, fslabs_test) in fslabs_tests.into_iter().enumerate() {
         i += 1;
+        if fslabs_test.skip {
+            continue;
+        }
+
         if failed {
             tracing::info!(
                 "│ {:30.30} {i}/{test_steps} │ {:50.50} │ ⏭ SKIPPED",
