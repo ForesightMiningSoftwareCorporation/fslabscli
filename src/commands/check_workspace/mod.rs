@@ -134,7 +134,7 @@ pub struct Options {
     binary_store_container_name: Option<String>,
     #[arg(long, env)]
     binary_store_access_key: Option<String>,
-    #[arg(long)]
+    #[arg(long, env)]
     release_channel: Option<String>,
     #[arg(long)]
     toolchain: Option<String>,
@@ -896,10 +896,16 @@ pub async fn check_workspace(
 
     for workspace in crates.workspaces() {
         let resolve = workspace.metadata.resolve.as_ref().unwrap();
+        // Let's add the node to the deps
         for node in &resolve.nodes {
             for node_dep in &node.deps {
                 dep_to_id.insert(node_dep.name.clone(), node_dep.pkg.clone());
             }
+        }
+        // Let's add all package to the deps as well
+        let workspace_packages = workspace.metadata.workspace_packages();
+        for package in workspace_packages {
+            dep_to_id.insert(package.name.clone(), package.id.clone());
         }
 
         for package in workspace.metadata.workspace_packages() {
