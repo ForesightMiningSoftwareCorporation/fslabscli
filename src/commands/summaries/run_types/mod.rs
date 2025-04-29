@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use core::fmt;
 use indexmap::IndexMap;
 use serde::de::{self, Visitor};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use std::fmt::Display;
 use std::fs;
 use std::hash::Hash;

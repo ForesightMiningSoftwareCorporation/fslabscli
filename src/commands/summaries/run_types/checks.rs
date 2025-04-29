@@ -9,10 +9,9 @@ use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::summaries::{
-    get_outcome_color,
+    CheckOutcome, CheckOutput, get_outcome_color,
     run_types::JobResult,
     template::{Summary, SummaryTableCell},
-    CheckOutcome, CheckOutput,
 };
 
 use super::{Job, JobType, RunTypeOutput};

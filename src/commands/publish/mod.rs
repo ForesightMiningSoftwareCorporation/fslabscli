@@ -663,7 +663,7 @@ async fn do_publish_package(
                 .publish_detail
                 .docker
                 .dockerfile
-                .map(|s| PathBuf::from(s))
+                .map(PathBuf::from)
                 .unwrap_or_else(|| package_path.join("Dockerfile"))
                 .to_str()
                 .unwrap()
@@ -703,7 +703,11 @@ async fn do_publish_package(
             .to_uppercase();
             if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
                 args.push("--ssh".to_string());
-                args.push(format!("default={}", ssh_key));
+                args.push(format!(
+                    "{}={}",
+                    options.cargo_main_registry.clone(),
+                    ssh_key
+                ));
             }
 
             if let (Ok(user_agent), Ok(token)) = (
