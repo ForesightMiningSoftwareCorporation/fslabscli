@@ -1322,6 +1322,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_alternate_registry_back_feeding() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Could not install crypto provider");
         let ws = create_complex_workspace();
 
         // Check workspace information

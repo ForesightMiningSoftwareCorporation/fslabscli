@@ -247,6 +247,9 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
 }
 
 fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Could not install crypto provider");
     let fslabscli_auto_update = Cli::command()
         .disable_help_flag(true)
         .disable_version_flag(true)
