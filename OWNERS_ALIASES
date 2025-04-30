@@ -2,6 +2,7 @@ aliases:
   fslabs-infra:
     - loispostula
     - fmsc-devops
+    - mockersf
   fslabs-all:
     - aevyrie
     - atlv24
