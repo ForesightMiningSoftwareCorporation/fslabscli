@@ -66,6 +66,7 @@ impl CrateGraph {
         main_registry: impl Into<String> + Clone,
         workspaces: &mut Vec<Workspace>,
     ) -> anyhow::Result<()> {
+        println!("dir: {} -> {}", dir.display(), main_registry.clone().into());
         if let Some(name) = dir.file_name() {
             if name == ".git" {
                 return Ok(());

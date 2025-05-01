@@ -301,6 +301,7 @@ pub fn get_env_or_log(env_name: String) -> Result<String, VarError> {
     })
 }
 pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
+    println!("registry: {}", registry_name);
     let mut envs = HashMap::from([
         (
             "CARGO_NET_GIT_FETCH_WITH_CLI".to_string(),
