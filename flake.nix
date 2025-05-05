@@ -153,6 +153,7 @@
             src = rustSrc;
             nativeBuildInputs = [
               pkgs.perl # Needed to build vendored OpenSSL.
+              pkgs.cmake
             ];
             auditable = false; # Avoid cargo-auditable failures.
             doCheck = false; # Disable test as it requires network access.

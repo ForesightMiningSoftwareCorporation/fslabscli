@@ -52,6 +52,8 @@ pub struct Options {
     job_limit: usize,
     #[arg(long, env, default_value = "0")]
     inner_job_limit: usize,
+    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
+    cargo_main_registry: String,
 }
 
 #[derive(Serialize)]
@@ -170,6 +172,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(true)
         .with_check_publish(false)
+        .with_cargo_main_registry(options.cargo_main_registry.clone())
         .with_changed_head_ref(options.pull_pull_sha.clone())
         .with_changed_base_ref(options.pull_base_sha.clone());
 
