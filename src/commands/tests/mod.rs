@@ -399,7 +399,7 @@ async fn do_test_on_package(
             }
             let (stdout, stderr, success) = execute_command_without_logging(
                 &cache_miss_command,
-                &package_path,
+                &repo_root,
                 &envs,
                 &HashSet::new(),
             )
