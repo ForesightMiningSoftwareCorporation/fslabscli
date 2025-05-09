@@ -296,7 +296,7 @@ pub async fn execute_command(
 
 pub fn get_env_or_log(env_name: String) -> Result<String, VarError> {
     std::env::var(&env_name).map_err(|e| {
-        info!("Failed to load env `{}` {}", env_name, e);
+        warn!("Failed to load env `{}` {}", env_name, e);
         e
     })
 }

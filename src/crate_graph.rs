@@ -40,13 +40,8 @@ impl CrateGraph {
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
-        Self::new_recursive(
-            &repo_root,
-            &ignore,
-            &repo_root,
-            main_registry,
-            &mut workspaces,
-        )?;
+        let envs = get_registry_env(main_registry.clone().into());
+        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces, &envs)?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
         if let Some(cycles) = dependencies.detect_cycles() {
@@ -63,8 +58,8 @@ impl CrateGraph {
         repo_root: &Path,
         ignore: &Gitignore,
         dir: &Path,
-        main_registry: impl Into<String> + Clone,
         workspaces: &mut Vec<Workspace>,
+        envs: &HashMap<String, String>,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name() {
             if name == ".git" {
@@ -81,7 +76,6 @@ impl CrateGraph {
         let manifest_path = dir.join("Cargo.toml");
         if std::fs::exists(&manifest_path)? {
             // Found a manifest. Get metadata.
-            let envs = get_registry_env(main_registry.clone().into());
             let mut command = MetadataCommand::new();
             command.current_dir(dir);
             for (k, v) in envs {
@@ -112,13 +106,7 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(
-                    repo_root,
-                    ignore,
-                    &entry.path(),
-                    main_registry.clone(),
-                    workspaces,
-                )?;
+                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces, envs)?;
             }
         }
 
