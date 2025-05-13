@@ -315,7 +315,9 @@ async fn run() {
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory),
+        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),

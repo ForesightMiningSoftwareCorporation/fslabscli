@@ -25,7 +25,10 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PrettyPrintable,
-    commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+    commands::{
+        check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+        fix_lock_files::fix_workspace_lockfile,
+    },
     init_metrics,
     utils::{execute_command, execute_command_without_logging},
 };
@@ -210,6 +213,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
             options.clone(),
             repo_root.clone(),
             member,
+            results.crate_graph.changed_lockfiles.clone(),
             metrics.clone(),
             semaphore.clone(),
         ));
@@ -282,6 +286,7 @@ async fn do_test_on_package(
     options: Box<Options>,
     repo_root: PathBuf,
     member: super::check_workspace::Result,
+    changed_lockfiles: HashSet<PathBuf>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 ) -> (bool, Report) {
@@ -520,6 +525,11 @@ async fn do_test_on_package(
             post_command: database_url.clone().map(|_| "rm .env".to_string()),
             ..Default::default()
         },
+        FslabsTest {
+            id: "cargo_lock".to_string(),
+            command: "fslabscli fix-lock-files --check".to_string(),
+            ..Default::default()
+        },
     ]
     .iter()
     .cloned()
@@ -589,15 +599,30 @@ async fn do_test_on_package(
                 )
                 .await;
             }
-            let (stdout, stderr, success) = execute_command(
-                &fslabs_test.command,
-                &package_path,
-                &fslabs_test.envs,
-                &HashSet::new(),
-                Some(tracing::Level::DEBUG),
-                Some(tracing::Level::DEBUG),
-            )
-            .await;
+            let (stdout, stderr, success) = match fslabs_test.id == "cargo_lock" {
+                true => fix_workspace_lockfile(
+                    &repo_root,
+                    &package_path,
+                    options.pull_base_sha.clone(),
+                    None,
+                    &changed_lockfiles,
+                    true,
+                )
+                .await
+                .unwrap_or_else(|_| ("".to_string(), "".to_string(), false)),
+
+                false => {
+                    execute_command(
+                        &fslabs_test.command,
+                        &package_path,
+                        &fslabs_test.envs,
+                        &HashSet::new(),
+                        Some(tracing::Level::DEBUG),
+                        Some(tracing::Level::DEBUG),
+                    )
+                    .await
+                }
+            };
             if let Some(post_command) = fslabs_test.post_command {
                 execute_command_without_logging(
                     &post_command,
