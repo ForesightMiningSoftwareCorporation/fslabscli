@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 # publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.22.4"
+version = "2.23.0"
 
 [package.metadata]
 
@@ -67,7 +67,7 @@ tracing-subscriber = { version = "0.3.19", features = [
 ] }
 url = "2.5.4"
 void = "1.0.2"
-zip = "2.6.1"
+zip = "3.0.0"
 tracing-core = "0.1.33"
 futures = "0.3.31"
 tokio-stream = "0.1.17"
