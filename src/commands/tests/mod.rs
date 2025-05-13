@@ -57,6 +57,8 @@ pub struct Options {
     inner_job_limit: usize,
     #[arg(long, env, default_value = "foresight-mining-software-corporation")]
     cargo_main_registry: String,
+    #[arg(long)]
+    run_all: bool,
 }
 
 #[derive(Serialize)]
@@ -173,7 +175,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     tracing::info!("* `changed_base_ref`: {}", options.pull_base_sha);
 
     let check_workspace_options = CheckWorkspaceOptions::new()
-        .with_check_changed(true)
+        .with_check_changed(!options.run_all)
         .with_check_publish(false)
         .with_cargo_main_registry(options.cargo_main_registry.clone())
         .with_changed_head_ref(options.pull_pull_sha.clone())
@@ -204,11 +206,9 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
     let mut handles = vec![];
 
-    for (_, member) in results
-        .members
-        .into_iter()
-        .filter(|(_, member)| !member.test_detail.skip.unwrap_or_default() && member.perform_test)
-    {
+    for (_, member) in results.members.into_iter().filter(|(_, member)| {
+        !member.test_detail.skip.unwrap_or_default() && (member.perform_test || options.run_all)
+    }) {
         let task_handle = tokio::spawn(do_test_on_package(
             options.clone(),
             repo_root.clone(),
