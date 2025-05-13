@@ -17,6 +17,7 @@ pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
     pub dependencies: DependencyGraph,
+    pub changed_lockfiles: HashSet<PathBuf>,
 }
 
 impl CrateGraph {
@@ -36,12 +37,20 @@ impl CrateGraph {
     ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
+        let mut changed_lockfiles = HashSet::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
         let envs = get_registry_env(main_registry.clone().into());
-        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces, &envs)?;
+        Self::new_recursive(
+            &repo_root,
+            &ignore,
+            &repo_root,
+            &mut workspaces,
+            &envs,
+            &mut changed_lockfiles,
+        )?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
         if let Some(cycles) = dependencies.detect_cycles() {
@@ -51,6 +60,7 @@ impl CrateGraph {
             repo_root,
             workspaces,
             dependencies,
+            changed_lockfiles,
         })
     }
 
@@ -60,6 +70,7 @@ impl CrateGraph {
         dir: &Path,
         workspaces: &mut Vec<Workspace>,
         envs: &HashMap<String, String>,
+        changed_lockfiles: &mut HashSet<PathBuf>,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name() {
             if name == ".git" {
@@ -74,6 +85,12 @@ impl CrateGraph {
         }
 
         let manifest_path = dir.join("Cargo.toml");
+        let lock_path = dir.join("Cargo.lock");
+        let orig_lock_content = match std::fs::exists(&lock_path)? {
+            true => Some(std::fs::read_to_string(&lock_path)?),
+            false => None,
+        };
+
         if std::fs::exists(&manifest_path)? {
             // Found a manifest. Get metadata.
             let mut command = MetadataCommand::new();
@@ -94,6 +111,19 @@ impl CrateGraph {
                     .into(),
                 metadata,
             });
+            let updated_lock_content = match std::fs::exists(&lock_path)? {
+                true => Some(std::fs::read_to_string(&lock_path)?),
+                false => None,
+            };
+            let lock_changed = match (orig_lock_content, updated_lock_content) {
+                (Some(orig), Some(updated)) => orig != updated,
+                (Some(_), None) => true,
+                (None, Some(_)) => true,
+                (None, None) => false,
+            };
+            if lock_changed {
+                changed_lockfiles.insert(dir.to_path_buf());
+            }
 
             // Assume that the workspace members are all we needed to find.
             if has_explicit_members {
@@ -106,7 +136,14 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces, envs)?;
+                Self::new_recursive(
+                    repo_root,
+                    ignore,
+                    &entry.path(),
+                    workspaces,
+                    envs,
+                    changed_lockfiles,
+                )?;
             }
         }
 
