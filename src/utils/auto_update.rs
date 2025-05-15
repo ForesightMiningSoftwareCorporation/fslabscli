@@ -5,6 +5,7 @@ use self_update::{
     Download, cargo_crate_version, self_replace::self_replace, version::bump_is_greater,
 };
 use tempfile::TempDir;
+use tracing::info;
 
 pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
     let checker = self_update::backends::github::Update::configure()
@@ -27,7 +28,7 @@ pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
             .find(|a| a.name.contains(&checker.target()));
 
         if let Some(release_asset) = release_asset_for_arch {
-            println!("Updating to version {latest_version} (from {current_version}).");
+            info!("Updating to version {latest_version} (from {current_version}).");
 
             // Preparing temp files
             let tmp_archive_dir = TempDir::new()?;
@@ -55,7 +56,7 @@ pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
                 .args(&std::env::args_os().skip(1).collect::<Vec<_>>())
                 .exec_replace()?;
         } else {
-            println!(
+            info!(
                 "Update available ({current_version} to {latest_version}), but no pre-built version found for your architecture \"{}\".",
                 checker.target()
             );
