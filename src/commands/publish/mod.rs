@@ -673,10 +673,10 @@ async fn do_publish_package(
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),
-                "--cache-to".to_string(),
-                format!("type=registry,ref={}/{}-cache", registry, package_name),
-                "--cache-from".to_string(),
-                format!("type=registry,ref={}/{}-cache", registry, package_name),
+                // "--cache-to".to_string(),
+                // format!("type=registry,ref={}/{}-cache", registry, package_name),
+                // "--cache-from".to_string(),
+                // format!("type=registry,ref={}/{}-cache", registry, package_name),
                 "-f".to_string(),
                 dockerfile.clone(),
             ];
