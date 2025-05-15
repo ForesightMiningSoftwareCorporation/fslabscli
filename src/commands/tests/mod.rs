@@ -25,7 +25,10 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PrettyPrintable,
-    commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+    commands::{
+        check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
+        fix_lock_files::fix_workspace_lockfile,
+    },
     init_metrics,
     utils::{execute_command, execute_command_without_logging},
 };
@@ -54,6 +57,8 @@ pub struct Options {
     inner_job_limit: usize,
     #[arg(long, env, default_value = "foresight-mining-software-corporation")]
     cargo_main_registry: String,
+    #[arg(long)]
+    run_all: bool,
 }
 
 #[derive(Serialize)]
@@ -170,7 +175,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     tracing::info!("* `changed_base_ref`: {}", options.pull_base_sha);
 
     let check_workspace_options = CheckWorkspaceOptions::new()
-        .with_check_changed(true)
+        .with_check_changed(!options.run_all)
         .with_check_publish(false)
         .with_cargo_main_registry(options.cargo_main_registry.clone())
         .with_changed_head_ref(options.pull_pull_sha.clone())
@@ -201,15 +206,14 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let semaphore = Arc::new(Semaphore::new(options.job_limit));
     let mut handles = vec![];
 
-    for (_, member) in results
-        .members
-        .into_iter()
-        .filter(|(_, member)| !member.test_detail.skip.unwrap_or_default() && member.perform_test)
-    {
+    for (_, member) in results.members.into_iter().filter(|(_, member)| {
+        !member.test_detail.skip.unwrap_or_default() && (member.perform_test || options.run_all)
+    }) {
         let task_handle = tokio::spawn(do_test_on_package(
             options.clone(),
             repo_root.clone(),
             member,
+            results.crate_graph.changed_lockfiles.clone(),
             metrics.clone(),
             semaphore.clone(),
         ));
@@ -282,6 +286,7 @@ async fn do_test_on_package(
     options: Box<Options>,
     repo_root: PathBuf,
     member: super::check_workspace::Result,
+    changed_lockfiles: HashSet<PathBuf>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 ) -> (bool, Report) {
@@ -520,6 +525,11 @@ async fn do_test_on_package(
             post_command: database_url.clone().map(|_| "rm .env".to_string()),
             ..Default::default()
         },
+        FslabsTest {
+            id: "cargo_lock".to_string(),
+            command: "fslabscli fix-lock-files --check".to_string(),
+            ..Default::default()
+        },
     ]
     .iter()
     .cloned()
@@ -589,15 +599,30 @@ async fn do_test_on_package(
                 )
                 .await;
             }
-            let (stdout, stderr, success) = execute_command(
-                &fslabs_test.command,
-                &package_path,
-                &fslabs_test.envs,
-                &HashSet::new(),
-                Some(tracing::Level::DEBUG),
-                Some(tracing::Level::DEBUG),
-            )
-            .await;
+            let (stdout, stderr, success) = match fslabs_test.id == "cargo_lock" {
+                true => fix_workspace_lockfile(
+                    &repo_root,
+                    &package_path,
+                    options.pull_base_sha.clone(),
+                    None,
+                    &changed_lockfiles,
+                    true,
+                )
+                .await
+                .unwrap_or_else(|_| ("".to_string(), "".to_string(), false)),
+
+                false => {
+                    execute_command(
+                        &fslabs_test.command,
+                        &package_path,
+                        &fslabs_test.envs,
+                        &HashSet::new(),
+                        Some(tracing::Level::DEBUG),
+                        Some(tracing::Level::DEBUG),
+                    )
+                    .await
+                }
+            };
             if let Some(post_command) = fslabs_test.post_command {
                 execute_command_without_logging(
                     &post_command,
