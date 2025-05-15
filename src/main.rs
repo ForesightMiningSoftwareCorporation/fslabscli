@@ -250,12 +250,21 @@ fn main() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Could not install crypto provider");
-    let fslabscli_auto_update = Cli::command()
+    let matches = Cli::command()
         .disable_help_flag(true)
         .disable_version_flag(true)
         .ignore_errors(true)
         .try_get_matches()
-        .ok()
+        .ok();
+
+    let log_level = matches
+        .clone()
+        .and_then(|matches| matches.get_one::<u8>("verbose").cloned())
+        .unwrap_or(2);
+
+    let mut guard = setup_logging(log_level);
+
+    let fslabscli_auto_update = matches
         .and_then(|matches| matches.get_one::<bool>("fslabscli_auto_update").cloned())
         .unwrap_or_default();
 
@@ -270,7 +279,9 @@ fn main() {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async { async_main().await })
+        .block_on(async { async_main().await });
+
+    guard.drop();
 }
 
 async fn async_main() {
@@ -305,7 +316,6 @@ async fn async_main() {
         }
         _ => {} // nothing to do, will be handled later
     };
-    let mut guard = setup_logging(cli.verbose);
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
@@ -343,7 +353,6 @@ async fn async_main() {
             );
         }
     };
-    guard.drop();
 
     match result {
         Ok(r) => {
