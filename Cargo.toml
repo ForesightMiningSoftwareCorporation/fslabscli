@@ -47,7 +47,7 @@ itertools = "0.14.0"
 jsonwebtoken = "9.3.1"
 junit-report = "0.8.3"
 num = "0.4.3"
-octocrab = "0.44.0"
+octocrab = "0.44.1"
 opentelemetry-appender-tracing = { version = "0.29.1" }
 opentelemetry_sdk = { version = "0.29.0", features = ["logs"] }
 opentelemetry-otlp = { version = "0.29.0", features = ["logs", "grpc-tonic"] }
