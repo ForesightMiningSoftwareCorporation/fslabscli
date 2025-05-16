@@ -105,7 +105,7 @@
   [dependencies.rustls]
     default-features = false
     features = ["tls12"]
-    version = "0.23.26"
+    version = "0.23.27"
 
   [dependencies.self_update]
     default-features = false
