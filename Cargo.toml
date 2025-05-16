@@ -1,156 +1,170 @@
-[package]
-authors = ["FSLABS DevOps Gods"]
-description = "Command line interface for helping FSLABS ci"
-edition = "2024"
-license = "MIT OR Apache-2.0"
-name = "cargo-fslabscli"
-# publish = ["fsl"]
-repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.22.8"
-
-[package.metadata]
-
-[package.metadata.fslabs]
-
-[package.metadata.fslabs.publish]
-
-[package.metadata.fslabs.publish.binary]
-name = "FSLABS Cli tool"
-publish = true
-sign = false
-targets = ["x86_64-unknown-linux-gnu"]
-[package.metadata.fslabs.publish.nix_binary]
-publish = true
-
-
-[features]
-alpha = []
-beta = []
-nightly = []
-prod = []
 
 [dependencies]
-base64 = "0.22.1"
-bytes = "1.10.1"
-cargo_metadata = "0.19.2"
-chrono = "0.4.41"
-console = "0.15.11"
-convert_case = "0.8.0"
-dunce = "1.0.5"
-exitcode = "1.1.2"
-futures-util = "0.3.31"
-http = "1.3.1"
-http-body-util = "0.1.3"
-ignore = "0.4.23"
-indicatif = "0.17.11"
-itertools = "0.14.0"
-jsonwebtoken = "9.3.1"
-junit-report = "0.8.3"
-num = "0.4.3"
-octocrab = "0.44.0"
-opentelemetry-appender-tracing = { version = "0.29.1" }
-opentelemetry_sdk = { version = "0.29.0", features = ["logs"] }
-opentelemetry-otlp = { version = "0.29.0", features = ["logs", "grpc-tonic"] }
-opentelemetry = { version = "0.29.1" }
-port_check = "0.2.1"
-rand = "0.9.1"
-rust-toolchain-file = "0.1.1"
-serde_json = "1.0.140"
-serde_yaml = "0.9.34+deprecated"
-strum = "0.27.1"
-strum_macros = "0.27.1"
-tracing = { version = "0.1.41", features = ["std"] }
-tracing-subscriber = { version = "0.3.19", features = [
-    "std",
-    "env-filter",
-    "fmt",
-] }
-url = "2.5.4"
-void = "1.0.2"
-zip = "2.6.1"
-tracing-core = "0.1.33"
-futures = "0.3.31"
-tokio-stream = "0.1.17"
-async-stream = "0.3.6"
-toml = "0.8.22"
-unicode-width = "0.2.0"
-clap_complete = "4.5.48"
-clap_mangen = "0.2.26"
-regex = "1.11.1"
-toml_edit = "0.22.26"
-walkdir = "2.5.0"
-self_update = { version = "0.42.0", default-features = false, features = [
-    "rustls",
-] }
-tempfile = "3.19.1"
-cargo-util = "0.2.19"
+  async-stream = "0.3.6"
+  base64 = "0.22.1"
+  bytes = "1.10.1"
+  cargo-util = "0.2.20"
+  cargo_metadata = "0.19.2"
+  chrono = "0.4.41"
+  clap_complete = "4.5.48"
+  clap_mangen = "0.2.26"
+  console = "0.15.11"
+  convert_case = "0.8.0"
+  dunce = "1.0.5"
+  exitcode = "1.1.2"
+  futures = "0.3.31"
+  futures-util = "0.3.31"
+  http = "1.3.1"
+  http-body-util = "0.1.3"
+  ignore = "0.4.23"
+  indicatif = "0.17.11"
+  itertools = "0.14.0"
+  jsonwebtoken = "9.3.1"
+  junit-report = "0.8.3"
+  num = "0.4.3"
+  octocrab = "0.44.0"
+  port_check = "0.2.1"
+  rand = "0.9.1"
+  regex = "1.11.1"
+  rust-toolchain-file = "0.1.1"
+  serde_json = "1.0.140"
+  serde_yaml = "0.9.34+deprecated"
+  strum = "0.27.1"
+  strum_macros = "0.27.1"
+  tempfile = "3.19.1"
+  tokio-stream = "0.1.17"
+  toml = "0.8.22"
+  toml_edit = "0.22.26"
+  tracing-core = "0.1.33"
+  unicode-width = "0.2.0"
+  url = "2.5.4"
+  void = "1.0.2"
+  walkdir = "2.5.0"
+  zip = "2.6.1"
 
-[dependencies.anyhow]
-features = []
-version = "1.0.98"
+  [dependencies.anyhow]
+    features = []
+    version = "1.0.98"
 
-[dependencies.clap]
-features = ["derive", "env"]
-version = "4.5.37"
+  [dependencies.clap]
+    features = ["derive", "env"]
+    version = "4.5.37"
 
-[dependencies.git2]
-default-features = false
-version = "0.20.1"
+  [dependencies.git2]
+    default-features = false
+    version = "0.20.1"
 
-[dependencies.humanize-duration]
-features = ["chrono"]
-version = "0.0.7"
+  [dependencies.humanize-duration]
+    features = ["chrono"]
+    version = "0.0.7"
 
-[dependencies.hyper]
-default-features = false
-version = "1.6.0"
+  [dependencies.hyper]
+    default-features = false
+    version = "1.6.0"
 
-[dependencies.hyper-rustls]
-version = "0.27.5"
-default-features = false
+  [dependencies.hyper-rustls]
+    default-features = false
+    version = "0.27.5"
 
-[dependencies.hyper-util]
-default-features = false
-features = ["tokio", "client-legacy"]
-version = "0.1.11"
+  [dependencies.hyper-util]
+    default-features = false
+    features = ["tokio", "client-legacy"]
+    version = "0.1.11"
 
-[dependencies.indexmap]
-features = ["serde"]
-version = "2.9.0"
+  [dependencies.indexmap]
+    features = ["serde"]
+    version = "2.9.0"
 
-[dependencies.object_store]
-features = ["azure"]
-version = "0.12.0"
+  [dependencies.object_store]
+    features = ["azure"]
+    version = "0.12.0"
 
-[dependencies.oci-distribution]
-default-features = false
-features = ["rustls-tls"]
-version = "0.11.0"
+  [dependencies.oci-distribution]
+    default-features = false
+    features = ["rustls-tls"]
+    version = "0.11.0"
 
-[dependencies.quick-xml]
-features = ["serialize"]
-version = "0.37.5"
+  [dependencies.opentelemetry]
+    version = "0.29.1"
 
-[dependencies.rustls]
-default-features = false
-features = ["tls12"]
-version = "0.23.26"
+  [dependencies.opentelemetry-appender-tracing]
+    version = "0.29.1"
 
-[dependencies.serde]
-features = ["derive", "std"]
-version = "1.0.219"
+  [dependencies.opentelemetry-otlp]
+    features = ["logs", "grpc-tonic"]
+    version = "0.29.0"
 
-[dependencies.serde_with]
-features = ["macros"]
-version = "3.12.0"
+  [dependencies.opentelemetry_sdk]
+    features = ["logs"]
+    version = "0.29.0"
 
-[dependencies.tokio]
-features = ["full"]
-version = "1.44.2"
+  [dependencies.quick-xml]
+    features = ["serialize"]
+    version = "0.37.5"
+
+  [dependencies.rustls]
+    default-features = false
+    features = ["tls12"]
+    version = "0.23.26"
+
+  [dependencies.self_update]
+    default-features = false
+    features = ["rustls"]
+    version = "0.42.0"
+
+  [dependencies.serde]
+    features = ["derive", "std"]
+    version = "1.0.219"
+
+  [dependencies.serde_with]
+    features = ["macros"]
+    version = "3.12.0"
+
+  [dependencies.tokio]
+    features = ["full"]
+    version = "1.44.2"
+
+  [dependencies.tracing]
+    features = ["std"]
+    version = "0.1.41"
+
+  [dependencies.tracing-subscriber]
+    features = ["std", "env-filter", "fmt"]
+    version = "0.3.19"
 
 [dev-dependencies]
-assert_fs = "1.1.2"
-indoc = "2.0.6"
-serial_test = "3.2.0"
-testcontainers = "0.23.3"
-wiremock = "0.6.3"
+  assert_fs = "1.1.2"
+  indoc = "2.0.6"
+  serial_test = "3.2.0"
+  testcontainers = "0.23.3"
+  wiremock = "0.6.3"
+
+[features]
+  alpha = []
+  beta = []
+  nightly = []
+  prod = []
+
+[package]
+  authors = ["FSLABS DevOps Gods"]
+  description = "Command line interface for helping FSLABS ci"
+  edition = "2024"
+  license = "MIT OR Apache-2.0"
+  name = "cargo-fslabscli"
+  repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
+  version = "2.22.8"
+
+  [package.metadata]
+
+    [package.metadata.fslabs]
+
+      [package.metadata.fslabs.publish]
+
+        [package.metadata.fslabs.publish.binary]
+          name = "FSLABS Cli tool"
+          publish = true
+          sign = false
+          targets = ["x86_64-unknown-linux-gnu"]
+
+        [package.metadata.fslabs.publish.nix_binary]
+          publish = true
