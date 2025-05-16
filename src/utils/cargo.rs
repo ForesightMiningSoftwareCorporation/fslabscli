@@ -19,8 +19,6 @@ use std::{
 use toml_edit::{DocumentMut, Table, table, value};
 use walkdir::WalkDir;
 
-const CARGO_DEFAULT_CRATE_URL: &str = "https://crates.io/api/v1/crates/";
-
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CargoRegistry {
     pub index: Option<String>,
@@ -72,19 +70,10 @@ impl CargoRegistry {
     }
 
     pub fn new_from_env(name: String) -> Self {
-        let env_name = name.to_uppercase().replace("-", "_");
-        let index = match name.as_str() {
-            "crates.io" => None,
-            _ => env::var(format!("CARGO_REGISTRIES_{}_INDEX", env_name)).ok(),
-        };
-        let crate_url = match name.as_str() {
-            "crates.io" => Some(CARGO_DEFAULT_CRATE_URL.to_string()),
-            _ => env::var(format!("CARGO_REGISTRIES_{}_CRATE_URL", env_name)).ok(),
-        };
-        let token = match name.as_str() {
-            "crates.io" => env::var("CARGO_REGISTRY_TOKEN").ok(),
-            _ => env::var(format!("CARGO_REGISTRIES_{}_TOKEN", env_name)).ok(),
-        };
+        let env_name = name.to_uppercase().replace("-", "_").replace(".", "_");
+        let index = env::var(format!("CARGO_REGISTRIES_{}_INDEX", env_name)).ok();
+        let crate_url = env::var(format!("CARGO_REGISTRIES_{}_CRATE_URL", env_name)).ok();
+        let token = env::var(format!("CARGO_REGISTRIES_{}_TOKEN", env_name)).ok();
         let user_agent = match name.as_str() {
             "crates.io" => None,
             _ => env::var(format!("CARGO_REGISTRIES_{}_USER_AGENT", env_name)).ok(),
