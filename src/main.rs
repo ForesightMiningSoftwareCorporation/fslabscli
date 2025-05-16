@@ -246,7 +246,8 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Could not install crypto provider");
@@ -274,17 +275,12 @@ fn main() {
         }
     }
 
-    // Expansion of #[tokio::main]
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async { async_main().await });
+    run().await;
 
     guard.drop();
 }
 
-async fn async_main() {
+async fn run() {
     let cli = Cli::parse();
 
     // generate man pages and completions upon request and exit
