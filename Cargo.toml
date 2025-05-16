@@ -122,7 +122,7 @@
 
   [dependencies.tokio]
     features = ["full"]
-    version = "1.44.2"
+    version = "1.45.0"
 
   [dependencies.tracing]
     features = ["std"]
