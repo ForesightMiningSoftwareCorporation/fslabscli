@@ -106,7 +106,7 @@ default-features = false
 version = "1.6.0"
 
 [dependencies.hyper-rustls]
-version = "0.27.5"
+version = "0.27.6"
 default-features = false
 
 [dependencies.hyper-util]
