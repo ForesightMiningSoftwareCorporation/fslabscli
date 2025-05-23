@@ -51,7 +51,7 @@ octocrab = "0.44.1"
 opentelemetry-appender-tracing = { version = "0.29.1" }
 opentelemetry_sdk = { version = "0.29.0", features = ["logs"] }
 opentelemetry-otlp = { version = "0.29.0", features = ["logs", "grpc-tonic"] }
-opentelemetry = { version = "0.29.1" }
+opentelemetry = { version = "0.30.0" }
 port_check = "0.2.1"
 rand = "0.9.1"
 rust-toolchain-file = "0.1.1"
