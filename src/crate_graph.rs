@@ -319,7 +319,7 @@ pub struct PackageKey {
 impl From<&Package> for PackageKey {
     fn from(p: &Package) -> Self {
         PackageKey {
-            name: p.name.clone(),
+            name: p.name.to_string(),
             version: p.version.clone(),
         }
     }

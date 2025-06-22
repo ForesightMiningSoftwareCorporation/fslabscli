@@ -408,7 +408,7 @@ impl Result {
         Ok(Self {
             workspace,
             package_id: Some(package.id.clone()),
-            package: package.name,
+            package: package.name.to_string(),
             version: package.version.to_string(),
             path,
             publish_detail: publish,
@@ -899,13 +899,13 @@ pub async fn check_workspace(
         // Let's add the node to the deps
         for node in &resolve.nodes {
             for node_dep in &node.deps {
-                dep_to_id.insert(node_dep.name.clone(), node_dep.pkg.clone());
+                dep_to_id.insert(node_dep.name.to_string(), node_dep.pkg.clone());
             }
         }
         // Let's add all package to the deps as well
         let workspace_packages = workspace.metadata.workspace_packages();
         for package in workspace_packages {
-            dep_to_id.insert(package.name.clone(), package.id.clone());
+            dep_to_id.insert(package.name.to_string(), package.id.clone());
         }
 
         for package in workspace.metadata.workspace_packages() {
