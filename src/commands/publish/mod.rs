@@ -637,6 +637,20 @@ async fn do_publish_package(
                             registry_name
                         );
                     }
+                    // Path back to the main registry
+                    if !patch_crate_for_registry(
+                        &repo_root,
+                        &package_path,
+                        options.cargo_main_registry.clone(),
+                    )
+                    .is_ok()
+                    {
+                        r.success = false;
+                        r.stderr = format!(
+                            "registry {} not setup correctly, missing index, private_key, and token",
+                            options.cargo_main_registry.clone()
+                        );
+                    }
                 }
                 is_failed = !r.success;
             }
