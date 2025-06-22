@@ -26,6 +26,10 @@ impl PackageMetadataFslabsCiPublishCargo {
         cargo: &Cargo,
     ) -> anyhow::Result<()> {
         tracing::debug!("Got following registries: {:?}", self.registries);
+        if version.ends_with("dev") {
+            self.publish = false;
+            return Ok(());
+        }
         let registries = self.registries.clone().unwrap_or_default();
         let mut overall_publish = false;
         for registry_name in registries {
