@@ -5,6 +5,7 @@ use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
 use octocrab::Octocrab;
 use octocrab::params::repos::Reference;
+use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -40,6 +41,8 @@ pub struct Options {
     artifacts: PathBuf,
     #[clap(long, env)]
     pull_base_ref: String,
+    #[clap(long, env)]
+    pull_base_ref_regex: Option<String>,
     #[arg(long, env)]
     repo_owner: String,
     #[arg(long, env)]
@@ -638,12 +641,12 @@ async fn do_publish_package(
                         );
                     }
                     // Path back to the main registry
-                    if !patch_crate_for_registry(
+                    if patch_crate_for_registry(
                         &repo_root,
                         &package_path,
                         options.cargo_main_registry.clone(),
                     )
-                    .is_ok()
+                    .is_err()
                     {
                         r.success = false;
                         r.stderr = format!(
@@ -1007,8 +1010,53 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
             registries.insert(registry_name.clone());
         }
     }
+    // Filters members based on regex
+
+    let selected_members: Vec<Package> = match options.pull_base_ref_regex.clone() {
+        Some(regex_str) => {
+            let re = Regex::new(&regex_str)?;
+            if let Some(captures) = re.captures(&options.pull_base_ref) {
+                if let Some(package_name_match) = captures.get(1) {
+                    let package_name = package_name_match.as_str();
+                    let all_members: Vec<Package> = results.members.values().cloned().collect();
+
+                    // Find the package that matches the captured name
+                    if let Some(package) = all_members.iter().find(|m| m.package == package_name) {
+                        if let Some(package_id) = &package.package_id {
+                            let dependency_graph = results.crate_graph.dependency_graph();
+                            let transitive_dependencies: HashSet<_> =
+                                dependency_graph.get_transitive_dependencies(package_id.clone());
+
+                            // Filter only the package and its transitive dependencies
+                            all_members
+                                .clone()
+                                .into_iter()
+                                .filter(|m| {
+                                    if let Some(cand_package_id) = &m.package_id {
+                                        cand_package_id == package_id
+                                            || transitive_dependencies.contains(cand_package_id)
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        }
+        None => results.members.values().cloned().collect(),
+    };
     // Spawn a task for each object
-    for member in results.members.values() {
+    for member in selected_members {
         if let Some(ref member_id) = member.package_id {
             let o = artifact_dir.clone();
             let m = member.clone();
