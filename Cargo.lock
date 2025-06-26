@@ -432,9 +432,9 @@ dependencies = [
 
 [[package]]
 name = "cargo-util"
-version = "0.2.20"
+version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767bc85f367f6483a6072430b56f5c0d6ee7636751a21a800526d0711753d76"
+checksum = "c95ec8b2485b20aed818bd7460f8eecc6c87c35c84191b353a3aba9aa1736c36"
 dependencies = [
  "anyhow",
  "core-foundation",

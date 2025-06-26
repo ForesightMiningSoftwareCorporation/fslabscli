@@ -83,7 +83,7 @@ self_update = { version = "0.42.0", default-features = false, features = [
     "rustls",
 ] }
 tempfile = "3.20.0"
-cargo-util = "0.2.20"
+cargo-util = "0.2.21"
 
 [dependencies.anyhow]
 features = []
