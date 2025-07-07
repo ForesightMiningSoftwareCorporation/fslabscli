@@ -112,7 +112,7 @@ default-features = false
 [dependencies.hyper-util]
 default-features = false
 features = ["tokio", "client-legacy"]
-version = "0.1.14"
+version = "0.1.15"
 
 [dependencies.indexmap]
 features = ["serde"]
