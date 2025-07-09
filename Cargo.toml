@@ -91,7 +91,7 @@ version = "1.0.98"
 
 [dependencies.clap]
 features = ["derive", "env"]
-version = "4.5.40"
+version = "4.5.41"
 
 [dependencies.git2]
 default-features = false
