@@ -134,7 +134,7 @@ version = "0.38.0"
 [dependencies.rustls]
 default-features = false
 features = ["tls12"]
-version = "0.23.28"
+version = "0.23.29"
 
 [dependencies.serde]
 features = ["derive", "std"]
