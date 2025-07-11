@@ -399,7 +399,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.9.2",
- "toml_edit 0.23.0",
+ "toml_edit 0.23.1",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -3623,9 +3623,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54449f7f7569ce6f57cda7812361961c0f6a77f720802537b5618585b4a7ff4c"
+checksum = "b1f23a5f4511b296579b6c83e437fe85fa7ece22e3ec44e45ddb975bcf57c3dd"
 dependencies = [
  "indexmap 2.10.0",
  "toml_datetime 0.7.0",
