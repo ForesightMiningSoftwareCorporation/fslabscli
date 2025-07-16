@@ -120,7 +120,7 @@ version = "2.10.0"
 
 [dependencies.object_store]
 features = ["azure"]
-version = "0.12.2"
+version = "0.12.3"
 
 [dependencies.oci-distribution]
 default-features = false
