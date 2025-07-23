@@ -608,7 +608,6 @@ async fn do_test_on_package(
                     &changed_lockfiles,
                     true,
                 )
-                .await
                 .unwrap_or_else(|_| ("".to_string(), "".to_string(), false)),
 
                 false => {

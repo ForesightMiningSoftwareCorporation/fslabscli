@@ -111,6 +111,8 @@ impl CrateGraph {
                     .into(),
                 metadata,
             });
+            // crate_graph runs `cargo metadata` under the hood. This can updates the Cargo.lock
+            // we want to track that behavior
             let updated_lock_content = match std::fs::exists(&lock_path)? {
                 true => Some(std::fs::read_to_string(&lock_path)?),
                 false => None,

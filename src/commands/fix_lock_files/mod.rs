@@ -5,7 +5,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, Parser, Default)]
 #[command(about = "Fix inconsistencies in all Cargo.lock files.")]
@@ -28,6 +28,8 @@ pub struct Options {
 /// Performs the following:
 ///
 /// 1. Restore all `Cargo.lock` files to their state at `base_rev`.
+///    If no `base_rev` are given, then the checks run on the current state.
+///    This is useful for local fixing.
 /// 2. Run `cargo update --workspace` in each workspace to ensure
 ///    the `Cargo.lock` files are updated to reflect any changes in
 ///    `Cargo.toml`s.
@@ -36,8 +38,7 @@ pub struct Options {
 /// performed. This is done to avoid letting SemVer violations from
 /// dependencies slip into CI.
 ///
-/// Any workspaces containing a ".no_cargo_lock" sentinel file will be skipped.
-pub async fn fix_workspace_lockfile(
+pub fn fix_workspace_lockfile(
     repo_root: &Path,
     workspace_path: &Path,
     head_rev: String,
@@ -85,7 +86,7 @@ pub async fn fix_workspace_lockfile(
         }
     }
 
-    debug!("Running 'cargo update --workspace' in {workspace_path:?}");
+    info!("Running 'cargo update --workspace' in {workspace_path:?}");
     let output = std::process::Command::new("cargo")
         .arg("update")
         .arg("--workspace")
@@ -132,7 +133,8 @@ impl PrettyPrintable for LockResult {
     }
 }
 
-pub async fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Result<LockResult> {
+/// Any workspaces containing a ".no_cargo_lock" sentinel file will be skipped.
+pub fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Result<LockResult> {
     let Options {
         head_rev,
         base_rev,
@@ -156,8 +158,7 @@ pub async fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Resu
             base_rev.clone(),
             &graph.changed_lockfiles,
             *check,
-        )
-        .await?;
+        )?;
     }
 
     Ok("".into())
