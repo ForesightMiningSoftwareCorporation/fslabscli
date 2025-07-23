@@ -97,11 +97,10 @@ pub fn initialize_workspace(
     create_dir_all(&config_toml_dir).unwrap();
     let config_toml = config_toml_dir.join("config.toml");
     let config_toml_content = format!(
-        "[registries.{}]\nindex = \"ssh://git@ssh.shipyard.rs/{}/crate-index.git\"",
-        FAKE_REGISTRY, FAKE_REGISTRY
+        "[registries.{FAKE_REGISTRY}]\nindex = \"ssh://git@ssh.shipyard.rs/{FAKE_REGISTRY}/crate-index.git\""
     );
     let mut file = File::create(config_toml).unwrap();
-    writeln!(file, "{}", config_toml_content).unwrap();
+    writeln!(file, "{config_toml_content}").unwrap();
 
     if !alt_registries.is_empty() {
         // Set Alternate registry for crates_g
@@ -115,14 +114,14 @@ publish = true
             alt_registries.join("\", \"")
         );
         let mut file = OpenOptions::new().append(true).open(cargo_toml).unwrap();
-        writeln!(file, "{}", toml_content).unwrap();
+        writeln!(file, "{toml_content}").unwrap();
     }
 
     if !sub_crates.is_empty() {
         let cargo_toml = base_path.join(workspace_name).join("Cargo.toml");
         let toml_content = "\n[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"".to_string();
         let mut file = OpenOptions::new().append(true).open(cargo_toml).unwrap();
-        writeln!(file, "{}", toml_content).unwrap();
+        writeln!(file, "{toml_content}").unwrap();
         let sub_crates_dir = base_path.join(workspace_name).join("crates");
         for sub_crate in sub_crates {
             let sub_crate_dir = sub_crates_dir.join(sub_crate);
@@ -131,7 +130,7 @@ publish = true
                 .arg("init")
                 .arg("--lib")
                 .arg("--name")
-                .arg(format!("{}__{}", workspace_name, sub_crate))
+                .arg(format!("{workspace_name}__{sub_crate}"))
                 .arg("--registry")
                 .arg(FAKE_REGISTRY)
                 .current_dir(&sub_crate_dir)

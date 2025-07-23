@@ -86,7 +86,7 @@ impl Display for GenerateResult {
 
 impl PrettyPrintable for GenerateResult {
     fn pretty_print(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 }
 
@@ -467,17 +467,17 @@ fn get_check_workspace_job(
             if let Some(repo) = v.publish_detail.docker.repository.clone() {
                 let github_secret_key = repo.clone().replace('.', "_").to_ascii_uppercase();
                 return Some(GithubWorkflowJobSteps {
-                    name: Some(format!("Docker Login to {}", repo)),
+                    name: Some(format!("Docker Login to {repo}")),
                     uses: Some("docker/login-action@v3".to_string()),
                     with: Some(IndexMap::from([
                         ("registry".to_string(), repo.clone()),
                         (
                             "username".to_string(),
-                            format!("${{{{ secrets.DOCKER_{}_USERNAME }}}}", github_secret_key),
+                            format!("${{{{ secrets.DOCKER_{github_secret_key}_USERNAME }}}}"),
                         ),
                         (
                             "password".to_string(),
-                            format!("${{{{ secrets.DOCKER_{}_PASSWORD }}}}", github_secret_key),
+                            format!("${{{{ secrets.DOCKER_{github_secret_key}_PASSWORD }}}}"),
                         ),
                     ])),
                     ..Default::default()
@@ -502,7 +502,7 @@ echo "//npm.pkg.github.com/:_authToken=${{{{ secrets.NPM_{github_secret_key}_TOK
                     "#
                 );
                 return Some(GithubWorkflowJobSteps {
-                    name: Some(format!("NPM Login to {}", scope)),
+                    name: Some(format!("NPM Login to {scope}")),
                     shell: Some("bash".to_string()),
                     run: Some(run.to_string()),
                     ..Default::default()
@@ -612,10 +612,8 @@ pub async fn generate_workflow(
             continue;
         };
         let working_directory = member.path.to_string_lossy().to_string();
-        let dynamic_value_base = format!(
-            "(fromJSON(needs.{}.outputs.workspace).{}",
-            check_job_key, member_key
-        );
+        let dynamic_value_base =
+            format!("(fromJSON(needs.{check_job_key}.outputs.workspace).{member_key}");
 
         let mut testing_requirements: Vec<String> = vec![check_job_key.clone()];
         let mut publishing_requirements: Vec<String> = vec![check_job_key.clone()];
@@ -623,28 +621,27 @@ pub async fn generate_workflow(
         for dependency in &member.dependencies {
             // Each testing job needs to depends on its'previous testing job
             if let Some(package_name) = dependency.package_id.clone() {
-                testing_requirements.push(format!("test_{}", package_name));
+                testing_requirements.push(format!("test_{package_name}"));
                 if dependency.publishable {
                     if let Some(dependency_package) = results.members.get(&package_name) {
                         if dependency_package.publish_detail.binary.publish {
                             publishing_requirements
-                                .push(format!("publish_rust_binary_{}", package_name,));
+                                .push(format!("publish_rust_binary_{package_name}",));
                         }
                         if dependency_package.publish_detail.binary.installer.publish {
                             publishing_requirements
-                                .push(format!("publish_rust_installer_{}", package_name,));
+                                .push(format!("publish_rust_installer_{package_name}",));
                         }
                         if dependency_package.publish_detail.cargo.publish {
                             publishing_requirements
-                                .push(format!("publish_rust_registry_{}", package_name,));
+                                .push(format!("publish_rust_registry_{package_name}",));
                         }
                         if dependency_package.publish_detail.docker.publish {
-                            publishing_requirements
-                                .push(format!("publish_docker_{}", package_name,));
+                            publishing_requirements.push(format!("publish_docker_{package_name}",));
                         }
                         if dependency_package.publish_detail.npm_napi.publish {
                             publishing_requirements
-                                .push(format!("publish_npm_napi_{}", package_name,));
+                                .push(format!("publish_npm_napi_{package_name}",));
                         }
                     }
                 }
@@ -703,8 +700,7 @@ pub async fn generate_workflow(
         }
 
         let publishing_if = format!(
-            "{} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))",
-            base_if
+            "{base_if} && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))"
         );
 
         for publishing_job in member_workflows.iter() {
@@ -762,7 +758,7 @@ pub async fn generate_workflow(
         with: Some(
             IndexMap::from([
                 ("run_type".to_string(), "publishing".into()),
-                ("check_changed_outcome".to_string(), format!("${{{{ needs.{}.result }}}}", check_job_key).into()),
+                ("check_changed_outcome".to_string(), format!("${{{{ needs.{check_job_key}.result }}}}").into()),
                 ("fslabscli_version".to_string(), options.fslabscli_version.clone().into())
             ])
         ),

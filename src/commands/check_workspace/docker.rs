@@ -158,7 +158,7 @@ impl Docker {
                 DockerCredential::IdentityToken(username, token) => {
                     // With the Token, we should get a password and also find the username
                     let oauth2_token_url =
-                        Url::parse(format!("https://{}/oauth2/token", registry_name).as_str())
+                        Url::parse(format!("https://{registry_name}/oauth2/token").as_str())
                             .unwrap();
                     let req_builder = Request::builder()
                         .method(Method::POST)
@@ -168,7 +168,7 @@ impl Docker {
 
                     enc.append_pair("grant_type", "refresh_token");
                     enc.append_pair("service", registry_name.as_str());
-                    enc.append_pair("scope", format!("repository:{}:pull", name).as_str());
+                    enc.append_pair("scope", format!("repository:{name}:pull").as_str());
                     enc.append_pair("refresh_token", token.as_str());
                     let full_body = Full::new(Bytes::from(enc.finish()));
                     //let full_body = Full::new(Bytes::from(format!("grant_type=refresh_token&service={}&scope=repository:{}:pull&refresh_token={}", registry_name, name, token)));

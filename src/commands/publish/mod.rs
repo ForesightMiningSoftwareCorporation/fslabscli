@@ -173,8 +173,8 @@ impl PublishResult {
                         .registries_publish
                         .get(registry_name)
                         .unwrap_or(&false),
-                    name: format!("cargo publish -r {}", registry_name),
-                    key: format!("cargo_{}", registry_name),
+                    name: format!("cargo publish -r {registry_name}"),
+                    key: format!("cargo_{registry_name}"),
                     ..Default::default()
                 },
             );
@@ -493,7 +493,7 @@ async fn do_publish_package(
             ) {
                 info!("Login to atticd");
                 let (stdout, stderr, success) = execute_command(
-                    &format!("attic login central {}/ {}", atticd_url, atticd_token),
+                    &format!("attic login central {atticd_url}/ {atticd_token}"),
                     &repo_root,
                     &HashMap::new(),
                     &HashSet::new(),
@@ -507,7 +507,7 @@ async fn do_publish_package(
                 is_failed = !success;
                 if !is_failed {
                     let (stdout, stderr, success) = execute_command(
-                        &format!("attic use central:{}", atticd_cache),
+                        &format!("attic use central:{atticd_cache}"),
                         &package_path,
                         &HashMap::new(),
                         &HashSet::new(),
@@ -546,8 +546,7 @@ async fn do_publish_package(
                     info!("Pushing to atticd");
                     let (stdout, stderr, success) = execute_command(
                     &format!(
-                        "attic push {} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')",
-                        atticd_cache
+                        "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
                     ),
                     &package_path,
                     &HashMap::new(),
@@ -588,7 +587,7 @@ async fn do_publish_package(
                 let registry_prefix =
                     format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
 
-                if std::env::var(format!("{}_INDEX", registry_prefix)).is_ok() {
+                if std::env::var(format!("{registry_prefix}_INDEX")).is_ok() {
                     // For each reg we need to
                     // 1. Ensure registry is in `publish = []`
                     // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
@@ -636,8 +635,7 @@ async fn do_publish_package(
                     } else {
                         r.success = false;
                         r.stderr = format!(
-                            "registry {} not setup correctly, missing index, private_key, and token",
-                            registry_name
+                            "registry {registry_name} not setup correctly, missing index, private_key, and token"
                         );
                     }
                     // Path back to the main registry
@@ -685,8 +683,8 @@ async fn do_publish_package(
                 .to_str()
                 .unwrap()
                 .to_string();
-            let image_name = format!("{}/{}:{}", registry, package_name, package_version);
-            let image_latest = format!("{}/{}:latest", registry, package_name);
+            let image_name = format!("{registry}/{package_name}:{package_version}");
+            let image_latest = format!("{registry}/{package_name}:latest");
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),
@@ -718,7 +716,7 @@ async fn do_publish_package(
                 options.cargo_main_registry.replace("-", "_")
             )
             .to_uppercase();
-            if let Ok(ssh_key) = env::var(format!("{}_PRIVATE_KEY", main_registry_prefix)) {
+            if let Ok(ssh_key) = env::var(format!("{main_registry_prefix}_PRIVATE_KEY")) {
                 args.push("--ssh".to_string());
                 args.push(format!(
                     "{}={}",
@@ -728,26 +726,23 @@ async fn do_publish_package(
             }
 
             if let (Ok(user_agent), Ok(token)) = (
-                env::var(format!("{}_USER_AGENT", main_registry_prefix)),
-                env::var(format!("{}_TOKEN", main_registry_prefix)),
+                env::var(format!("{main_registry_prefix}_USER_AGENT")),
+                env::var(format!("{main_registry_prefix}_TOKEN")),
             ) {
-                let user_agent_env = format!("{}_USER_AGENT", main_registry_prefix);
-                let token_env = format!("{}_TOKEN", main_registry_prefix);
-                let name_env = format!("{}_NAME", main_registry_prefix);
+                let user_agent_env = format!("{main_registry_prefix}_USER_AGENT");
+                let token_env = format!("{main_registry_prefix}_TOKEN");
+                let name_env = format!("{main_registry_prefix}_NAME");
                 envs.insert(user_agent_env.clone(), user_agent);
                 envs.insert(token_env.clone(), token);
                 envs.insert(name_env.clone(), options.cargo_main_registry.clone());
                 args.push(format!(
-                    "--secret id=cargo_private_registry_user_agent,env={}",
-                    user_agent_env
+                    "--secret id=cargo_private_registry_user_agent,env={user_agent_env}"
                 ));
                 args.push(format!(
-                    "--secret id=cargo_private_registry_token,env={}",
-                    token_env
+                    "--secret id=cargo_private_registry_token,env={token_env}"
                 ));
                 args.push(format!(
-                    "--secret id=cargo_private_registry_name,env={}",
-                    name_env
+                    "--secret id=cargo_private_registry_name,env={name_env}"
                 ));
             }
             args.push(context.clone());
@@ -768,7 +763,7 @@ async fn do_publish_package(
             if !is_failed {
                 // Tag as latest
                 let (stdout, stderr, success) = execute_command(
-                    &format!("docker tag {} {}", image_name, image_latest),
+                    &format!("docker tag {image_name} {image_latest}"),
                     &repo_root,
                     &HashMap::new(),
                     &HashSet::new(),
@@ -783,7 +778,7 @@ async fn do_publish_package(
                 if !is_failed {
                     // Push image
                     let (stdout, stderr, success) = execute_command(
-                        &format!("docker push {}", image_name),
+                        &format!("docker push {image_name}"),
                         &repo_root,
                         &HashMap::new(),
                         &HashSet::new(),
@@ -798,7 +793,7 @@ async fn do_publish_package(
                     if !is_failed {
                         // Push latest
                         let (stdout, stderr, success) = execute_command(
-                            &format!("docker push {}", image_latest),
+                            &format!("docker push {image_latest}"),
                             &repo_root,
                             &HashMap::new(),
                             &HashSet::new(),

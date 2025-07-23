@@ -83,7 +83,7 @@ impl Display for SummariesResult {
 
 impl PrettyPrintable for SummariesResult {
     fn pretty_print(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 }
 
@@ -274,7 +274,7 @@ where
         .iter()
         .filter_map(|(r, l)| {
             if *r > 0 {
-                return Some(format!("{} {}", r, l));
+                return Some(format!("{r} {l}"));
             }
             None
         })

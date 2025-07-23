@@ -242,7 +242,7 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
     } else if pretty_print {
         results.pretty_print()
     } else {
-        format!("{}", results)
+        format!("{results}")
     }
 }
 
@@ -315,7 +315,8 @@ async fn run() {
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory),
+        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory)
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
@@ -352,7 +353,7 @@ async fn run() {
 
     match result {
         Ok(r) => {
-            println!("{}", r);
+            println!("{r}");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {

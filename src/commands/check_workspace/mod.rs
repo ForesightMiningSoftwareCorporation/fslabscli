@@ -435,11 +435,11 @@ impl Result {
                         if check_key.ends_with("_installer") {
                             check_key = check_key.replace("_installer", "");
                         }
-                        if r.starts_with(&format!("refs/tags/{}-alpha", check_key)) {
+                        if r.starts_with(&format!("refs/tags/{check_key}-alpha")) {
                             ReleaseChannel::Alpha
-                        } else if r.starts_with(&format!("refs/tags/{}-beta", check_key)) {
+                        } else if r.starts_with(&format!("refs/tags/{check_key}-beta")) {
                             ReleaseChannel::Beta
-                        } else if r.starts_with(&format!("refs/tags/{}-prod", check_key)) {
+                        } else if r.starts_with(&format!("refs/tags/{check_key}-prod")) {
                             ReleaseChannel::Prod
                         } else {
                             ReleaseChannel::Nightly
@@ -601,19 +601,15 @@ impl Result {
                             Some(launcher_name);
                         if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
                             self.publish_detail.binary.installer.installer_blob_name = Some(
-                                format!(
-                                    "{}.{}.{}.msi",
-                                    fallback_name, launcher_version, rc_version
-                                )
-                                .to_lowercase(),
+                                format!("{fallback_name}.{launcher_version}.{rc_version}.msi")
+                                    .to_lowercase(),
                             );
                             self.publish_detail
                                 .binary
                                 .installer
                                 .installer_blob_signed_name = Some(
                                 format!(
-                                    "{}.{}.{}-signed.msi",
-                                    fallback_name, launcher_version, rc_version
+                                    "{fallback_name}.{launcher_version}.{rc_version}-signed.msi"
                                 )
                                 .to_lowercase(),
                             );
@@ -630,11 +626,11 @@ impl Result {
                             if let Some(subapp_version) = package_versions.get(subapp_package_id) {
                                 let (subapp_dir, subapp_name) = get_blob_name(
                                     s,
-                                    &format!("{}.{}", subapp_version, version_timestamp),
+                                    &format!("{subapp_version}.{version_timestamp}"),
                                     toolchain,
                                     &self.publish_detail.release_channel,
                                 );
-                                sub_app_full_blob_name = format!("{}/{}", subapp_dir, subapp_name);
+                                sub_app_full_blob_name = format!("{subapp_dir}/{subapp_name}");
                             } else {
                                 continue;
                             }
@@ -660,7 +656,7 @@ impl Result {
                         let mut candidates = vec![];
                         while let Some(meta) = list_stream.next().await.transpose().unwrap() {
                             let filename = format!("{}", meta.location);
-                            if filename.starts_with(&format!("{}/{}", sub_app_dir, sub_app_name))
+                            if filename.starts_with(&format!("{sub_app_dir}/{sub_app_name}"))
                                 && filename.ends_with(&suffix)
                             {
                                 candidates.push(filename);
@@ -679,7 +675,7 @@ impl Result {
                     } else {
                         continue;
                     }
-                    lines.push(format!("az storage blob download --container-name orica-cont-prod-update-001 --name {} --file target/x86_64-pc-windows-msvc/release/{}.exe", sub_app_full_blob_name, s));
+                    lines.push(format!("az storage blob download --container-name orica-cont-prod-update-001 --name {sub_app_full_blob_name} --file target/x86_64-pc-windows-msvc/release/{s}.exe"));
                 }
                 self.publish_detail
                     .binary
@@ -781,7 +777,7 @@ pub struct Results {
 impl Display for Results {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for (k, v) in &self.members {
-            writeln!(f, "{}: {}", k, v)?;
+            writeln!(f, "{k}: {v}")?;
         }
         Ok(())
     }
@@ -854,7 +850,7 @@ pub async fn check_workspace(
     let path = match working_directory.is_absolute() {
         true => working_directory.clone(),
         false => dunce::canonicalize(&working_directory)
-            .with_context(|| format!("Failed to get absolute path from {:?}", working_directory))?,
+            .with_context(|| format!("Failed to get absolute path from {working_directory:?}"))?,
     };
 
     let toolchain =
@@ -1118,7 +1114,7 @@ pub async fn check_workspace(
                         if package_key.ends_with("_installer") {
                             check_key = check_key.replace("_installer", "");
                         }
-                        if !env_string.starts_with(&format!("refs/tags/{}", check_key)) {
+                        if !env_string.starts_with(&format!("refs/tags/{check_key}")) {
                             package.publish = false;
                         }
                     }

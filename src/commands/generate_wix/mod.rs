@@ -418,7 +418,7 @@ impl Wix {
         writer.write_event(Event::Start(wix_start.clone()))?;
         // Add defines rule
         self.defines.clone().into_iter().for_each(|(k, v)| {
-            let _ = writer.write_event(Event::PI(BytesPI::new(format!("define {}=\"{}\"", k, v))));
+            let _ = writer.write_event(Event::PI(BytesPI::new(format!("define {k}=\"{v}\""))));
         });
         writer.write_serializable("Product", &self.product)?;
         writer.write_event(Event::End(wix_end))?;
@@ -717,11 +717,11 @@ impl Wix {
                 if let Some(guid_suffix) = subapp_config.guid_suffix.clone() {
                     let sub_app_key = subapp.to_case(Case::Pascal);
                     product.feature.component_ref.push(ComponentRef {
-                        id: format!("{}Binary", sub_app_key).to_string(),
+                        id: format!("{sub_app_key}Binary").to_string(),
                     });
                     sub_app_folder.add_component(DirectoryComponent {
-                        id: format!("{}Binary", sub_app_key).to_string(),
-                        guid: format!("$(var.GuidPrefix)-{}", guid_suffix).to_string(),
+                        id: format!("{sub_app_key}Binary").to_string(),
+                        guid: format!("$(var.GuidPrefix)-{guid_suffix}").to_string(),
                         shortcut: None,
                         remove_folder: None,
                         remove_file: None,
@@ -731,7 +731,7 @@ impl Wix {
                             registry_value: RegistryValue {
                                 root: None,
                                 key: None,
-                                name: format!("{}_binary", subapp).to_string(),
+                                name: format!("{subapp}_binary").to_string(),
                                 value_type: "string".to_string(),
                                 value: "1".to_string(),
                                 key_path: "yes".to_string(),
@@ -739,11 +739,10 @@ impl Wix {
                         }),
                         registry_value: None,
                         file: Some(DirectoryComponentFile {
-                            id: format!("{}Binary", sub_app_key).to_string(),
+                            id: format!("{sub_app_key}Binary").to_string(),
                             name: subapp.clone(),
                             source: format!(
-                                "..\\target\\x86_64-pc-windows-msvc\\release\\{}.exe",
-                                subapp
+                                "..\\target\\x86_64-pc-windows-msvc\\release\\{subapp}.exe"
                             )
                             .to_string(),
                             checksum: "yes".to_string(),

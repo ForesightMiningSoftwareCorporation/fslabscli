@@ -53,9 +53,9 @@ impl<'a> Summary<'a> {
                 .into_iter()
                 .map(|(k, v)| {
                     if v.is_empty() {
-                        return format!(" {}", k);
+                        return format!(" {k}");
                     }
-                    format!(" {}=\"{}\"", k, v)
+                    format!(" {k}=\"{v}\"")
                 })
                 .collect::<Vec<String>>()
                 .join(""),

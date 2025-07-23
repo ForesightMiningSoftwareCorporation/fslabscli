@@ -1,7 +1,7 @@
 use cargo_metadata::{
     DependencyKind, Metadata, MetadataCommand, Package, PackageId, semver::Version,
 };
-use git2::{DiffDelta, Repository, build::CheckoutBuilder};
+use git2::{DiffDelta, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -17,6 +17,7 @@ pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
     pub dependencies: DependencyGraph,
+    pub changed_lockfiles: HashSet<PathBuf>,
 }
 
 impl CrateGraph {
@@ -36,12 +37,20 @@ impl CrateGraph {
     ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
+        let mut changed_lockfiles = HashSet::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
         let envs = get_registry_env(main_registry.clone().into());
-        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces, &envs)?;
+        Self::new_recursive(
+            &repo_root,
+            &ignore,
+            &repo_root,
+            &mut workspaces,
+            &envs,
+            &mut changed_lockfiles,
+        )?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
         if let Some(cycles) = dependencies.detect_cycles() {
@@ -51,6 +60,7 @@ impl CrateGraph {
             repo_root,
             workspaces,
             dependencies,
+            changed_lockfiles,
         })
     }
 
@@ -60,6 +70,7 @@ impl CrateGraph {
         dir: &Path,
         workspaces: &mut Vec<Workspace>,
         envs: &HashMap<String, String>,
+        changed_lockfiles: &mut HashSet<PathBuf>,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name() {
             if name == ".git" {
@@ -74,6 +85,12 @@ impl CrateGraph {
         }
 
         let manifest_path = dir.join("Cargo.toml");
+        let lock_path = dir.join("Cargo.lock");
+        let orig_lock_content = match std::fs::exists(&lock_path)? {
+            true => Some(std::fs::read_to_string(&lock_path)?),
+            false => None,
+        };
+
         if std::fs::exists(&manifest_path)? {
             // Found a manifest. Get metadata.
             let mut command = MetadataCommand::new();
@@ -94,6 +111,21 @@ impl CrateGraph {
                     .into(),
                 metadata,
             });
+            // crate_graph runs `cargo metadata` under the hood. This can updates the Cargo.lock
+            // we want to track that behavior
+            let updated_lock_content = match std::fs::exists(&lock_path)? {
+                true => Some(std::fs::read_to_string(&lock_path)?),
+                false => None,
+            };
+            let lock_changed = match (orig_lock_content, updated_lock_content) {
+                (Some(orig), Some(updated)) => orig != updated,
+                (Some(_), None) => true,
+                (None, Some(_)) => true,
+                (None, None) => false,
+            };
+            if lock_changed {
+                changed_lockfiles.insert(dir.to_path_buf());
+            }
 
             // Assume that the workspace members are all we needed to find.
             if has_explicit_members {
@@ -106,15 +138,18 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces, envs)?;
+                Self::new_recursive(
+                    repo_root,
+                    ignore,
+                    &entry.path(),
+                    workspaces,
+                    envs,
+                    changed_lockfiles,
+                )?;
             }
         }
 
         Ok(())
-    }
-
-    pub fn repo_root(&self) -> &Path {
-        &self.repo_root
     }
 
     pub fn workspaces(&self) -> &[Workspace] {
@@ -199,89 +234,6 @@ impl CrateGraph {
 
         Ok(changed)
     }
-
-    /// Fix mistakes in all workspace `Cargo.lock` files.
-    ///
-    /// Performs the following:
-    ///
-    /// 1. Restore all `Cargo.lock` files to their state at `base_rev`.
-    /// 2. Run `cargo update --workspace` in each workspace to ensure
-    ///    the `Cargo.lock` files are updated to reflect any changes in
-    ///    `Cargo.toml`s.
-    ///
-    /// Because of the `--workspace` flag, only minimal updates are
-    /// performed. This is done to avoid letting SemVer violations from
-    /// dependencies slip into CI.
-    ///
-    /// Any workspaces containing a ".no_cargo_lock" sentinel file will be skipped.
-    pub fn fix_lock_files(&self, diff: Option<DiffRevs>) -> anyhow::Result<()> {
-        let repo = Repository::open(self.repo_root())?;
-
-        let check_workspaces: Vec<_> = self
-            .workspaces()
-            .iter()
-            .filter(|w| !w.path.join(".no_cargo_lock").exists())
-            .map(|w| self.repo_root().join(&w.path))
-            .collect();
-
-        if let Some(DiffRevs { head_rev, base_rev }) = diff {
-            // Do this resolution before making any changes to the repo, so e.g.
-            // "HEAD" is correct.
-            let head_commit = repo.revparse_single(head_rev)?;
-            let base_commit = repo.revparse_single(base_rev)?;
-
-            // Restore all `Cargo.lock` files to their state at `base_rev`.
-            println!("checking out {}", base_commit.id());
-            let mut builder = CheckoutBuilder::new();
-            builder.force();
-            repo.checkout_tree(&base_commit, Some(&mut builder))?;
-            let mut orig_lockfiles = Vec::new();
-            for workspace_path in &check_workspaces {
-                let lock_path = workspace_path.join("Cargo.lock");
-                match std::fs::read_to_string(&lock_path) {
-                    Ok(contents) => {
-                        orig_lockfiles.push((lock_path.clone(), contents));
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
-            }
-            println!("checking out {}", head_commit.id());
-            let mut builder = CheckoutBuilder::new();
-            builder.force();
-            repo.checkout_tree(&head_commit, Some(&mut builder))?;
-            for (lock_path, contents) in orig_lockfiles {
-                println!(
-                    "Reverting {lock_path:?} to contents at {}",
-                    base_commit.id()
-                );
-                std::fs::write(&lock_path, contents)?;
-            }
-        }
-
-        // Run `cargo update -w` in each workspace to ensure the `Cargo.lock`
-        // files are updated to reflect any changes in `Cargo.toml`s.
-        for workspace_path in check_workspaces {
-            println!("Running 'cargo update --workspace' in {workspace_path:?}");
-            let output = std::process::Command::new("cargo")
-                .arg("update")
-                .arg("--workspace")
-                .current_dir(&workspace_path)
-                .output()?;
-            assert!(output.status.success(), "{output:?}");
-        }
-
-        Ok(())
-    }
-}
-
-pub struct DiffRevs<'a> {
-    pub head_rev: &'a str,
-    pub base_rev: &'a str,
 }
 
 /// A crate that either:
@@ -662,34 +614,6 @@ mod tests {
 
         let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
-    }
-
-    #[test]
-    fn test_fix_lock_files() {
-        let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo, "", None).unwrap();
-
-        // Remove lock files created from running cargo-metadata.
-        for workspace in graph.workspaces() {
-            std::fs::remove_file(repo.join(&workspace.path).join("Cargo.lock")).unwrap();
-        }
-
-        // This diff shouldn't actually affect the lock files, but it at least
-        // gives better code coverage.
-        let diff = DiffRevs {
-            head_rev: "HEAD",
-            base_rev: "HEAD~",
-        };
-        graph.fix_lock_files(Some(diff)).unwrap();
-
-        // Assert that lock files have been created.
-        for workspace in graph.workspaces() {
-            assert!(
-                repo.join(&workspace.path).join("Cargo.lock").exists(),
-                "{:?}",
-                workspace.path
-            );
-        }
     }
 
     fn initialize_repo() -> PathBuf {
