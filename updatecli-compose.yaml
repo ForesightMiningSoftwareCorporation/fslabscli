@@ -10,7 +10,7 @@ policies:
       - updatecli/values.d/scm.yaml
       - updatecli/values.d/updatecli-compose.yaml
   - name: Rust
-    policy: ghcr.io/updatecli/policies/autodiscovery/cargo:0.6.0@sha256:4fbe25f1b0780239aaa3c7a5a4b02a1c3c43d73365755713dbe63612095dafbc
+    policy: ghcr.io/updatecli/policies/autodiscovery/cargo:0.7.0@sha256:82c57147cb70cadeec3c507d1aad0b86f40ce9ef4276f2f3f8cb0432131c55f9
     values:
       - updatecli/values.d/scm.yaml
   - name: Github Actions autodiscovery
