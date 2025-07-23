@@ -36,7 +36,7 @@ fn split_comments(comment: String) -> Vec<String> {
             portion_with_sep.push_str(sep_end);
         }
         if i > 0 {
-            portion_with_sep = format!("{}{}", sep_start, portion_with_sep);
+            portion_with_sep = format!("{sep_start}{portion_with_sep}");
         }
         comments.push(portion_with_sep)
     }
@@ -235,7 +235,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
                     .send()
                     .await
                     .map_err(|e| {
-                        println!("Could not list comments: {:?}", e);
+                        println!("Could not list comments: {e:?}");
                         e
                     })
                 {
@@ -248,7 +248,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
                             .delete_comment(existing_comment.id)
                             .await
                             .map_err(|e| {
-                                println!("Could not delete comment: {:?}", e);
+                                println!("Could not delete comment: {e:?}");
                                 e
                             });
                     }
@@ -259,7 +259,7 @@ impl JobType<CheckRunOutput> for CheckJobType {
                         .create_comment(issue_number, comment)
                         .await
                         .map_err(|e| {
-                            println!("Could not create comment: {:?}", e);
+                            println!("Could not create comment: {e:?}");
                             e
                         });
                 }

@@ -87,8 +87,7 @@ impl PublishRustRegistryWorkflow {
                     dynamic_value_base, "publish.args.custom_cargo_commands"
                 ),
                 public_release: format!(
-                    "${{{{ {}).cargo.allow_public && 'true' || 'false' }}}}",
-                    dynamic_value_base
+                    "${{{{ {dynamic_value_base}).cargo.allow_public && 'true' || 'false' }}}}"
                 ),
                 ci_runner: format!(
                     "${{{{ {}.{}) }}}}",

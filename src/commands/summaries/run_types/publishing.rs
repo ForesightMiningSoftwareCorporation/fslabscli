@@ -279,10 +279,9 @@ impl JobType<PublishingRunOutput> for PublishingJobType {
                         for artifact in page {
                             if artifact
                                 .name
-                                .starts_with(&format!("release-binaries-signed-{}", package_name))
+                                .starts_with(&format!("release-binaries-signed-{package_name}"))
                                 || artifact.name.starts_with(&format!(
-                                    "release-installer-signed-{}",
-                                    package_name
+                                    "release-installer-signed-{package_name}"
                                 ))
                             {
                                 // Download zip

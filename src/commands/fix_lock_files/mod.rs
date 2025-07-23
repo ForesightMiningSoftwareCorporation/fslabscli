@@ -216,7 +216,7 @@ mod tests {
         // Call the fix_lockfile function
         let result = fix_lock_files(&options, &repo);
 
-        assert!(result.await.is_ok());
+        assert!(result.is_ok());
         // Assert that lock file has been created.
         assert!(repo.join("Cargo.lock").exists());
     }
