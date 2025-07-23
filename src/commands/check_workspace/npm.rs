@@ -34,7 +34,7 @@ impl PackageMetadataFslabsCiPublishNpmNapi {
             return Ok(());
         }
         let npm_package_prefix = match self.scope.clone() {
-            Some(s) => format!("@{}/", s),
+            Some(s) => format!("@{s}/"),
             None => "".to_string(),
         };
         let package_name = format!("{}{}", npm_package_prefix, package.clone());
@@ -90,7 +90,7 @@ impl NpmRCConfig {
             p
         } else {
             let home_dir = env::var("HOME").unwrap_or_else(|_| "~".to_string());
-            format!("{}/.npmrc", home_dir)
+            format!("{home_dir}/.npmrc")
         };
 
         if fs::metadata(npmrc_path.clone()).is_err() {
@@ -205,7 +205,7 @@ impl Npm {
         let mut req_builder = Request::builder().method(Method::GET).uri(url);
 
         if let Some(token) = &registry.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
         let req = req_builder.body(Empty::default())?;

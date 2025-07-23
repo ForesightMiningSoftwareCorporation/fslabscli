@@ -71,12 +71,12 @@ impl CargoRegistry {
 
     pub fn new_from_env(name: String) -> Self {
         let env_name = name.to_uppercase().replace("-", "_").replace(".", "_");
-        let index = env::var(format!("CARGO_REGISTRIES_{}_INDEX", env_name)).ok();
-        let crate_url = env::var(format!("CARGO_REGISTRIES_{}_CRATE_URL", env_name)).ok();
-        let token = env::var(format!("CARGO_REGISTRIES_{}_TOKEN", env_name)).ok();
+        let index = env::var(format!("CARGO_REGISTRIES_{env_name}_INDEX")).ok();
+        let crate_url = env::var(format!("CARGO_REGISTRIES_{env_name}_CRATE_URL")).ok();
+        let token = env::var(format!("CARGO_REGISTRIES_{env_name}_TOKEN")).ok();
         let user_agent = match name.as_str() {
             "crates.io" => None,
-            _ => env::var(format!("CARGO_REGISTRIES_{}_USER_AGENT", env_name)).ok(),
+            _ => env::var(format!("CARGO_REGISTRIES_{env_name}_USER_AGENT")).ok(),
         };
 
         Self {
@@ -201,7 +201,7 @@ impl Cargo {
 
         // We need an url
         if let Some(crate_url) = &registry.crate_url {
-            let url: Uri = format!("{}{}", crate_url, name).parse()?;
+            let url: Uri = format!("{crate_url}{name}").parse()?;
 
             let user_agent = registry
                 .user_agent
@@ -268,7 +268,7 @@ impl Cargo {
                         _ => None,
                     },
                     Err(e) => {
-                        println!("Got error: {}", e);
+                        println!("Got error: {e}");
                         None
                     }
                 };
@@ -301,7 +301,7 @@ fn replace_registry_in_cargo_toml(path: &Path, target_registry_name: String) -> 
     // Define your regex to find what you want to replace
     let re = Regex::new(r##"registry += +"(.*?)""##)?;
     let modified_content = re
-        .replace_all(&content, format!("registry = \"{}\"", target_registry_name))
+        .replace_all(&content, format!("registry = \"{target_registry_name}\""))
         .to_string();
 
     // Write the modified content back to the file
@@ -374,7 +374,7 @@ publish = ["main_registry"]"#;
         assert!(
             patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string())
                 .map_err(|e| {
-                    println!("Error: {:#?}", e);
+                    println!("Error: {e:#?}");
                     e
                 })
                 .is_ok()

@@ -254,9 +254,9 @@ pub async fn execute_command(
     loop {
         tokio::select! {
             Ok(Some(line)) = stdout_stream.next_line() =>  {
-                stdout_string.push_str(&format!("{}\n", line));
+                stdout_string.push_str(&format!("{line}\n"));
                 if let Some(l) = log_stdout {
-                    let stdout = format!(" | {}", line);
+                    let stdout = format!(" | {line}");
                     match l {
                         tracing::Level::ERROR => error!(stdout),
                         tracing::Level::WARN => warn!(stdout),
@@ -267,9 +267,9 @@ pub async fn execute_command(
                 }
             },
             Ok(Some(line)) = stderr_stream.next_line() =>  {
-                stderr_string.push_str(&format!("{}\n", line));
+                stderr_string.push_str(&format!("{line}\n"));
                 if let Some(l) = log_stderr {
-                    let stderr = format!(" | {}", line);
+                    let stderr = format!(" | {line}");
                     match l {
                         tracing::Level::ERROR => error!(stderr),
                         tracing::Level::WARN => warn!(stderr),
@@ -311,17 +311,17 @@ pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
     ]);
     let registry_prefix =
         format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
-    if let Ok(index) = get_env_or_log(format!("{}_INDEX", registry_prefix)) {
-        envs.insert(format!("{}_INDEX", registry_prefix), index.clone());
+    if let Ok(index) = get_env_or_log(format!("{registry_prefix}_INDEX")) {
+        envs.insert(format!("{registry_prefix}_INDEX"), index.clone());
     }
-    if let Ok(token) = get_env_or_log(format!("{}_TOKEN", registry_prefix)) {
-        envs.insert(format!("{}_TOKEN", registry_prefix), token.clone());
+    if let Ok(token) = get_env_or_log(format!("{registry_prefix}_TOKEN")) {
+        envs.insert(format!("{registry_prefix}_TOKEN"), token.clone());
         envs.insert("Authorization".to_string(), token.clone());
     }
-    if let Ok(user_agent) = get_env_or_log(format!("{}_USER_AGENT", registry_prefix)) {
+    if let Ok(user_agent) = get_env_or_log(format!("{registry_prefix}_USER_AGENT")) {
         envs.insert("CARGO_HTTP_USER_AGENT".to_string(), user_agent.clone());
     }
-    if let Ok(private_key) = get_env_or_log(format!("{}_PRIVATE_KEY", registry_prefix)) {
+    if let Ok(private_key) = get_env_or_log(format!("{registry_prefix}_PRIVATE_KEY")) {
         envs.insert(
             "GIT_SSH_COMMAND".to_string(),
             format!("ssh -i {}", private_key.clone()),

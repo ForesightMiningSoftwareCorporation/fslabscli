@@ -242,7 +242,7 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
     } else if pretty_print {
         results.pretty_print()
     } else {
-        format!("{}", results)
+        format!("{results}")
     }
 }
 
@@ -353,7 +353,7 @@ async fn run() {
 
     match result {
         Ok(r) => {
-            println!("{}", r);
+            println!("{r}");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {

@@ -142,7 +142,7 @@ impl PackageMetadataFslabsCiPublishBinary {
         };
         let mut publish = false;
         if let (Some(blob_dir), Some(blob_name)) = (&self.blob_dir, &self.blob_name) {
-            let blob_path = format!("{}/{}", blob_dir, blob_name);
+            let blob_path = format!("{blob_dir}/{blob_name}");
             match object_store.get_client().head(&Path::from(blob_path)).await {
                 Ok(_) => {}
                 Err(_) => {
@@ -152,7 +152,7 @@ impl PackageMetadataFslabsCiPublishBinary {
         }
         let mut publish_installer = false;
         if let (Some(blob_dir), Some(blob_name)) = (&self.blob_dir, &self.blob_name) {
-            let blob_path = format!("{}/{}", blob_dir, blob_name);
+            let blob_path = format!("{blob_dir}/{blob_name}");
             match object_store.get_client().head(&Path::from(blob_path)).await {
                 Ok(_) => {}
                 Err(_) => {
