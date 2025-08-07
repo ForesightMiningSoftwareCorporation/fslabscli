@@ -32,13 +32,17 @@
         inherit (gitignore.lib) gitignoreSource;
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
-        toolchain = fenixPkgs.combine [
-          fenixPkgs.stable.rustc
+        baseToolchain = fenixPkgs.combine [
+          (fenixPkgs.fromToolchainFile {
+            file = ./rust-toolchain.toml;
+            sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
+          })
           fenixPkgs.stable.cargo
+          fenixPkgs.stable.rustc
         ];
         naersk' = pkgs.callPackage naersk {
-          rustc = toolchain;
-          cargo = toolchain;
+          rustc = baseToolchain;
+          cargo = baseToolchain;
         };
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
@@ -129,8 +133,7 @@
           let
             inherit (arch2targets.${arch}) rustTarget pkgsCross depsBuildBuild;
             toolchain = fenixPkgs.combine [
-              fenixPkgs.stable.rustc
-              fenixPkgs.stable.cargo
+              baseToolchain
               fenixPkgs.targets.${rustTarget}.stable.rust-std
             ];
             naersk-lib = pkgs.callPackage naersk {
@@ -188,10 +191,7 @@
             ) arch2targets;
           in
           lib.attrsets.mapAttrs' (
-            arch: _:
-            lib.nameValuePair (packageName + "-" + arch) (
-              mkCrossRustPackage arch packageName
-            )
+            arch: _: lib.nameValuePair (packageName + "-" + arch) (mkCrossRustPackage arch packageName)
           ) filteredTargets;
 
         treefmt = treefmt-nix.lib.evalModule pkgs {
@@ -212,7 +212,9 @@
             mkdir -p "$out/bin"
             for pkg in ${
               builtins.concatStringsSep " " (
-                map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualCrossPackages [ "release" ]))
+                map (p: "${p}/bin") (
+                  builtins.attrValues (builtins.removeAttrs individualCrossPackages [ "release" ])
+                )
               )
             }; do
               for file in "$pkg"/*; do
