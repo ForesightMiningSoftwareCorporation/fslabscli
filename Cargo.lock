@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "2.23.0"
+version = "2.24.0"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -422,9 +422,9 @@ dependencies = [
 
 [[package]]
 name = "cargo-util"
-version = "0.2.21"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c95ec8b2485b20aed818bd7460f8eecc6c87c35c84191b353a3aba9aa1736c36"
+checksum = "4f46ba11692cd1e4b09cd123877e02b74e180acae237caf905ef20b42e14e206"
 dependencies = [
  "anyhow",
  "core-foundation",
