@@ -87,7 +87,7 @@ cargo-util = "0.2.21"
 
 [dependencies.anyhow]
 features = []
-version = "1.0.98"
+version = "1.0.99"
 
 [dependencies.clap]
 features = ["derive", "env"]
