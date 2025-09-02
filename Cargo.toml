@@ -146,7 +146,7 @@ version = "3.14.0"
 
 [dependencies.tokio]
 features = ["full"]
-version = "1.46.1"
+version = "1.47.1"
 
 [dev-dependencies]
 assert_fs = "1.1.3"
