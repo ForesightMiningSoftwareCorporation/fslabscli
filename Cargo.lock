@@ -381,7 +381,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "port_check",
- "quick-xml 0.38.0",
+ "quick-xml 0.38.3",
  "rand",
  "regex",
  "rust-toolchain-file",
@@ -1990,7 +1990,7 @@ dependencies = [
  "itertools",
  "parking_lot",
  "percent-encoding",
- "quick-xml 0.38.0",
+ "quick-xml 0.38.3",
  "rand",
  "reqwest",
  "ring",
@@ -2419,9 +2419,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.38.0"
+version = "0.38.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8927b0664f5c5a98265138b7e3f90aa19a6b21353182469ace36d4ac527b7b1b"
+checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
 dependencies = [
  "memchr",
  "serde",
