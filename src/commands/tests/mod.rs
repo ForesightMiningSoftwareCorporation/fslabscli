@@ -59,6 +59,8 @@ pub struct Options {
     cargo_main_registry: String,
     #[arg(long)]
     run_all: bool,
+    #[arg(long, default_value = "")]
+    whitelist: String,
 }
 
 #[derive(Serialize)]
@@ -173,6 +175,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     tracing::info!("* `check_publish`: false");
     tracing::info!("* `changed_head_ref`: {}", options.pull_pull_sha);
     tracing::info!("* `changed_base_ref`: {}", options.pull_base_sha);
+    tracing::info!("* `whitelist`: {}", options.whitelist);
 
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(!options.run_all)
@@ -180,6 +183,13 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         .with_cargo_main_registry(options.cargo_main_registry.clone())
         .with_changed_head_ref(options.pull_pull_sha.clone())
         .with_changed_base_ref(options.pull_base_sha.clone());
+
+    let whitelisted_packages: Vec<String> = options
+        .whitelist
+        .split(",")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
         .await
@@ -207,7 +217,9 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     let mut handles = vec![];
 
     for (_, member) in results.members.into_iter().filter(|(_, member)| {
-        !member.test_detail.skip.unwrap_or_default() && (member.perform_test || options.run_all)
+        !member.test_detail.skip.unwrap_or_default()
+            && (member.perform_test || options.run_all)
+            && (whitelisted_packages.is_empty() || whitelisted_packages.contains(&member.package))
     }) {
         let task_handle = tokio::spawn(do_test_on_package(
             options.clone(),
