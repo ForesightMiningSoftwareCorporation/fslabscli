@@ -2,23 +2,21 @@
   description = "fslabscli";
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane";
     fenix.url = "github:nix-community/fenix";
     flake-utils.url = "github:numtide/flake-utils";
-    naersk.url = "github:nix-community/naersk";
     gitignore.url = "github:hercules-ci/gitignore.nix";
     devenv.url = "github:cachix/devenv";
-    treefmt-nix.url = "github:numtide/treefmt-nix";
   };
   outputs =
     inputs@{
       self,
       nixpkgs,
       flake-utils,
-      naersk,
       fenix,
-      devenv,
+      crane,
       gitignore,
-      treefmt-nix,
+      devenv,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -27,27 +25,19 @@
         overlays = [ ];
         pkgs = import nixpkgs {
           inherit system overlays;
+          stdenv = nixpkgs.clangStdenv;
         };
-        inherit (pkgs.stdenv) isDarwin;
+        inherit (pkgs.stdenv) isDarwin isLinux;
         inherit (gitignore.lib) gitignoreSource;
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
-        baseToolchain = fenixPkgs.combine [
-          (fenixPkgs.fromToolchainFile {
-            file = ./rust-toolchain.toml;
-            sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
-          })
-          fenixPkgs.stable.cargo
-          fenixPkgs.stable.rustc
-        ];
-        naersk' = pkgs.callPackage naersk {
-          rustc = baseToolchain;
-          cargo = baseToolchain;
+        toolchain = fenixPkgs.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
         };
+        craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-
-        rustSrc = gitignoreSource ./.;
-
+        rustSrc = craneLib.cleanCargoSource ./.;
         arch2targets =
           let
             generateCross =
@@ -81,140 +71,114 @@
                 ];
               };
           };
+
+        generateCommonArgs = craneLib': {
+          pname = manifest.name;
+          version = manifest.version;
+          src = rustSrc;
+          nativeBuildInputs = [
+            pkgs.perl
+            pkgs.llvmPackages.libclang
+            pkgs.clang
+            pkgs.git
+            pkgs.installShellFiles # Shell Completions
+            pkgs.rustPlatform.bindgenHook
+          ];
+          buildInputs = [
+            pkgs.stdenv.cc
+          ]
+          ++ lib.optionals isDarwin [
+            pkgs.apple-sdk
+            pkgs.libiconv
+          ];
+          # auditable = false;
+          doCheck = false;
+          # strictDeps = false;
+
+          auditable = true;
+          # doCheck = true;
+          strictDeps = true;
+
+          LIBCLANG_PATH = pkgs.lib.makeLibraryPath [
+            pkgs.llvmPackages.libclang.lib
+          ];
+        };
+
         mkRustPackage =
           packageName:
-          naersk'.buildPackage {
-            pname = packageName;
-            cargoBuildOptions =
-              x:
-              x
-              ++ [
-                "--package"
-                packageName
-              ];
-            version = manifest.version;
-            src = pkgs.lib.cleanSource ./.;
-            nativeBuildInputs = [
-              pkgs.perl # Needed to build vendored OpenSSL.
-              pkgs.installShellFiles # Shell Completions
-            ];
-            buildInputs = pkgs.lib.optionals isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
-            auditable = false; # Avoid cargo-auditable failures.
-            doCheck = false; # Disable test as it requires network access.
-            postInstall =
-              let
-                rustTarget = arch2targets.${system}.rustTarget;
-              in
-              ''
-                $out/bin/${packageName} man-page > ${packageName}.man
-                installManPage ${packageName}.man
-                installShellCompletion --cmd ${packageName} \
-                 --bash <($out/bin/${packageName} completions bash) \
-                 --fish <($out/bin/${packageName} completions fish) \
-                 --zsh <($out/bin/${packageName} completions zsh)
-
-                cd "$out"/bin
-                for f in "$(ls)"; do
-                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
-                    base="$(echo "$f" | cut -d. -f1)"
-                    cp "$f" "$base-${rustTarget}$ext"
-                  else
-                    cp "$f" "$f-${rustTarget}"
-                  fi
-                done
-              '';
-
-          };
+          (craneLib.buildPackage (
+            (generateCommonArgs craneLib)
+            // {
+            }
+          ));
 
         mkCrossRustPackage =
           arch: packageName:
           let
             inherit (arch2targets.${arch}) rustTarget pkgsCross depsBuildBuild;
             toolchain = fenixPkgs.combine [
-              baseToolchain
+              fenixPkgs.stable.rustc
+              fenixPkgs.stable.cargo
               fenixPkgs.targets.${rustTarget}.stable.rust-std
             ];
-            naersk-lib = pkgs.callPackage naersk {
-              cargo = toolchain;
-              rustc = toolchain;
-            };
-          in
-          naersk-lib.buildPackage rec {
-            inherit depsBuildBuild;
-            pname = packageName;
-            cargoBuildOptions =
-              x:
-              x
-              ++ [
-                "--package"
-                packageName
-              ];
-            version = manifest.version;
-            strictDeps = true;
-            src = rustSrc;
-            nativeBuildInputs = [
-              pkgs.perl # Needed to build vendored OpenSSL.
-            ];
-            auditable = false; # Avoid cargo-auditable failures.
-            doCheck = false; # Disable test as it requires network access.
-
-            CARGO_BUILD_TARGET = rustTarget;
+            craneLibCross = craneLib.overrideToolchain toolchain;
             TARGET_CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-            CARGO_BUILD_RUSTFLAGS = [
-              "-C"
-              "linker=${TARGET_CC}"
-            ];
+            commonArgs = (generateCommonArgs craneLibCross) // {
+              inherit depsBuildBuild TARGET_CC;
 
-            postInstall = ''
-              cd "$out"/bin
-              for f in "$(ls)"; do
-                if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
-                  base="$(echo "$f" | cut -d. -f1)"
-                  mv "$f" "$base-${rustTarget}$ext"
-                else
-                  mv "$f" "$f-${rustTarget}"
-                fi
-              done
-            '';
+              CARGO_BUILD_TARGET = rustTarget;
+              CARGO_BUILD_RUSTFLAGS = [
+                "-C"
+                "linker=${TARGET_CC}"
+                "-C"
+                "target-feature=+crt-static"
+              ];
 
-            CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-            LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-          };
+              CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+              LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+            };
+            cargoArtifacts = craneLibCross.buildDepsOnly (commonArgs // { });
 
-        individualCrossPackages =
+          in
+          craneLibCross.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              CARGO_BUILD_RUSTFLAGS = [
+                "-C"
+                "linker=${TARGET_CC}"
+                "-C"
+                "target-feature=+crt-static"
+              ];
+
+            }
+          );
+
+        individualPackages =
           let
-            packageName = "cargo-fslabscli";
+            packageName = manifest.name;
             filteredTargets = lib.attrsets.filterAttrs (
               k: _: (k == system || isDarwin || (!lib.strings.hasInfix "darwin" k))
             ) arch2targets;
           in
           lib.attrsets.mapAttrs' (
-            arch: _: lib.nameValuePair (packageName + "-" + arch) (mkCrossRustPackage arch packageName)
+            arch: _:
+            let
+              shouldCross = arch != system;
+            in
+            lib.nameValuePair (packageName + "-" + arch) (
+              if shouldCross then (mkCrossRustPackage arch packageName) else (mkRustPackage packageName)
+            )
           ) filteredTargets;
-
-        treefmt = treefmt-nix.lib.evalModule pkgs {
-          projectRootFile = "flake.nix";
-          programs = {
-            alejandra.enable = true;
-            nixfmt.enable = true;
-            rustfmt.enable = true;
-          };
-        };
       in
       {
-        formatter = treefmt.config.build.wrapper;
-
-        packages = individualCrossPackages // {
+        packages = individualPackages // {
           default = mkRustPackage "cargo-fslabscli";
           release = pkgs.runCommand "release-binaries" { } ''
             mkdir -p "$out/bin"
             for pkg in ${
               builtins.concatStringsSep " " (
-                map (p: "${p}/bin") (
-                  builtins.attrValues (builtins.removeAttrs individualCrossPackages [ "release" ])
-                )
+                map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualPackages [ "release" ]))
               )
             }; do
               for file in "$pkg"/*; do
@@ -223,10 +187,7 @@
             done
             (cd "$out/bin" && sha256sum * > sha256.txt)
           '';
-          devenv-up = self.devShells.${system}.default.config.procfileScript;
-          devenv-test = self.devShells.${system}.default.config.test;
         };
-
         devShells.default = devenv.lib.mkShell {
           inherit inputs pkgs;
           modules = [
@@ -239,12 +200,12 @@
               }:
               {
                 packages = with pkgs; [
-                  self.packages.${system}.default
-                  updatecli
+                  # self.packages.${system}.default
+                  # updatecli
                   cargo-deny
-                  cargo-edit
+                  rustup
                   xunit-viewer
-                  attic-client
+                  protobuf
                 ];
                 languages = {
                   nix.enable = true;
