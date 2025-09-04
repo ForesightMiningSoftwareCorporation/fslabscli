@@ -174,8 +174,6 @@ pub async fn tests(
         .with_check_changed(!options.run_all)
         .with_check_publish(false);
 
-    let whitelisted_packages = common_options.whitelist.clone();
-
     let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await
         .map_err(|e| {
@@ -202,9 +200,7 @@ pub async fn tests(
     let mut handles = vec![];
 
     for (_, member) in results.members.into_iter().filter(|(_, member)| {
-        !member.test_detail.skip.unwrap_or_default()
-            && (member.perform_test || options.run_all)
-            && (whitelisted_packages.is_empty() || whitelisted_packages.contains(&member.package))
+        !member.test_detail.skip.unwrap_or_default() && (member.perform_test || options.run_all)
     }) {
         let common_opts = Arc::new(common_options.clone());
         let task_handle = tokio::spawn(do_test_on_package(

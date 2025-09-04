@@ -973,7 +973,6 @@ pub async fn publish(
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
         .with_ignore_dev_dependencies(true);
-    // .with_ignore_dev_dependencies(false);
 
     let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await
