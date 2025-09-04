@@ -406,9 +406,9 @@ async fn run() {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Publish {
-            common_options,
+            mut common_options,
             options,
-        } => publish(&common_options, &options, working_directory)
+        } => publish(&mut common_options, &options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Completions { shell: _ } | Commands::ManPage => {

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use cargo_metadata::semver::Version;
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package, PackageId};
 use git2::{DiffDelta, Repository};
 use ignore::gitignore::Gitignore;
@@ -257,6 +259,22 @@ impl Workspace {
             .into_iter()
             .map(From::from)
             .collect()
+    }
+}
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageKey {
+    pub name: String,
+    pub version: Version,
+}
+
+#[cfg(test)]
+impl From<&Package> for PackageKey {
+    fn from(p: &Package) -> Self {
+        PackageKey {
+            name: p.name.to_string(),
+            version: p.version.clone(),
+        }
     }
 }
 

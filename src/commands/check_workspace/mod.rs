@@ -876,6 +876,18 @@ pub async fn check_workspace(
         );
     }
 
+    let whitelist: Vec<String> = common_options
+        .whitelist
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    let blacklist: Vec<String> = common_options
+        .blacklist
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
     for workspace in crates.workspaces() {
         let resolve = workspace.metadata.resolve.as_ref().unwrap();
         // Let's add the node to the deps
@@ -890,6 +902,7 @@ pub async fn check_workspace(
             dep_to_id.insert(package.name.to_string(), package.id.clone());
         }
 
+        println!("Got whitelist: {:?}, {}", whitelist, whitelist.len());
         for package in workspace.metadata.workspace_packages() {
             match Result::new(
                 workspace.path.to_string_lossy().into(),
@@ -899,10 +912,8 @@ pub async fn check_workspace(
                 &dep_to_id,
             ) {
                 Ok(package) => {
-                    let blacklisted = !common_options.blacklist.is_empty()
-                        && common_options.blacklist.contains(&package.package);
-                    let whitelisted = common_options.whitelist.is_empty()
-                        || common_options.whitelist.contains(&package.package);
+                    let blacklisted = !blacklist.is_empty() && blacklist.contains(&package.package);
+                    let whitelisted = whitelist.is_empty() || whitelist.contains(&package.package);
                     if !blacklisted && whitelisted {
                         packages.insert(package.package_id.clone().unwrap().clone(), package);
                     }

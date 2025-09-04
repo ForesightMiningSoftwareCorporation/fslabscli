@@ -106,6 +106,9 @@
 
         mkRustPackage =
           packageName:
+          let
+            inherit (arch2targets.${system}) rustTarget;
+          in
           (craneLib.buildPackage (
             (generateCommonArgs craneLib)
             // {
@@ -114,9 +117,9 @@
                 for f in "$(ls)"; do
                   if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
                     base="$(echo "$f" | cut -d. -f1)"
-                    mv "$f" "$base-${system}$ext"
+                    mv "$f" "$base-${rustTarget}$ext"
                   else
-                    mv "$f" "$f-${system}"
+                    mv "$f" "$f-${rustTarget}"
                   fi
                 done
               '';
@@ -166,9 +169,9 @@
                 for f in "$(ls)"; do
                   if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
                     base="$(echo "$f" | cut -d. -f1)"
-                    mv "$f" "$base-${arch}$ext"
+                    mv "$f" "$base-${rustTarget}$ext"
                   else
-                    mv "$f" "$f-${arch}"
+                    mv "$f" "$f-${rustTarget}"
                   fi
                 done
               '';

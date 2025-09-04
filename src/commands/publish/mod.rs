@@ -41,7 +41,7 @@ pub struct Options {
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
     #[clap(long, env)]
-    pull_base_ref_regex: Option<String>,
+    base_rev_regex: Option<String>,
     #[arg(long, env)]
     repo_owner: String,
     #[arg(long, env)]
@@ -960,7 +960,7 @@ pub async fn report_publish_to_github(
 }
 
 pub async fn publish(
-    common_options: &PackageRelatedOptions,
+    common_options: &mut PackageRelatedOptions,
     options: &Options,
     repo_root: PathBuf,
 ) -> anyhow::Result<PublishResults> {
@@ -968,6 +968,24 @@ pub async fn publish(
     login(options, &repo_root)
         .await
         .with_context(|| "Could not login")?;
+
+    // For publishing we have a special case for the whitelist.
+    // If the push regex is set, then we need to consider only the package that
+    // match the first capturing group
+    println!(
+        "Got whitelist, regex, baseref: {:?} -- {:?} -- {}",
+        common_options.whitelist, options.base_rev_regex, common_options.base_rev
+    );
+    let mut whitelist = common_options.whitelist.clone();
+    if let Some(regex) = &options.base_rev_regex {
+        let re = Regex::new(regex)?;
+        if let Some(captures) = re.captures(&common_options.base_rev) {
+            if let Some(package_name_match) = captures.get(1) {
+                whitelist.push(package_name_match.as_str().to_string());
+            }
+        }
+    }
+    common_options.whitelist = whitelist;
 
     // Check workspace information
     let check_workspace_options = CheckWorkspaceOptions::new()
@@ -1008,83 +1026,34 @@ pub async fn publish(
         }
     }
     // Filters members based on regex
-
-    let selected_members: Vec<Package> = match options.pull_base_ref_regex.clone() {
-        Some(regex_str) => {
-            let re = Regex::new(&regex_str)?;
-            if let Some(captures) = re.captures(&common_options.base_rev) {
-                if let Some(package_name_match) = captures.get(1) {
-                    let package_name = package_name_match.as_str();
-                    let all_members: Vec<Package> = results.members.values().cloned().collect();
-
-                    // Find the package that matches the captured name
-                    if let Some(package) = all_members.iter().find(|m| m.package == package_name) {
-                        if let Some(package_id) = &package.package_id {
-                            let dependency_graph = results.crate_graph.dependency_graph();
-                            let transitive_dependencies: HashSet<_> =
-                                dependency_graph.get_transitive_dependencies(package_id.clone());
-
-                            // Filter only the package and its transitive dependencies
-                            all_members
-                                .clone()
-                                .into_iter()
-                                .filter(|m| {
-                                    if let Some(cand_package_id) = &m.package_id {
-                                        cand_package_id == package_id
-                                            || transitive_dependencies.contains(cand_package_id)
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![]
-            }
-        }
-        None => {
-            println!("No regex mate!");
-            results.members.values().cloned().collect()
-        }
-    };
     // Spawn a task for each object
-    for member in selected_members {
-        if let Some(ref member_id) = member.package_id {
-            let o = artifact_dir.clone();
-            let m = member.clone();
-            let r = repo_root.clone();
-            let s = Arc::clone(&semaphore);
-            let c = Arc::clone(&cargo);
-            let status = Arc::clone(&publish_status);
-            let cmn_opt = Arc::new(common_options.clone());
-            let opt = Arc::new(options.clone());
-            let task_handle = tokio::spawn(publish_package(
-                r,
-                m,
-                s,
-                results
-                    .crate_graph
-                    .dependency_graph()
-                    .dependencies
-                    .get(member_id)
-                    .cloned(),
-                status,
-                o,
-                c,
-                cmn_opt,
-                opt,
-                registries.clone(),
-            ));
-            handles.push(task_handle);
-        }
+    for (member_id, member) in &results.members {
+        let o = artifact_dir.clone();
+        let m = member.clone();
+        let r = repo_root.clone();
+        let s = Arc::clone(&semaphore);
+        let c = Arc::clone(&cargo);
+        let status = Arc::clone(&publish_status);
+        let cmn_opt = Arc::new(common_options.clone());
+        let opt = Arc::new(options.clone());
+        let task_handle = tokio::spawn(publish_package(
+            r,
+            m,
+            s,
+            results
+                .crate_graph
+                .dependency_graph()
+                .dependencies
+                .get(member_id)
+                .cloned(),
+            status,
+            o,
+            c,
+            cmn_opt,
+            opt,
+            registries.clone(),
+        ));
+        handles.push(task_handle);
     }
     futures::future::join_all(handles).await;
 
