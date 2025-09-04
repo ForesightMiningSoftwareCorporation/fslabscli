@@ -11,7 +11,7 @@ use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, dock
 use crate::commands::download_artifacts::{
     Options as DownloadArtifactsOptions, download_artifacts,
 };
-use crate::commands::fix_lock_files::{Options as CheckLockFilesOptions, fix_lock_files};
+use crate::commands::fix_lock_files::{Options as FixLockFilesOptions, fix_lock_files};
 use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix};
 use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
 use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
@@ -62,6 +62,40 @@ struct Cli {
     fslabscli_auto_update: bool,
 }
 
+#[derive(Debug, Parser, Default, Clone)]
+#[command()]
+pub struct PackageRelatedOptions {
+    #[clap(
+        long,
+        env = "PULL_PULL_SHA",
+        default_value = "HEAD",
+        alias = "pull-pull-sha"
+    )]
+    head_rev: String,
+    #[clap(
+        long,
+        env = "PULL_BASE_SHA",
+        default_value = "HEAD~",
+        alias = "pull-base-sha"
+    )]
+    base_rev: String,
+    #[arg(long, env, default_value = "1")]
+    job_limit: usize,
+    #[arg(long, env, default_value = "0")]
+    inner_job_limit: usize,
+    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
+    cargo_main_registry: String,
+    /// Only considers the following packages
+    #[arg(long, default_value = "")]
+    whitelist: Vec<String>,
+    /// Ignores the following packages
+    #[arg(long, default_value = "")]
+    blacklist: Vec<String>,
+    /// Display progress
+    #[arg(long, default_value_t = false)]
+    progress: bool,
+}
+
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
 enum CargoSubcommand {
     #[default]
@@ -70,10 +104,6 @@ enum CargoSubcommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Fix inconsistencies in all Cargo.lock files.
-    FixLockFiles(Box<CheckLockFilesOptions>),
-    /// Check which crates needs to be published
-    CheckWorkspace(Box<CheckWorkspaceOptions>),
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
     /// Summarize a github action run
@@ -84,11 +114,36 @@ enum Commands {
     GithubAppToken(Box<GithubAppTokenOptions>),
     /// Build and push docker image
     DockerBuildPush(Box<DockerBuildPushOptions>),
+    // Packages Related Commands
+    /// Fix inconsistencies in all Cargo.lock files.
+    FixLockFiles {
+        #[command(flatten)]
+        common_options: Box<PackageRelatedOptions>,
+        #[command(flatten)]
+        options: Box<FixLockFilesOptions>,
+    },
+    /// Check which crates needs to be published
+    CheckWorkspace {
+        #[command(flatten)]
+        common_options: Box<PackageRelatedOptions>,
+        #[command(flatten)]
+        options: Box<CheckWorkspaceOptions>,
+    },
     /// Test workspace members
     #[command(visible_alias = "rust-tests")]
-    Tests(Box<TestsOptions>),
+    Tests {
+        #[command(flatten)]
+        common_options: Box<PackageRelatedOptions>,
+        #[command(flatten)]
+        options: Box<TestsOptions>,
+    },
     /// Publish workspace members
-    Publish(Box<PublishOptions>),
+    Publish {
+        #[command(flatten)]
+        common_options: Box<PackageRelatedOptions>,
+        #[command(flatten)]
+        options: Box<PublishOptions>,
+    },
     /// Generate a shell completions script
     Completions {
         /// The shell for which to generate the script
@@ -315,11 +370,6 @@ async fn run() {
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::FixLockFiles(options) => fix_lock_files(&options, &working_directory)
-            .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::CheckWorkspace(options) => check_workspace(options, working_directory)
-            .await
-            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
@@ -338,10 +388,27 @@ async fn run() {
         Commands::DockerBuildPush(options) => docker_build_push(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::Tests(options) => tests(options, working_directory)
+        Commands::FixLockFiles {
+            common_options,
+            options,
+        } => fix_lock_files(&common_options, &options, &working_directory)
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::CheckWorkspace {
+            common_options,
+            options,
+        } => check_workspace(&common_options, &options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::Publish(options) => publish(options, working_directory)
+        Commands::Tests {
+            common_options,
+            options,
+        } => tests(&common_options, &options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Publish {
+            common_options,
+            options,
+        } => publish(&common_options, &options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Completions { shell: _ } | Commands::ManPage => {

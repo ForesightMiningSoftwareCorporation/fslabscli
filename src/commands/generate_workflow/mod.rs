@@ -19,9 +19,9 @@ use cargo_metadata::PackageId;
 
 use itertools::Itertools;
 
-use crate::PrettyPrintable;
 use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
 use crate::utils::{FromMap, deserialize_opt_string_or_map, deserialize_opt_string_or_struct};
+use crate::{PackageRelatedOptions, PrettyPrintable};
 
 use self::workflows::Workflow;
 use self::workflows::publish_docker::PublishDockerWorkflow;
@@ -563,10 +563,15 @@ pub async fn generate_workflow(
     working_directory: PathBuf,
 ) -> anyhow::Result<GenerateResult> {
     // Get Directory information
+    let package_related_options = PackageRelatedOptions::default();
     let check_workspace_options = CheckWorkspaceOptions::new();
-    let results = check_workspace(Box::new(check_workspace_options), working_directory.clone())
-        .await
-        .with_context(|| "Could not get directory information")?;
+    let results = check_workspace(
+        &package_related_options,
+        &check_workspace_options,
+        working_directory.clone(),
+    )
+    .await
+    .with_context(|| "Could not get directory information")?;
     // Get workflows, useful in case where additional tools need to be run before
     let mut publish_workflow =
         get_base_workflow(&options.template, "CI - CD: Publishing".to_string())?;

@@ -34,7 +34,7 @@ use docker::PackageMetadataFslabsCiPublishDocker;
 use nix_binary::PackageMetadataFslabsCiPublishNixBinary;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
 
-use crate::PrettyPrintable;
+use crate::{PackageRelatedOptions, PrettyPrintable};
 
 mod binary;
 mod cargo;
@@ -124,8 +124,6 @@ pub struct Options {
     npm_registry_npmrc_path: Option<String>,
     #[arg(long, default_value_t = false)]
     skip_cargo: bool,
-    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
-    cargo_main_registry: String,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, env)]
@@ -139,15 +137,9 @@ pub struct Options {
     #[arg(long)]
     toolchain: Option<String>,
     #[arg(long, default_value_t = false)]
-    progress: bool,
-    #[arg(long, default_value_t = false)]
     pub(crate) check_publish: bool,
     #[arg(long, default_value_t = false)]
     pub(crate) check_changed: bool,
-    #[arg(long, default_value = "HEAD")]
-    pub(crate) changed_head_ref: String,
-    #[arg(long, default_value = "HEAD~")]
-    pub(crate) changed_base_ref: String,
     #[arg(long, default_value_t = false)]
     fail_unit_error: bool,
     #[arg(long, default_value_t = false)]
@@ -166,33 +158,13 @@ impl Options {
         self
     }
 
-    pub fn with_progress(mut self, progress: bool) -> Self {
-        self.progress = progress;
-        self
-    }
-
     pub fn with_check_publish(mut self, check_publish: bool) -> Self {
         self.check_publish = check_publish;
         self
     }
 
-    pub fn with_changed_head_ref(mut self, head_ref: String) -> Self {
-        self.changed_head_ref = head_ref;
-        self
-    }
-
-    pub fn with_changed_base_ref(mut self, base_ref: String) -> Self {
-        self.changed_base_ref = base_ref;
-        self
-    }
-
     pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
         self.ignore_dev_dependencies = ignore_dev_dependencies;
-        self
-    }
-
-    pub fn with_cargo_main_registry(mut self, registry: String) -> Self {
-        self.cargo_main_registry = registry;
         self
     }
 }
@@ -842,7 +814,8 @@ impl PrettyPrintable for Results {
 }
 
 pub async fn check_workspace(
-    options: Box<Options>,
+    common_options: &PackageRelatedOptions,
+    options: &Options,
     working_directory: PathBuf,
 ) -> anyhow::Result<Results> {
     tracing::info!("Check directory for crates that need publishing");
@@ -860,13 +833,13 @@ pub async fn check_workspace(
     let timestamp = format!("{}", (now - epoch).num_days());
 
     let binary_store = BinaryStore::new(
-        options.binary_store_storage_account,
-        options.binary_store_container_name,
-        options.binary_store_access_key,
+        options.binary_store_storage_account.clone(),
+        options.binary_store_container_name.clone(),
+        options.binary_store_access_key.clone(),
     )?;
     tracing::debug!("Base directory: {:?}", path);
     // 1. Find all workspaces to investigate
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Resolving workspaces...",
             style("[1/7]").bold().dim(),
@@ -877,12 +850,16 @@ pub async fn check_workspace(
         true => Some(DependencyKind::Normal),
         false => None,
     };
-    let crates = CrateGraph::new(&path, options.cargo_main_registry, limit_dependency_kind)?;
+    let crates = CrateGraph::new(
+        &path,
+        common_options.cargo_main_registry.clone(),
+        limit_dependency_kind,
+    )?;
     let mut packages: HashMap<PackageId, Result> = HashMap::new();
     let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
 
     // 2. For each workspace, find if one of the subcrates needs publishing
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Resolving packages...",
             style("[2/7]").bold().dim(),
@@ -931,7 +908,7 @@ pub async fn check_workspace(
     let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
 
     // 5. Compute Runtime information
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Compute runtime information...",
             style("[3/7]").bold().dim(),
@@ -940,7 +917,7 @@ pub async fn check_workspace(
     }
 
     let mut pb: Option<ProgressBar> = None;
-    if options.progress {
+    if common_options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
@@ -971,7 +948,7 @@ pub async fn check_workspace(
 
     // Check Alt Registries Settings
     // If package A needs to be published to an alt registry, all of its dependencies should be as well
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Back-feeding alt registry settings...",
             style("[4/7]").bold().dim(),
@@ -979,7 +956,7 @@ pub async fn check_workspace(
         );
     }
     let mut pb: Option<ProgressBar> = None;
-    if options.progress {
+    if common_options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
@@ -1023,7 +1000,7 @@ pub async fn check_workspace(
         }
     }
     // Check Release status
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Checking published status...",
             style("[5/7]").bold().dim(),
@@ -1047,7 +1024,7 @@ pub async fn check_workspace(
         docker.add_registry_auth(docker_registry, docker_username, docker_password)
     }
     let mut pb: Option<ProgressBar> = None;
-    if options.progress {
+    if common_options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
@@ -1123,7 +1100,7 @@ pub async fn check_workspace(
         }
     }
 
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Resolving packages dependencies...",
             style("[6/7]").bold().dim(),
@@ -1131,7 +1108,7 @@ pub async fn check_workspace(
         );
     }
     let mut pb: Option<ProgressBar> = None;
-    if options.progress {
+    if common_options.progress {
         pb = Some(ProgressBar::new(packages.len() as u64).with_style(
             ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
         ));
@@ -1167,7 +1144,7 @@ pub async fn check_workspace(
     let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
     tracing::debug!("Package list: {package_keys:#?}");
 
-    if options.progress {
+    if common_options.progress {
         println!(
             "{} {}Checking if packages changed...",
             style("[7/7]").bold().dim(),
@@ -1175,7 +1152,7 @@ pub async fn check_workspace(
         );
     }
     if options.check_changed {
-        if options.progress {
+        if common_options.progress {
             pb = Some(ProgressBar::new(packages.len() as u64).with_style(
                 ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
             ));
@@ -1183,7 +1160,7 @@ pub async fn check_workspace(
 
         // Check changed from a git pov
         let changed_package_paths =
-            crates.changed_packages(&options.changed_base_ref, &options.changed_head_ref)?;
+            crates.changed_packages(&common_options.base_rev, &common_options.head_rev)?;
         tracing::info!("Changed packages: {changed_package_paths:#?}");
         // Any packages that transitively depend on changed packages are also considered "changed".
         let changed_closure = crates
@@ -1225,7 +1202,7 @@ pub async fn check_workspace(
             }
         }
     }
-    if options.progress {
+    if common_options.progress {
         println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
     }
 
@@ -1242,6 +1219,7 @@ mod tests {
     use git2::Repository;
 
     use crate::{
+        PackageRelatedOptions,
         commands::check_workspace::{Options, Result as Package, check_workspace},
         utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
     };
@@ -1324,8 +1302,9 @@ mod tests {
         let ws = create_complex_workspace();
 
         // Check workspace information
+        let common_options = PackageRelatedOptions::default();
         let check_workspace_options = Options::new();
-        let results = check_workspace(Box::new(check_workspace_options), ws.clone())
+        let results = check_workspace(&common_options, &check_workspace_options, ws.clone())
             .await
             .unwrap();
 

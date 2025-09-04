@@ -1,5 +1,5 @@
 use crate::{
-    PrettyPrintable,
+    PackageRelatedOptions, PrettyPrintable,
     commands::check_workspace::{
         Options as CheckWorkspaceOptions, Result as Member, check_workspace,
     },
@@ -914,7 +914,8 @@ pub async fn generate_wix(
 ) -> anyhow::Result<GenerateResult> {
     // Get Workspace members that needs a wix file
     let members: Vec<Member> = check_workspace(
-        Box::new(CheckWorkspaceOptions::new()),
+        &PackageRelatedOptions::default(),
+        &CheckWorkspaceOptions::new(),
         working_directory.clone(),
     )
     .await
