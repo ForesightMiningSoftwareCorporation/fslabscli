@@ -125,6 +125,8 @@ pub struct Options {
     #[arg(long, default_value_t = false)]
     skip_cargo: bool,
     #[arg(long, default_value_t = false)]
+    autopublish_cargo: bool,
+    #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, env)]
     binary_store_storage_account: Option<String>,
@@ -330,12 +332,13 @@ impl Result {
         }
         publish.cargo.registries = Some(registries);
 
-        publish.cargo.publish = publish
-            .cargo
-            .registries
-            .clone()
-            .map(|r| !r.is_empty())
-            .unwrap_or(false);
+        publish.cargo.publish = publish.cargo.publish
+            && publish
+                .cargo
+                .registries
+                .clone()
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
 
         let dependencies: Vec<ResultDependency> = package
             .dependencies
@@ -665,6 +668,7 @@ impl Result {
         npm: &Npm,
         skip_cargo: bool,
         cargo: &Cargo,
+        force_cargo: bool,
         skip_docker: bool,
         docker: &mut Docker,
         skip_binary: bool,
@@ -696,7 +700,12 @@ impl Result {
             match self
                 .publish_detail
                 .cargo
-                .check(self.package.clone(), self.version.clone(), cargo)
+                .check(
+                    self.package.clone(),
+                    self.version.clone(),
+                    cargo,
+                    force_cargo,
+                )
                 .await
             {
                 Ok(_) => {}
@@ -1050,6 +1059,7 @@ pub async fn check_workspace(
                         &npm,
                         options.skip_cargo,
                         &cargo,
+                        options.autopublish_cargo,
                         options.skip_docker,
                         &mut docker,
                         options.skip_binary,

@@ -24,8 +24,13 @@ impl PackageMetadataFslabsCiPublishCargo {
         name: String,
         version: String,
         cargo: &Cargo,
+        force: bool,
     ) -> anyhow::Result<()> {
         tracing::debug!("Got following registries: {:?}", self.registries);
+        if !(self.publish || force) {
+            // This package does not want to be published
+            return Ok(());
+        }
         if version.ends_with("dev") {
             self.publish = false;
             return Ok(());

@@ -86,10 +86,10 @@ pub struct PackageRelatedOptions {
     #[arg(long, env, default_value = "foresight-mining-software-corporation")]
     cargo_main_registry: String,
     /// Only considers the following packages
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", value_delimiter = ',')]
     whitelist: Vec<String>,
     /// Ignores the following packages
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", value_delimiter = ',')]
     blacklist: Vec<String>,
     /// Display progress
     #[arg(long, default_value_t = false)]

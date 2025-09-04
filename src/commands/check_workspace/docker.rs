@@ -141,9 +141,10 @@ impl Docker {
         version: String,
     ) -> anyhow::Result<bool> {
         tracing::debug!(
-            "Docker: checking if version {} of {} already exists",
+            "Docker: checking if version {} of {} already exists in registry {}",
             version,
-            name
+            name,
+            registry_name
         );
 
         let image: Reference =
