@@ -47,7 +47,7 @@ static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 static PAPER: Emoji<'_, '_> = Emoji("📃  ", "");
 static SPARKLE: Emoji<'_, '_> = Emoji("✨ ", ":-)");
 
-const DEFAULT_TOOLCHAIN: &str = "1.76";
+const DEFAULT_TOOLCHAIN: &str = "1.88";
 const CUSTOM_EPOCH: &str = "2024-01-01";
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug, EnumString, PartialEq)]
@@ -890,7 +890,13 @@ pub async fn check_workspace(
                 &dep_to_id,
             ) {
                 Ok(package) => {
-                    packages.insert(package.package_id.clone().unwrap().clone(), package);
+                    let blacklisted = !common_options.blacklist.is_empty()
+                        && common_options.blacklist.contains(&package.package);
+                    let whitelisted = common_options.whitelist.is_empty()
+                        || common_options.whitelist.contains(&package.package);
+                    if !blacklisted && whitelisted {
+                        packages.insert(package.package_id.clone().unwrap().clone(), package);
+                    }
                 }
                 Err(e) => {
                     let error_msg = format!("Could not check package {}: {}", package.name, e);
