@@ -109,6 +109,17 @@
           (craneLib.buildPackage (
             (generateCommonArgs craneLib)
             // {
+              postInstall = ''
+                cd "$out"/bin
+                for f in "$(ls)"; do
+                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
+                    base="$(echo "$f" | cut -d. -f1)"
+                    mv "$f" "$base-${system}$ext"
+                  else
+                    mv "$f" "$f-${system}"
+                  fi
+                done
+              '';
             }
           ));
 
@@ -150,7 +161,17 @@
                 "-C"
                 "target-feature=+crt-static"
               ];
-
+              postInstall = ''
+                cd "$out"/bin
+                for f in "$(ls)"; do
+                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
+                    base="$(echo "$f" | cut -d. -f1)"
+                    mv "$f" "$base-${arch}$ext"
+                  else
+                    mv "$f" "$f-${arch}"
+                  fi
+                done
+              '';
             }
           );
 
