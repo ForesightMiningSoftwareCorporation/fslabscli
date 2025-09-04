@@ -24,7 +24,7 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    PrettyPrintable,
+    PackageRelatedOptions, PrettyPrintable,
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
@@ -41,26 +41,14 @@ static DB_NAME: &str = "tests";
 pub struct Options {
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
-    #[clap(long, env, default_value = "HEAD")]
-    pull_pull_sha: String,
-    #[clap(long, env, default_value = "HEAD~")]
-    pull_base_sha: String,
     #[clap(
         long,
         env,
         default_value = "https://raw.githubusercontent.com/ForesightMiningSoftwareCorporation/github/main/deny.toml"
     )]
     default_deny_location: String,
-    #[arg(long, env, default_value = "1")]
-    job_limit: usize,
-    #[arg(long, env, default_value = "0")]
-    inner_job_limit: usize,
-    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
-    cargo_main_registry: String,
     #[arg(long)]
     run_all: bool,
-    #[arg(long, default_value = "")]
-    whitelist: String,
 }
 
 #[derive(Serialize)]
@@ -154,7 +142,11 @@ fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<b
     test_args.get(arg).and_then(|v| v.as_bool())
 }
 
-pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<TestResult> {
+pub async fn tests(
+    common_options: &PackageRelatedOptions,
+    options: &Options,
+    repo_root: PathBuf,
+) -> anyhow::Result<TestResult> {
     let meter = global::meter("tests");
     let overall_duration_h = meter.f64_histogram("rust_tests_workspace").build();
     let overall_counter = meter.u64_counter("rust_tests_workspace").build();
@@ -173,25 +165,18 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
     tracing::info!("Running the tests with the following arguments:");
     tracing::info!("* `check_changed`: true");
     tracing::info!("* `check_publish`: false");
-    tracing::info!("* `changed_head_ref`: {}", options.pull_pull_sha);
-    tracing::info!("* `changed_base_ref`: {}", options.pull_base_sha);
-    tracing::info!("* `whitelist`: {}", options.whitelist);
+    tracing::info!("* `changed_head_rev`: {}", common_options.head_rev);
+    tracing::info!("* `changed_base_rev`: {}", common_options.base_rev);
+    tracing::info!("* `whitelist`: {}", common_options.whitelist.join(","));
+    tracing::info!("* `blacklist`: {}", common_options.blacklist.join(","));
 
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_changed(!options.run_all)
-        .with_check_publish(false)
-        .with_cargo_main_registry(options.cargo_main_registry.clone())
-        .with_changed_head_ref(options.pull_pull_sha.clone())
-        .with_changed_base_ref(options.pull_base_sha.clone());
+        .with_check_publish(false);
 
-    let whitelisted_packages: Vec<String> = options
-        .whitelist
-        .split(",")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let whitelisted_packages = common_options.whitelist.clone();
 
-    let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
+    let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await
         .map_err(|e| {
             tracing::error!("Check directory for crates that need publishing: {}", e);
@@ -213,7 +198,7 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
         common_member_counter,
         changed_counter,
     };
-    let semaphore = Arc::new(Semaphore::new(options.job_limit));
+    let semaphore = Arc::new(Semaphore::new(common_options.job_limit));
     let mut handles = vec![];
 
     for (_, member) in results.members.into_iter().filter(|(_, member)| {
@@ -221,8 +206,9 @@ pub async fn tests(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<
             && (member.perform_test || options.run_all)
             && (whitelisted_packages.is_empty() || whitelisted_packages.contains(&member.package))
     }) {
+        let common_opts = Arc::new(common_options.clone());
         let task_handle = tokio::spawn(do_test_on_package(
-            options.clone(),
+            common_opts,
             repo_root.clone(),
             member,
             results.crate_graph.changed_lockfiles.clone(),
@@ -295,7 +281,7 @@ struct Metrics {
 }
 
 async fn do_test_on_package(
-    options: Box<Options>,
+    common_options: Arc<PackageRelatedOptions>,
     repo_root: PathBuf,
     member: super::check_workspace::Result,
     changed_lockfiles: HashSet<PathBuf>,
@@ -495,8 +481,8 @@ async fn do_test_on_package(
             id: "cargo_check".to_string(),
             command: format!(
                 "cargo check --all-targets {additional_args} {}",
-                if options.inner_job_limit != 0 {
-                    format!("--jobs {}", options.inner_job_limit)
+                if common_options.inner_job_limit != 0 {
+                    format!("--jobs {}", common_options.inner_job_limit)
                 } else {
                     "".to_string()
                 }
@@ -512,8 +498,8 @@ async fn do_test_on_package(
             id: "cargo_doc".to_string(),
             command: format!(
                 "cargo doc --no-deps {}",
-                if options.inner_job_limit != 0 {
-                    format!("--jobs {}", options.inner_job_limit)
+                if common_options.inner_job_limit != 0 {
+                    format!("--jobs {}", common_options.inner_job_limit)
                 } else {
                     "".to_string()
                 }
@@ -525,8 +511,8 @@ async fn do_test_on_package(
             id: "cargo_test".to_string(),
             command: format!(
                 "cargo test --all-targets {additional_args} {}",
-                if options.inner_job_limit != 0 {
-                    format!("--jobs {}", options.inner_job_limit)
+                if common_options.inner_job_limit != 0 {
+                    format!("--jobs {}", common_options.inner_job_limit)
                 } else {
                     "".to_string()
                 }
@@ -615,7 +601,7 @@ async fn do_test_on_package(
                 true => fix_workspace_lockfile(
                     &repo_root,
                     &package_path,
-                    options.pull_base_sha.clone(),
+                    common_options.base_rev.clone(),
                     None,
                     &changed_lockfiles,
                     true,

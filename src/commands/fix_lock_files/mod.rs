@@ -1,4 +1,4 @@
-use crate::{PrettyPrintable, crate_graph::CrateGraph};
+use crate::{PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph};
 use clap::Parser;
 use git2::{Repository, build::CheckoutBuilder};
 use std::{
@@ -10,14 +10,6 @@ use tracing::{debug, info};
 #[derive(Debug, Parser, Default)]
 #[command(about = "Fix inconsistencies in all Cargo.lock files.")]
 pub struct Options {
-    /// The branch's head revision string.
-    #[arg(long, default_value = "HEAD")]
-    head_rev: String,
-    /// The branch's base revision string.
-    #[arg(long)]
-    base_rev: Option<String>,
-    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
-    cargo_main_registry: String,
     /// Run the fix in check mode, if set, an updated lockfile would yield an error
     #[arg(long)]
     check: bool,
@@ -134,13 +126,18 @@ impl PrettyPrintable for LockResult {
 }
 
 /// Any workspaces containing a ".no_cargo_lock" sentinel file will be skipped.
-pub fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Result<LockResult> {
-    let Options {
+pub fn fix_lock_files(
+    common_options: &PackageRelatedOptions,
+    options: &Options,
+    repo_root: &Path,
+) -> anyhow::Result<LockResult> {
+    let PackageRelatedOptions {
+        cargo_main_registry,
         head_rev,
         base_rev,
-        cargo_main_registry,
-        check,
-    } = options;
+        ..
+    } = common_options;
+    let Options { check } = options;
 
     let graph = CrateGraph::new(repo_root, cargo_main_registry.clone(), None)?;
     let check_workspaces: Vec<_> = graph
@@ -155,7 +152,7 @@ pub fn fix_lock_files(options: &Options, repo_root: &Path) -> anyhow::Result<Loc
             repo_root,
             &workspace_path,
             head_rev.clone(),
-            base_rev.clone(),
+            Some(base_rev.clone()),
             &graph.changed_lockfiles,
             *check,
         )?;
@@ -212,9 +209,10 @@ mod tests {
     async fn test_fix_lockfile_no_change() {
         let repo = create_simple_rust_crate();
 
+        let common_options = PackageRelatedOptions::default();
         let options = Options::default();
         // Call the fix_lockfile function
-        let result = fix_lock_files(&options, &repo);
+        let result = fix_lock_files(&common_options, &options, &repo);
 
         assert!(result.is_ok());
         // Assert that lock file has been created.

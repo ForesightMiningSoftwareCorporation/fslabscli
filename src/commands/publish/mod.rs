@@ -21,6 +21,7 @@ use std::{
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
+use crate::PackageRelatedOptions;
 use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
@@ -40,8 +41,6 @@ pub struct Options {
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
     #[clap(long, env)]
-    pull_base_ref: String,
-    #[clap(long, env)]
     pull_base_ref_regex: Option<String>,
     #[arg(long, env)]
     repo_owner: String,
@@ -51,8 +50,6 @@ pub struct Options {
     github_app_id: Option<u64>,
     #[arg(long, env)]
     github_app_private_key: Option<PathBuf>,
-    #[arg(long, env, default_value = "1")]
-    job_limit: usize,
     #[arg(long, env)]
     ghcr_oci_url: Option<String>,
     #[arg(long, env)]
@@ -67,8 +64,6 @@ pub struct Options {
     npm_ghcr_scope: Option<String>,
     #[arg(long, env)]
     npm_ghcr_token: Option<String>,
-    #[arg(long, env, default_value = "foresight-mining-software-corporation")]
-    cargo_main_registry: String,
     #[arg(long, env, default_value = "false")]
     dry_run: bool,
     #[arg(long, env, default_value = "false")]
@@ -139,7 +134,7 @@ pub struct PublishResult {
 }
 
 impl PublishResult {
-    pub fn new(package: &Package, registries: HashSet<String>, options: Box<Options>) -> Self {
+    pub fn new(package: &Package, registries: HashSet<String>, options: &Options) -> Self {
         let mut s = Self {
             should_publish: package.publish,
             docker: PublishDetailResult {
@@ -397,12 +392,13 @@ async fn publish_package(
     statuses: Arc<RwLock<HashMap<PackageId, Option<PublishResult>>>>,
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
-    options: Box<Options>,
+    common_options: Arc<PackageRelatedOptions>,
+    options: Arc<Options>,
     registries: HashSet<String>,
 ) {
     if let Some(ref package_id) = package.package_id {
         loop {
-            // println!("Looping on package: {}", package.package);
+            println!("Looping on package: {}", package.package);
             let mut mark_failed = false;
             let mut process = true;
             {
@@ -430,7 +426,7 @@ async fn publish_package(
             if mark_failed {
                 let mut map = statuses.write().expect("RwLock posoned");
                 let failed_result =
-                    PublishResult::new(&package, registries, options).with_failed(true);
+                    PublishResult::new(&package, registries, &options).with_failed(true);
                 *map.entry(package_id.clone()).or_insert(None) = Some(failed_result);
                 drop(map);
                 return;
@@ -450,7 +446,8 @@ async fn publish_package(
             package.clone(),
             output_dir,
             cargo,
-            options,
+            &common_options,
+            &options,
             registries,
         )
         .await;
@@ -467,10 +464,11 @@ async fn do_publish_package(
     package: Package,
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
-    options: Box<Options>,
+    common_options: &PackageRelatedOptions,
+    options: &Options,
     registries: HashSet<String>,
 ) -> PublishResult {
-    let mut result = PublishResult::new(&package, registries, options.clone());
+    let mut result = PublishResult::new(&package, registries, options);
     result.start_time = Some(SystemTime::now());
     if !package.publish {
         result.end_time = Some(SystemTime::now());
@@ -642,14 +640,14 @@ async fn do_publish_package(
                     if patch_crate_for_registry(
                         &repo_root,
                         &package_path,
-                        options.cargo_main_registry.clone(),
+                        common_options.cargo_main_registry.clone(),
                     )
                     .is_err()
                     {
                         r.success = false;
                         r.stderr = format!(
                             "registry {} not setup correctly, missing index, private_key, and token",
-                            options.cargo_main_registry.clone()
+                            common_options.cargo_main_registry.clone()
                         );
                     }
                 }
@@ -713,14 +711,14 @@ async fn do_publish_package(
             }
             let main_registry_prefix = format!(
                 "CARGO_REGISTRIES_{}",
-                options.cargo_main_registry.replace("-", "_")
+                common_options.cargo_main_registry.replace("-", "_")
             )
             .to_uppercase();
             if let Ok(ssh_key) = env::var(format!("{main_registry_prefix}_PRIVATE_KEY")) {
                 args.push("--ssh".to_string());
                 args.push(format!(
                     "{}={}",
-                    options.cargo_main_registry.clone(),
+                    common_options.cargo_main_registry.clone(),
                     ssh_key
                 ));
             }
@@ -734,7 +732,7 @@ async fn do_publish_package(
                 let name_env = format!("{main_registry_prefix}_NAME");
                 envs.insert(user_agent_env.clone(), user_agent);
                 envs.insert(token_env.clone(), token);
-                envs.insert(name_env.clone(), options.cargo_main_registry.clone());
+                envs.insert(name_env.clone(), common_options.cargo_main_registry.clone());
                 args.push(format!(
                     "--secret id=cargo_private_registry_user_agent,env={user_agent_env}"
                 ));
@@ -815,9 +813,10 @@ async fn do_publish_package(
         result.git_tag.start_time = Some(SystemTime::now());
         let tagged: anyhow::Result<()> = async {
             let tag = format!("{}-{}", package.package, package.version);
-            if let (Some(github_app_id), Some(github_app_private_key)) =
-                (options.github_app_id, options.github_app_private_key)
-            {
+            if let (Some(github_app_id), Some(github_app_private_key)) = (
+                options.github_app_id,
+                options.github_app_private_key.clone(),
+            ) {
                 result.git_tag.stdout = format!("{}\nRetrieving git HEAD", result.git_tag.stdout);
                 let Some(head) = Repository::open(&repo_root)
                     .ok()
@@ -870,7 +869,7 @@ async fn do_publish_package(
 /// login handles the custom logic of login to the 3rd party provider
 /// - Docker, we may need to login to multiple docker registries
 /// - Cargo, we may need to login to multiple registries
-pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result<()> {
+pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()> {
     // We might need to log to some docker registries
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
         let (_stdout, stderr, success) = execute_command(
@@ -907,12 +906,14 @@ pub async fn login(options: Box<Options>, repo_root: &PathBuf) -> anyhow::Result
 }
 
 pub async fn report_publish_to_github(
-    options: Box<Options>,
+    common_options: &PackageRelatedOptions,
+    options: &Options,
     artifact_dir: &PathBuf,
 ) -> anyhow::Result<()> {
-    if let (Some(github_app_id), Some(github_app_private_key)) =
-        (options.github_app_id, options.github_app_private_key)
-    {
+    if let (Some(github_app_id), Some(github_app_private_key)) = (
+        options.github_app_id,
+        options.github_app_private_key.clone(),
+    ) {
         let github_token = generate_github_app_token(
             github_app_id,
             github_app_private_key.clone(),
@@ -924,7 +925,7 @@ pub async fn report_publish_to_github(
 
         let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
         let repo_releases = repo.releases();
-        if let Ok(release) = repo_releases.get_by_tag(&options.pull_base_ref).await {
+        if let Ok(release) = repo_releases.get_by_tag(&common_options.base_rev).await {
             let paths = fs::read_dir(artifact_dir)?;
             for artifact in paths.flatten() {
                 let artifact_path = artifact.path();
@@ -958,21 +959,23 @@ pub async fn report_publish_to_github(
     Ok(())
 }
 
-pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<PublishResults> {
+pub async fn publish(
+    common_options: &PackageRelatedOptions,
+    options: &Options,
+    repo_root: PathBuf,
+) -> anyhow::Result<PublishResults> {
     // Login to whatever need login to
-    login(options.clone(), &repo_root)
+    login(options, &repo_root)
         .await
         .with_context(|| "Could not login")?;
 
     // Check workspace information
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
-        .with_progress(true)
-        .with_cargo_main_registry(options.cargo_main_registry.clone())
         .with_ignore_dev_dependencies(true);
     // .with_ignore_dev_dependencies(false);
 
-    let results = check_workspace(Box::new(check_workspace_options), repo_root.clone())
+    let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await
         .map_err(|e| {
             tracing::error!("Check directory for crates that need publishing: {}", e);
@@ -987,7 +990,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
         }
     }
     let cargo = Arc::new(Cargo::new(&registries)?);
-    let semaphore = Arc::new(Semaphore::new(options.job_limit));
+    let semaphore = Arc::new(Semaphore::new(common_options.job_limit));
 
     let mut handles = vec![];
     let mut status: HashMap<PackageId, Option<PublishResult>> = HashMap::new();
@@ -1010,7 +1013,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     let selected_members: Vec<Package> = match options.pull_base_ref_regex.clone() {
         Some(regex_str) => {
             let re = Regex::new(&regex_str)?;
-            if let Some(captures) = re.captures(&options.pull_base_ref) {
+            if let Some(captures) = re.captures(&common_options.base_rev) {
                 if let Some(package_name_match) = captures.get(1) {
                     let package_name = package_name_match.as_str();
                     let all_members: Vec<Package> = results.members.values().cloned().collect();
@@ -1048,7 +1051,10 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
                 vec![]
             }
         }
-        None => results.members.values().cloned().collect(),
+        None => {
+            println!("No regex mate!");
+            results.members.values().cloned().collect()
+        }
     };
     // Spawn a task for each object
     for member in selected_members {
@@ -1059,6 +1065,8 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
             let s = Arc::clone(&semaphore);
             let c = Arc::clone(&cargo);
             let status = Arc::clone(&publish_status);
+            let cmn_opt = Arc::new(common_options.clone());
+            let opt = Arc::new(options.clone());
             let task_handle = tokio::spawn(publish_package(
                 r,
                 m,
@@ -1072,7 +1080,8 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
                 status,
                 o,
                 c,
-                options.clone(),
+                cmn_opt,
+                opt,
                 registries.clone(),
             ));
             handles.push(task_handle);
@@ -1081,7 +1090,7 @@ pub async fn publish(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resul
     futures::future::join_all(handles).await;
 
     // Report publish result to github
-    report_publish_to_github(options.clone(), &artifact_dir)
+    report_publish_to_github(common_options, options, &artifact_dir)
         .await
         .with_context(|| "Issue reporting to GitHub")?;
 
