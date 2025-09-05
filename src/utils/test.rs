@@ -139,3 +139,79 @@ publish = true
         }
     }
 }
+
+pub fn create_complex_workspace() -> PathBuf {
+    let tmp = assert_fs::TempDir::new()
+        .unwrap()
+        .into_persistent()
+        .to_path_buf();
+
+    let repo = Repository::init(&tmp).expect("Failed to init repo");
+
+    // Configure Git user info (required for commits)
+    repo.config()
+        .unwrap()
+        .set_str("user.name", "Test User")
+        .unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("user.email", "test@example.com")
+        .unwrap();
+    repo.config().unwrap().set_str("gpg.sign", "false").unwrap();
+
+    initialize_workspace(
+        &tmp,
+        "workspace_a",
+        vec!["crates_a", "crates_b", "crates_c"],
+        vec![],
+    );
+    initialize_workspace(&tmp, "workspace_d", vec!["crates_e", "crates_f"], vec![]);
+    initialize_workspace(&tmp, "crates_g", vec![], vec!["some_other_registries"]);
+
+    // Setup Deps
+    // workspace_d/crates_e -> workspace_a/crates_a
+    Command::new("cargo")
+        .arg("add")
+        .arg("--offline")
+        .arg("--registry")
+        .arg(FAKE_REGISTRY)
+        .arg("--path")
+        .arg("../../../workspace_a/crates/crates_a")
+        .arg("workspace_a__crates_a")
+        .current_dir(tmp.join("workspace_d").join("crates").join("crates_e"))
+        .output()
+        .expect("Failed to add workspace_a__crates_a to workspace_d__crates_e");
+    // crates_g ->  workspace_d/crates_e
+    Command::new("cargo")
+        .arg("add")
+        .arg("--offline")
+        .arg("--registry")
+        .arg(FAKE_REGISTRY)
+        .arg("--path")
+        .arg("../workspace_d/crates/crates_e")
+        .arg("workspace_d__crates_e")
+        .current_dir(tmp.join("crates_g"))
+        .output()
+        .expect("Failed to add workspace_d__crates_e");
+    // crates_g ->  workspace_a/crates_b
+    Command::new("cargo")
+        .arg("add")
+        .arg("--offline")
+        .arg("--registry")
+        .arg(FAKE_REGISTRY)
+        .arg("--path")
+        .arg("../workspace_a/crates/crates_b")
+        .arg("workspace_a__crates_b")
+        .current_dir(tmp.join("crates_g"))
+        .output()
+        .expect("Failed to add workspace_a__crates_b");
+    // Create a rust-toolchain file
+    modify_file(
+        &tmp,
+        "rust-toolchain.toml",
+        "[toolchain]\nprofile = \"default\"\n channel = \"1.88\"",
+    );
+    // Stage and commit initial crate
+    commit_all_changes(&tmp, "Initial commit");
+    dunce::canonicalize(tmp).unwrap()
+}

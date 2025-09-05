@@ -161,12 +161,13 @@ pub async fn tests(
         .build();
     let common_member_counter = common_meter.u64_counter("rust_tests_common_member").build();
     let overall_start_time = OffsetDateTime::now_utc();
+    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     // Get Directory information
     tracing::info!("Running the tests with the following arguments:");
     tracing::info!("* `check_changed`: true");
     tracing::info!("* `check_publish`: false");
     tracing::info!("* `changed_head_rev`: {}", common_options.head_rev);
-    tracing::info!("* `changed_base_rev`: {}", common_options.base_rev);
+    tracing::info!("* `changed_base_rev`: {:?}", base_rev);
     tracing::info!("* `whitelist`: {}", common_options.whitelist.join(","));
     tracing::info!("* `blacklist`: {}", common_options.blacklist.join(","));
 
@@ -294,6 +295,7 @@ async fn do_test_on_package(
     let package_path = repo_root.join(member.path);
     let test_args = member.test_detail.args.unwrap_or_default();
     let additional_args = get_test_arg(&test_args, "additional_args").unwrap_or_default();
+    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     let mut service_database_container_id: Option<String> = None;
     let mut database_url: Option<String> = None;
     let mut service_azurite_container_id: Option<String> = None;
@@ -586,7 +588,7 @@ async fn do_test_on_package(
                 true => fix_workspace_lockfile(
                     &repo_root,
                     &package_path,
-                    common_options.base_rev.clone(),
+                    base_rev.to_string(),
                     None,
                     true,
                 )
