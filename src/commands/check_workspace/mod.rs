@@ -1244,7 +1244,10 @@ mod tests {
     use crate::{
         PackageRelatedOptions,
         commands::check_workspace::{Options, Result as Package, check_workspace},
-        utils::test::{FAKE_REGISTRY, commit_all_changes, initialize_workspace},
+        utils::test::{
+            FAKE_REGISTRY, commit_all_changes, commit_repo, initialize_workspace, modify_file,
+            stage_file,
+        },
     };
 
     fn create_complex_workspace() -> PathBuf {
@@ -1312,6 +1315,12 @@ mod tests {
             .current_dir(tmp.join("crates_g"))
             .output()
             .expect("Failed to add workspace_a__crates_b");
+        // Create a rust-toolchain file
+        modify_file(
+            &tmp,
+            "rust-toolchain.toml",
+            "[toolchain]\nprofile = \"default\"\n channel = \"1.88\"",
+        );
         // Stage and commit initial crate
         commit_all_changes(&tmp, "Initial commit");
         dunce::canonicalize(tmp).unwrap()
@@ -1361,6 +1370,30 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rust_toolchain_trigger_full_test() {
+        let ws = create_complex_workspace();
+        modify_file(
+            &ws,
+            "rust-toolchain.toml",
+            "[toolchain]\nprofile = \"default\"\n channel = \"1.89\"",
+        );
+        stage_file(&ws, "rust-toolchain.toml");
+        commit_repo(&ws, "updated toolchain");
+        let common_options = PackageRelatedOptions {
+            base_rev: "HEAD~".to_string(),
+            head_rev: "HEAD".to_string(),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new().with_check_changed(true);
+        let results = check_workspace(&common_options, &check_workspace_options, ws.clone())
+            .await
+            .unwrap();
+        for (_, member) in results.members {
+            assert!(member.changed);
         }
     }
 }
