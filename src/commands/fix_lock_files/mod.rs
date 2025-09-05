@@ -1,10 +1,8 @@
 use crate::{PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph};
 use clap::Parser;
 use git2::{Repository, build::CheckoutBuilder};
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use prettydiff::diff_lines;
+use std::path::Path;
 use tracing::{debug, info};
 
 #[derive(Debug, Parser, Default)]
@@ -35,14 +33,8 @@ pub fn fix_workspace_lockfile(
     workspace_path: &Path,
     head_rev: String,
     base_rev: Option<String>,
-    changed_lockfiles: &HashSet<PathBuf>,
     check: bool,
 ) -> anyhow::Result<(String, String, bool)> {
-    if check && changed_lockfiles.contains(workspace_path) {
-        return Err(anyhow::anyhow!(
-            "cargo metadata modified Cargo.lock in check mode.",
-        ));
-    }
     let lock_path = workspace_path.join("Cargo.lock");
     let orig_lockfile = match std::fs::read_to_string(&lock_path) {
         Ok(contents) => Some(contents),
@@ -95,7 +87,7 @@ pub fn fix_workspace_lockfile(
                 return Err(e.into());
             }
         };
-        let correct = match (orig_lockfile, updated_lockfile) {
+        let correct = match (&orig_lockfile, &updated_lockfile) {
             (Some(orig), Some(updated)) => {
                 debug!(
                     "Checking for changes in {:?}: {:?}",
@@ -109,8 +101,12 @@ pub fn fix_workspace_lockfile(
             (None, None) => true,
         };
         if !correct {
+            let orig = orig_lockfile.unwrap_or_default();
+            let updated = updated_lockfile.unwrap_or_default();
+            let diff = diff_lines(&orig, &updated);
             return Err(anyhow::anyhow!(
-                "cargo update modified Cargo.lock in check mode.",
+                "cargo update modified Cargo.lock in check mode.\n{}",
+                diff
             ));
         }
     }
@@ -153,7 +149,6 @@ pub fn fix_lock_files(
             &workspace_path,
             head_rev.clone(),
             Some(base_rev.clone()),
-            &graph.changed_lockfiles,
             *check,
         )?;
     }

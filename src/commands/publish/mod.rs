@@ -538,11 +538,10 @@ async fn do_publish_package(
                 result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
                 is_failed = !success;
             }
-            if !is_failed {
-                if let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
-                    // Let's push the store to cachix by rebuilding and pushing
-                    info!("Pushing to atticd");
-                    let (stdout, stderr, success) = execute_command(
+            if !is_failed && let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
+                // Let's push the store to cachix by rebuilding and pushing
+                info!("Pushing to atticd");
+                let (stdout, stderr, success) = execute_command(
                     &format!(
                         "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
                     ),
@@ -553,11 +552,10 @@ async fn do_publish_package(
                     Some(tracing::Level::INFO),
                 )
                 .await;
-                    result.nix_binary.success = success;
-                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
-                    is_failed = !success;
-                }
+                result.nix_binary.success = success;
+                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
+                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
+                is_failed = !success;
             }
         }
         result.nix_binary.end_time = Some(SystemTime::now());
@@ -929,23 +927,19 @@ pub async fn report_publish_to_github(
             let paths = fs::read_dir(artifact_dir)?;
             for artifact in paths.flatten() {
                 let artifact_path = artifact.path();
-                if let Some(artifact_name) = artifact_path.file_name() {
-                    if let Some(artifact_name) = artifact_name.to_str() {
-                        tracing::debug!("Uploading github artifact {:?}", artifact_name);
-                        if let Ok(mut file) = File::open(&artifact_path) {
-                            if let Ok(metadata) = fs::metadata(&artifact_path) {
-                                let mut data: Vec<u8> = vec![0; metadata.len() as usize];
-                                if file.read(&mut data).is_ok() {
-                                    let _ = repo_releases
-                                        .upload_asset(
-                                            release.id.into_inner(),
-                                            artifact_name,
-                                            data.into(),
-                                        )
-                                        .send()
-                                        .await;
-                                }
-                            }
+                if let Some(artifact_name) = artifact_path.file_name()
+                    && let Some(artifact_name) = artifact_name.to_str()
+                {
+                    tracing::debug!("Uploading github artifact {:?}", artifact_name);
+                    if let Ok(mut file) = File::open(&artifact_path)
+                        && let Ok(metadata) = fs::metadata(&artifact_path)
+                    {
+                        let mut data: Vec<u8> = vec![0; metadata.len() as usize];
+                        if file.read(&mut data).is_ok() {
+                            let _ = repo_releases
+                                .upload_asset(release.id.into_inner(), artifact_name, data.into())
+                                .send()
+                                .await;
                         }
                     }
                 }
@@ -979,10 +973,10 @@ pub async fn publish(
     let mut whitelist = common_options.whitelist.clone();
     if let Some(regex) = &options.base_rev_regex {
         let re = Regex::new(regex)?;
-        if let Some(captures) = re.captures(&common_options.base_rev) {
-            if let Some(package_name_match) = captures.get(1) {
-                whitelist.push(package_name_match.as_str().to_string());
-            }
+        if let Some(captures) = re.captures(&common_options.base_rev)
+            && let Some(package_name_match) = captures.get(1)
+        {
+            whitelist.push(package_name_match.as_str().to_string());
         }
     }
     common_options.whitelist = whitelist;
@@ -1065,10 +1059,10 @@ pub async fn publish(
     let mut published_members = HashMap::new();
     let lock = publish_status.read().expect("RwLock Poisoned");
     for (k, v) in lock.iter() {
-        if let Some(v) = v {
-            if v.should_publish {
-                published_members.insert(k.clone(), v.clone());
-            }
+        if let Some(v) = v
+            && v.should_publish
+        {
+            published_members.insert(k.clone(), v.clone());
         }
     }
     let r = PublishResults {

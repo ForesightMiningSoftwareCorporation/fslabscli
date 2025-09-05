@@ -17,7 +17,6 @@ pub struct CrateGraph {
     repo_root: PathBuf,
     workspaces: Vec<Workspace>,
     pub dependencies: DependencyGraph,
-    pub changed_lockfiles: HashSet<PathBuf>,
 }
 
 impl CrateGraph {
@@ -37,20 +36,12 @@ impl CrateGraph {
     ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
-        let mut changed_lockfiles = HashSet::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
         if let Some(err) = err {
             eprintln!("Failed to find .gitignore: {err}");
         }
         let envs = get_registry_env(main_registry.clone().into());
-        Self::new_recursive(
-            &repo_root,
-            &ignore,
-            &repo_root,
-            &mut workspaces,
-            &envs,
-            &mut changed_lockfiles,
-        )?;
+        Self::new_recursive(&repo_root, &ignore, &repo_root, &mut workspaces, &envs)?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind);
         if let Some(cycles) = dependencies.detect_cycles() {
@@ -60,7 +51,6 @@ impl CrateGraph {
             repo_root,
             workspaces,
             dependencies,
-            changed_lockfiles,
         })
     }
 
@@ -70,12 +60,11 @@ impl CrateGraph {
         dir: &Path,
         workspaces: &mut Vec<Workspace>,
         envs: &HashMap<String, String>,
-        changed_lockfiles: &mut HashSet<PathBuf>,
     ) -> anyhow::Result<()> {
-        if let Some(name) = dir.file_name() {
-            if name == ".git" {
-                return Ok(());
-            }
+        if let Some(name) = dir.file_name()
+            && name == ".git"
+        {
+            return Ok(());
         }
         if ignore.matched(dir, true).is_ignore() {
             return Ok(());
@@ -124,7 +113,7 @@ impl CrateGraph {
                 (None, None) => false,
             };
             if lock_changed {
-                changed_lockfiles.insert(dir.to_path_buf());
+                // Should we revert it?
             }
 
             // Assume that the workspace members are all we needed to find.
@@ -138,14 +127,7 @@ impl CrateGraph {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                Self::new_recursive(
-                    repo_root,
-                    ignore,
-                    &entry.path(),
-                    workspaces,
-                    envs,
-                    changed_lockfiles,
-                )?;
+                Self::new_recursive(repo_root, ignore, &entry.path(), workspaces, envs)?;
             }
         }
 

@@ -30,25 +30,25 @@ pub struct CargoRegistry {
 impl CargoRegistry {
     /// Merge another CargoRegistry into this one.
     fn merge(&mut self, other: &CargoRegistry) {
-        if self.index.is_none() {
-            if let Some(index) = &other.index {
-                self.index = Some(index.clone());
-            }
+        if self.index.is_none()
+            && let Some(index) = &other.index
+        {
+            self.index = Some(index.clone());
         }
-        if self.crate_url.is_none() {
-            if let Some(crate_url) = &other.crate_url {
-                self.crate_url = Some(crate_url.clone());
-            }
+        if self.crate_url.is_none()
+            && let Some(crate_url) = &other.crate_url
+        {
+            self.crate_url = Some(crate_url.clone());
         }
-        if self.token.is_none() {
-            if let Some(token) = &other.token {
-                self.token = Some(token.clone());
-            }
+        if self.token.is_none()
+            && let Some(token) = &other.token
+        {
+            self.token = Some(token.clone());
         }
-        if self.user_agent.is_none() {
-            if let Some(user_agent) = &other.user_agent {
-                self.user_agent = Some(user_agent.clone());
-            }
+        if self.user_agent.is_none()
+            && let Some(user_agent) = &other.user_agent
+        {
+            self.user_agent = Some(user_agent.clone());
         }
     }
     pub fn new(
@@ -116,12 +116,11 @@ impl CargoRegistry {
             }
             config_files.reverse();
             for config_file in config_files {
-                if let Ok(config_str) = fs::read_to_string(config_file) {
-                    if let Ok(cargo_config) = toml::de::from_str::<Cargo>(&config_str) {
-                        if let Some(registry_config) = cargo_config.registries.get(&name) {
-                            config.merge(registry_config);
-                        }
-                    }
+                if let Ok(config_str) = fs::read_to_string(config_file)
+                    && let Ok(cargo_config) = toml::de::from_str::<Cargo>(&config_str)
+                    && let Some(registry_config) = cargo_config.registries.get(&name)
+                {
+                    config.merge(registry_config);
                 }
             }
         }

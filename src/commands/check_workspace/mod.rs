@@ -562,33 +562,30 @@ impl Result {
                     self.package,
                     self.publish_detail.binary.launcher.suffix
                 );
-                if let Some(launcher_package_id) = dep_to_id.get(&launcher_name) {
-                    if let Some(launcher_version) = package_versions.get(launcher_package_id) {
-                        let (launcher_blob_dir, launcher_name) = get_blob_name(
-                            &launcher_name,
-                            launcher_version,
-                            toolchain,
-                            &self.publish_detail.release_channel,
-                        );
-                        self.publish_detail.binary.installer.launcher_blob_dir =
-                            Some(launcher_blob_dir);
-                        self.publish_detail.binary.installer.launcher_blob_name =
-                            Some(launcher_name);
-                        if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
-                            self.publish_detail.binary.installer.installer_blob_name = Some(
-                                format!("{fallback_name}.{launcher_version}.{rc_version}.msi")
-                                    .to_lowercase(),
-                            );
-                            self.publish_detail
-                                .binary
-                                .installer
-                                .installer_blob_signed_name = Some(
-                                format!(
-                                    "{fallback_name}.{launcher_version}.{rc_version}-signed.msi"
-                                )
+                if let Some(launcher_package_id) = dep_to_id.get(&launcher_name)
+                    && let Some(launcher_version) = package_versions.get(launcher_package_id)
+                {
+                    let (launcher_blob_dir, launcher_name) = get_blob_name(
+                        &launcher_name,
+                        launcher_version,
+                        toolchain,
+                        &self.publish_detail.release_channel,
+                    );
+                    self.publish_detail.binary.installer.launcher_blob_dir =
+                        Some(launcher_blob_dir);
+                    self.publish_detail.binary.installer.launcher_blob_name = Some(launcher_name);
+                    if let Some(ref fallback_name) = self.publish_detail.binary.fallback_name {
+                        self.publish_detail.binary.installer.installer_blob_name = Some(
+                            format!("{fallback_name}.{launcher_version}.{rc_version}.msi")
                                 .to_lowercase(),
-                            );
-                        }
+                        );
+                        self.publish_detail
+                            .binary
+                            .installer
+                            .installer_blob_signed_name = Some(
+                            format!("{fallback_name}.{launcher_version}.{rc_version}-signed.msi")
+                                .to_lowercase(),
+                        );
                     }
                 }
                 // subapps
@@ -902,7 +899,6 @@ pub async fn check_workspace(
             dep_to_id.insert(package.name.to_string(), package.id.clone());
         }
 
-        println!("Got whitelist: {:?}, {}", whitelist, whitelist.len());
         for package in workspace.metadata.workspace_packages() {
             match Result::new(
                 workspace.path.to_string_lossy().into(),
@@ -991,11 +987,11 @@ pub async fn check_workspace(
     let mut packages_registries: HashMap<PackageId, HashSet<String>> = HashMap::new();
     let mut all_packages_registries: HashSet<String> = HashSet::new();
     for package_key in package_keys.clone() {
-        if let Some(package) = packages.get(&package_key) {
-            if let Some(registries) = &package.publish_detail.cargo.registries {
-                packages_registries.insert(package_key.clone(), registries.clone());
-                all_packages_registries.extend(registries.clone());
-            }
+        if let Some(package) = packages.get(&package_key)
+            && let Some(registries) = &package.publish_detail.cargo.registries
+        {
+            packages_registries.insert(package_key.clone(), registries.clone());
+            all_packages_registries.extend(registries.clone());
         }
     }
     for (package_key, registries) in packages_registries {
@@ -1107,20 +1103,20 @@ pub async fn check_workspace(
 
             // If we are in a tag, we are only looking for the packages that build a launcher or installer. Otherwise, we are looking at all the packages
             let package_key = package.package.clone();
-            if package.publish {
-                if let Ok(env_string) = std::env::var("GITHUB_REF") {
-                    // Regarding installer and launcher, we need to check the tag of their counterpart
-                    if env_string.starts_with("refs/tags") {
-                        let mut check_key = package_key.clone();
-                        if package_key.ends_with("_launcher") {
-                            check_key = check_key.replace("_launcher", "");
-                        }
-                        if package_key.ends_with("_installer") {
-                            check_key = check_key.replace("_installer", "");
-                        }
-                        if !env_string.starts_with(&format!("refs/tags/{check_key}")) {
-                            package.publish = false;
-                        }
+            if package.publish
+                && let Ok(env_string) = std::env::var("GITHUB_REF")
+            {
+                // Regarding installer and launcher, we need to check the tag of their counterpart
+                if env_string.starts_with("refs/tags") {
+                    let mut check_key = package_key.clone();
+                    if package_key.ends_with("_launcher") {
+                        check_key = check_key.replace("_launcher", "");
+                    }
+                    if package_key.ends_with("_installer") {
+                        check_key = check_key.replace("_installer", "");
+                    }
+                    if !env_string.starts_with(&format!("refs/tags/{check_key}")) {
+                        package.publish = false;
                     }
                 }
             }
@@ -1160,10 +1156,10 @@ pub async fn check_workspace(
                     .is_some_and(|p| package_keys.contains(p))
             });
             for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package_id {
-                    if let Some(dep_p) = publish_status.get(package_name) {
-                        dep.publishable = *dep_p;
-                    }
+                if let Some(package_name) = &dep.package_id
+                    && let Some(dep_p) = publish_status.get(package_name)
+                {
+                    dep.publishable = *dep_p;
                 }
             }
         }

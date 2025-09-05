@@ -72,48 +72,40 @@ impl Docker {
             }
         };
 
-        if let Some(p) = config_path {
-            if let Ok(file) = File::open(p) {
-                let reader = BufReader::new(file);
-                if let Ok(config) = serde_json::from_reader::<BufReader<File>, DockerConfig>(reader)
-                {
-                    if let Some(registries_auth) = config.auths {
-                        for (k, v) in registries_auth {
-                            let mut username: Option<String> = None;
-                            let mut password: Option<String> = None;
-                            if let Some(encoded_auth) = v.auth {
-                                if let Ok(decoded) = BASE64_STANDARD.decode(encoded_auth) {
-                                    if let Ok(auth) = std::str::from_utf8(&decoded) {
-                                        let parts: Vec<&str> = auth.splitn(2, ':').collect();
-                                        if let Some(u) = parts.first() {
-                                            username = Some(String::from(*u));
-                                        }
-                                        if let Some(p) = parts.get(1) {
-                                            password = Some(String::from(*p));
-                                        }
-                                    }
-                                }
-                            }
-                            if let (Some(username), Some(identity_token)) =
-                                (username.clone(), v.identitytoken)
-                            {
-                                registries_auths.insert(
-                                    k.to_string(),
-                                    DockerCredential::IdentityToken(
-                                        username,
-                                        identity_token.clone(),
-                                    ),
-                                );
-                            } else if let (Some(username), Some(password)) = (username, password) {
-                                registries_auths.insert(
-                                    k.to_string(),
-                                    DockerCredential::UsernamePassword(
-                                        username.clone(),
-                                        password.clone(),
-                                    ),
-                                );
-                            }
+        if let Some(p) = config_path
+            && let Ok(file) = File::open(p)
+        {
+            let reader = BufReader::new(file);
+            if let Ok(config) = serde_json::from_reader::<BufReader<File>, DockerConfig>(reader)
+                && let Some(registries_auth) = config.auths
+            {
+                for (k, v) in registries_auth {
+                    let mut username: Option<String> = None;
+                    let mut password: Option<String> = None;
+                    if let Some(encoded_auth) = v.auth
+                        && let Ok(decoded) = BASE64_STANDARD.decode(encoded_auth)
+                        && let Ok(auth) = std::str::from_utf8(&decoded)
+                    {
+                        let parts: Vec<&str> = auth.splitn(2, ':').collect();
+                        if let Some(u) = parts.first() {
+                            username = Some(String::from(*u));
                         }
+                        if let Some(p) = parts.get(1) {
+                            password = Some(String::from(*p));
+                        }
+                    }
+                    if let (Some(username), Some(identity_token)) =
+                        (username.clone(), v.identitytoken)
+                    {
+                        registries_auths.insert(
+                            k.to_string(),
+                            DockerCredential::IdentityToken(username, identity_token.clone()),
+                        );
+                    } else if let (Some(username), Some(password)) = (username, password) {
+                        registries_auths.insert(
+                            k.to_string(),
+                            DockerCredential::UsernamePassword(username.clone(), password.clone()),
+                        );
                     }
                 }
             }

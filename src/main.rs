@@ -324,10 +324,8 @@ async fn main() {
         .and_then(|matches| matches.get_one::<bool>("fslabscli_auto_update").cloned())
         .unwrap_or_default();
 
-    if fslabscli_auto_update {
-        if let Err(err) = utils::auto_update::auto_update() {
-            println!("Error trying to update:{err:?}");
-        }
+    if fslabscli_auto_update && let Err(err) = utils::auto_update::auto_update() {
+        println!("Error trying to update:{err:?}");
     }
 
     run().await;

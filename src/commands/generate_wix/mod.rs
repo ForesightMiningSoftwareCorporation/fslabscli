@@ -940,10 +940,10 @@ pub async fn generate_wix(
         let wix_path = working_directory
             .join(m.path)
             .join("installer/installer.wxs");
-        if let Some(wix_file) = wix_files.get(&m.package.clone()) {
-            if let Ok(wix_xml) = wix_file.to_xml() {
-                let _ = fs::write(wix_path, wix_xml);
-            }
+        if let Some(wix_file) = wix_files.get(&m.package.clone())
+            && let Ok(wix_xml) = wix_file.to_xml()
+        {
+            let _ = fs::write(wix_path, wix_xml);
         }
     });
     Ok(GenerateResult { wix_files })
