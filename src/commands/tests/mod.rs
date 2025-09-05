@@ -207,7 +207,6 @@ pub async fn tests(
             common_opts,
             repo_root.clone(),
             member,
-            results.crate_graph.changed_lockfiles.clone(),
             metrics.clone(),
             semaphore.clone(),
         ));
@@ -280,7 +279,6 @@ async fn do_test_on_package(
     common_options: Arc<PackageRelatedOptions>,
     repo_root: PathBuf,
     member: super::check_workspace::Result,
-    changed_lockfiles: HashSet<PathBuf>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 ) -> (bool, Report) {
@@ -388,83 +386,78 @@ async fn do_test_on_package(
     }
 
     // Handle cache miss (this should be dropped and only additional script)
-    if !failed {
-        if let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
-            tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
-            let start_time = OffsetDateTime::now_utc();
-            let mut envs: HashMap<String, String> = HashMap::new();
-            if let Some(db_url) = database_url.clone() {
-                envs.insert("DATABASE_URL".to_string(), db_url.clone());
-            }
-            let (stdout, stderr, success) = execute_command_without_logging(
-                &cache_miss_command,
-                &repo_root,
-                &envs,
-                &HashSet::new(),
-            )
-            .await;
-            let end_time = OffsetDateTime::now_utc();
-            let duration = end_time - start_time;
-            tracing::debug!("cache_miss: {stdout}");
-            let mut cache_miss_tc = match success {
-                true => TestCase::success(&cache_miss_command, duration),
-                false => {
-                    failed = true;
-                    TestCase::failure(&cache_miss_command, duration, "", "required")
-                }
-            };
-            cache_miss_tc.set_system_out(&stderr);
-            cache_miss_tc.set_system_err(&stdout);
-            ts_mandatory.add_testcase(cache_miss_tc);
+    if !failed && let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
+        tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
+        let start_time = OffsetDateTime::now_utc();
+        let mut envs: HashMap<String, String> = HashMap::new();
+        if let Some(db_url) = database_url.clone() {
+            envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
+        let (stdout, stderr, success) = execute_command_without_logging(
+            &cache_miss_command,
+            &repo_root,
+            &envs,
+            &HashSet::new(),
+        )
+        .await;
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        tracing::debug!("cache_miss: {stdout}");
+        let mut cache_miss_tc = match success {
+            true => TestCase::success(&cache_miss_command, duration),
+            false => {
+                failed = true;
+                TestCase::failure(&cache_miss_command, duration, "", "required")
+            }
+        };
+        cache_miss_tc.set_system_out(&stderr);
+        cache_miss_tc.set_system_err(&stdout);
+        ts_mandatory.add_testcase(cache_miss_tc);
     }
 
     // Handle Additional Script
-    if !failed {
-        if let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
-            tracing::info!(
-                "│ {:30.30}     │ Running additional script command",
-                package_name
-            );
-            let start_time = OffsetDateTime::now_utc();
-            let mut envs: HashMap<String, String> = HashMap::new();
-            if let Some(db_url) = database_url.clone() {
-                envs.insert("DATABASE_URL".to_string(), db_url.clone());
-            }
-            let mut a_stdout: String = "".to_string();
-            let mut a_stderr: String = "".to_string();
-            let mut sub_failed = false;
-
-            for line in additional_scripts.split("\n") {
-                if line.is_empty() {
-                    continue;
-                }
-                if sub_failed {
-                    continue;
-                }
-                let (stdout, stderr, success) =
-                    execute_command_without_logging(line, &package_path, &envs, &HashSet::new())
-                        .await;
-                a_stdout = format!("{a_stdout}\n{stdout}",);
-                a_stderr = format!("{a_stderr}\n{stderr}",);
-                tracing::debug!("additional_script: {line} {stdout}");
-                if !success {
-                    sub_failed = true;
-                }
-            }
-            let end_time = OffsetDateTime::now_utc();
-            let duration = end_time - start_time;
-            let mut additional_script_tc = match sub_failed {
-                false => TestCase::success("additional_script", duration),
-                true => {
-                    failed = true;
-                    TestCase::failure("additional_script", duration, "", "required")
-                }
-            };
-            additional_script_tc.set_system_out(&a_stderr);
-            additional_script_tc.set_system_err(&a_stdout);
-            ts_mandatory.add_testcase(additional_script_tc);
+    if !failed && let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
+        tracing::info!(
+            "│ {:30.30}     │ Running additional script command",
+            package_name
+        );
+        let start_time = OffsetDateTime::now_utc();
+        let mut envs: HashMap<String, String> = HashMap::new();
+        if let Some(db_url) = database_url.clone() {
+            envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
+        let mut a_stdout: String = "".to_string();
+        let mut a_stderr: String = "".to_string();
+        let mut sub_failed = false;
+
+        for line in additional_scripts.split("\n") {
+            if line.is_empty() {
+                continue;
+            }
+            if sub_failed {
+                continue;
+            }
+            let (stdout, stderr, success) =
+                execute_command_without_logging(line, &package_path, &envs, &HashSet::new()).await;
+            a_stdout = format!("{a_stdout}\n{stdout}",);
+            a_stderr = format!("{a_stderr}\n{stderr}",);
+            tracing::debug!("additional_script: {line} {stdout}");
+            if !success {
+                sub_failed = true;
+            }
+        }
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        let mut additional_script_tc = match sub_failed {
+            false => TestCase::success("additional_script", duration),
+            true => {
+                failed = true;
+                TestCase::failure("additional_script", duration, "", "required")
+            }
+        };
+        additional_script_tc.set_system_out(&a_stderr);
+        additional_script_tc.set_system_err(&a_stdout);
+        ts_mandatory.add_testcase(additional_script_tc);
     }
     // Handle Tests
     let fslabs_tests: Vec<FslabsTest> = vec![
@@ -544,13 +537,12 @@ async fn do_test_on_package(
         if fslabs_test.skip {
             continue;
         }
-
+        let tc_prefix = format!(
+            "{:30.30} {i}/{test_steps} │ {:50.50}",
+            package_name, fslabs_test.command
+        );
         if failed {
-            tracing::info!(
-                "│ {:30.30} {i}/{test_steps} │ {:50.50} │ ⏭ SKIPPED",
-                package_name,
-                fslabs_test.command
-            );
+            tracing::info!("│ {} │ ⏭ SKIPPED", tc_prefix,);
 
             metrics.test_duration_h.record(
                 0.0,
@@ -572,17 +564,13 @@ async fn do_test_on_package(
                     KeyValue::new("status", "SKIPPED"),
                 ],
             );
-            let tc = TestCase::skipped(fslabs_test.command.as_str());
+            let tc = TestCase::skipped(tc_prefix.as_str());
             match fslabs_test.optional {
                 true => ts_optional.add_testcase(tc),
                 false => ts_mandatory.add_testcase(tc),
             };
         } else {
-            tracing::info!(
-                "│ {:30.30} {i}/{test_steps} │ {:50.50} │ ► START",
-                package_name,
-                fslabs_test.command
-            );
+            tracing::info!("│ {} │ ► START", tc_prefix,);
             let start_time = OffsetDateTime::now_utc();
             if let Some(pre_command) = fslabs_test.pre_command {
                 execute_command_without_logging(
@@ -599,10 +587,9 @@ async fn do_test_on_package(
                     &package_path,
                     common_options.base_rev.clone(),
                     None,
-                    &changed_lockfiles,
                     true,
                 )
-                .unwrap_or_else(|_| ("".to_string(), "".to_string(), false)),
+                .unwrap_or_else(|e| ("success".to_string(), e.to_string(), false)),
 
                 false => {
                     execute_command(
@@ -632,24 +619,22 @@ async fn do_test_on_package(
             let mut tc = match success {
                 true => {
                     tracing::info!(
-                        "│ {:30.30} {i}/{test_steps} │ {:50.50} │ 🟢 PASS in {}",
-                        package_name,
-                        fslabs_test.command,
+                        "│ {} │ 🟢 PASS in {}",
+                        &tc_prefix,
                         duration.human(Truncate::Second)
                     );
-                    TestCase::success(&fslabs_test.command, duration)
+                    TestCase::success(&tc_prefix, duration)
                 }
                 false => {
                     tracing::info!(
-                        "│ {:30.30} {i}/{test_steps} │ {:50.50} │ 🟥 FAIL in {}",
-                        package_name,
-                        fslabs_test.command,
+                        "│ {} │ 🟥 FAIL in {}",
+                        &tc_prefix,
                         duration.human(Truncate::Second)
                     );
                     status = "FAIL";
                     failed = !fslabs_test.optional; // fail all if not optional
                     TestCase::failure(
-                        &fslabs_test.command,
+                        &tc_prefix,
                         duration,
                         &fslabs_test.command,
                         if fslabs_test.optional {

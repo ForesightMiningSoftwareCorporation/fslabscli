@@ -199,17 +199,16 @@ impl JobType<PublishingRunOutput> for PublishingJobType {
                 };
                 // If it' s a binary release, we should use the release_channel as part of the tag, otherwise, no need
                 let mut release_channel: Option<String> = None;
-                if let Some(binary_job) = jobs.get(&PublishingJobType::RustBinary) {
-                    if binary_job.outputs.released.is_some_and(|r| r) {
-                        release_channel = binary_job.outputs.release_channel.clone();
-                    }
+                if let Some(binary_job) = jobs.get(&PublishingJobType::RustBinary)
+                    && binary_job.outputs.released.is_some_and(|r| r)
+                {
+                    release_channel = binary_job.outputs.release_channel.clone();
                 }
-                if release_channel.is_none() {
-                    if let Some(installer_job) = jobs.get(&PublishingJobType::RustInstaller) {
-                        if installer_job.outputs.released.is_some_and(|r| r) {
-                            release_channel = installer_job.outputs.release_channel.clone();
-                        }
-                    }
+                if release_channel.is_none()
+                    && let Some(installer_job) = jobs.get(&PublishingJobType::RustInstaller)
+                    && installer_job.outputs.released.is_some_and(|r| r)
+                {
+                    release_channel = installer_job.outputs.release_channel.clone();
                 }
                 let tag_parts: Vec<String> =
                     vec![Some(package_name.clone()), release_channel, Some(version)]
@@ -274,51 +273,49 @@ impl JobType<PublishingRunOutput> for PublishingJobType {
                     .list_workflow_run_artifacts(&owner, &repository, run_id)
                     .send()
                     .await
+                    && let Some(page) = artifacts.value
                 {
-                    if let Some(page) = artifacts.value {
-                        for artifact in page {
-                            if artifact
+                    for artifact in page {
+                        if artifact
+                            .name
+                            .starts_with(&format!("release-binaries-signed-{package_name}"))
+                            || artifact
                                 .name
-                                .starts_with(&format!("release-binaries-signed-{package_name}"))
-                                || artifact.name.starts_with(&format!(
-                                    "release-installer-signed-{package_name}"
-                                ))
+                                .starts_with(&format!("release-installer-signed-{package_name}"))
+                        {
+                            // Download zip
+                            if let Ok(data) = actions
+                                .download_artifact(
+                                    &owner,
+                                    &repository,
+                                    artifact.id,
+                                    ArchiveFormat::Zip,
+                                )
+                                .await
                             {
-                                // Download zip
-                                if let Ok(data) = actions
-                                    .download_artifact(
-                                        &owner,
-                                        &repository,
-                                        artifact.id,
-                                        ArchiveFormat::Zip,
-                                    )
-                                    .await
-                                {
-                                    let mut buf = Cursor::new(data);
-                                    // Extract zip and upload
-                                    if let Ok(mut archive) = ZipArchive::new(&mut buf) {
-                                        for i in 0..archive.len() {
-                                            if let Ok(mut file) = archive.by_index(i) {
-                                                if let Some(outpath) = file.enclosed_name() {
-                                                    if file.is_dir() {
-                                                        continue;
-                                                    }
-                                                    if let Some(file_name) = outpath.file_name() {
-                                                        if let Some(file_name) = file_name.to_str()
-                                                        {
-                                                            let mut data: Vec<u8> = vec![];
-                                                            if file.read_to_end(&mut data).is_ok() {
-                                                                let _ = releases
-                                                                    .upload_asset(
-                                                                        release.id.into_inner(),
-                                                                        file_name,
-                                                                        data.into(),
-                                                                    )
-                                                                    .send()
-                                                                    .await;
-                                                            }
-                                                        }
-                                                    }
+                                let mut buf = Cursor::new(data);
+                                // Extract zip and upload
+                                if let Ok(mut archive) = ZipArchive::new(&mut buf) {
+                                    for i in 0..archive.len() {
+                                        if let Ok(mut file) = archive.by_index(i)
+                                            && let Some(outpath) = file.enclosed_name()
+                                        {
+                                            if file.is_dir() {
+                                                continue;
+                                            }
+                                            if let Some(file_name) = outpath.file_name()
+                                                && let Some(file_name) = file_name.to_str()
+                                            {
+                                                let mut data: Vec<u8> = vec![];
+                                                if file.read_to_end(&mut data).is_ok() {
+                                                    let _ = releases
+                                                        .upload_asset(
+                                                            release.id.into_inner(),
+                                                            file_name,
+                                                            data.into(),
+                                                        )
+                                                        .send()
+                                                        .await;
                                                 }
                                             }
                                         }

@@ -627,27 +627,26 @@ pub async fn generate_workflow(
             // Each testing job needs to depends on its'previous testing job
             if let Some(package_name) = dependency.package_id.clone() {
                 testing_requirements.push(format!("test_{package_name}"));
-                if dependency.publishable {
-                    if let Some(dependency_package) = results.members.get(&package_name) {
-                        if dependency_package.publish_detail.binary.publish {
-                            publishing_requirements
-                                .push(format!("publish_rust_binary_{package_name}",));
-                        }
-                        if dependency_package.publish_detail.binary.installer.publish {
-                            publishing_requirements
-                                .push(format!("publish_rust_installer_{package_name}",));
-                        }
-                        if dependency_package.publish_detail.cargo.publish {
-                            publishing_requirements
-                                .push(format!("publish_rust_registry_{package_name}",));
-                        }
-                        if dependency_package.publish_detail.docker.publish {
-                            publishing_requirements.push(format!("publish_docker_{package_name}",));
-                        }
-                        if dependency_package.publish_detail.npm_napi.publish {
-                            publishing_requirements
-                                .push(format!("publish_npm_napi_{package_name}",));
-                        }
+                if dependency.publishable
+                    && let Some(dependency_package) = results.members.get(&package_name)
+                {
+                    if dependency_package.publish_detail.binary.publish {
+                        publishing_requirements
+                            .push(format!("publish_rust_binary_{package_name}",));
+                    }
+                    if dependency_package.publish_detail.binary.installer.publish {
+                        publishing_requirements
+                            .push(format!("publish_rust_installer_{package_name}",));
+                    }
+                    if dependency_package.publish_detail.cargo.publish {
+                        publishing_requirements
+                            .push(format!("publish_rust_registry_{package_name}",));
+                    }
+                    if dependency_package.publish_detail.docker.publish {
+                        publishing_requirements.push(format!("publish_docker_{package_name}",));
+                    }
+                    if dependency_package.publish_detail.npm_napi.publish {
+                        publishing_requirements.push(format!("publish_npm_napi_{package_name}",));
                     }
                 }
             }
