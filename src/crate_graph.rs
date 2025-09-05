@@ -106,16 +106,23 @@ impl CrateGraph {
                 true => Some(std::fs::read_to_string(&lock_path)?),
                 false => None,
             };
-            let lock_changed = match (orig_lock_content, updated_lock_content) {
-                (Some(orig), Some(updated)) => orig != updated,
-                (Some(_), None) => true,
-                (None, Some(_)) => true,
-                (None, None) => false,
+            match (orig_lock_content, updated_lock_content) {
+                (Some(orig), Some(updated)) => {
+                    if orig != updated {
+                        // We need to revert the old file
+                        std::fs::write(&lock_path, orig)?;
+                    }
+                }
+                (Some(orig), None) => {
+                    // We need to revert the old file
+                    std::fs::write(&lock_path, orig)?;
+                }
+                (None, Some(_)) => {
+                    // We need to delete the new file that got created
+                    std::fs::remove_file(&lock_path)?;
+                }
+                (None, None) => {} // Nothing to do
             };
-            if lock_changed {
-                // Should we revert it?
-            }
-
             // Assume that the workspace members are all we needed to find.
             if has_explicit_members {
                 return Ok(());
