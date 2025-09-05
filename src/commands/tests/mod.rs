@@ -466,6 +466,12 @@ async fn do_test_on_package(
             command: "cargo fmt --verbose -- --check".to_string(),
             ..Default::default()
         },
+        // Needs to be done soon as the next one can update the lock file
+        FslabsTest {
+            id: "cargo_lock".to_string(),
+            command: "fslabscli fix-lock-files --check".to_string(),
+            ..Default::default()
+        },
         FslabsTest {
             id: "cargo_check".to_string(),
             command: format!(
@@ -510,11 +516,6 @@ async fn do_test_on_package(
                 .clone()
                 .map(|d| format!("echo DATABASE_URL={d} > .env")),
             post_command: database_url.clone().map(|_| "rm .env".to_string()),
-            ..Default::default()
-        },
-        FslabsTest {
-            id: "cargo_lock".to_string(),
-            command: "fslabscli fix-lock-files --check".to_string(),
             ..Default::default()
         },
     ]
@@ -589,7 +590,7 @@ async fn do_test_on_package(
                     None,
                     true,
                 )
-                .unwrap_or_else(|e| ("success".to_string(), e.to_string(), false)),
+                .unwrap_or_else(|e| ("error".to_string(), e.to_string(), false)),
 
                 false => {
                     execute_command(
