@@ -199,7 +199,15 @@ impl CrateGraph {
                     // If package_path is ".", treat it as the entire repo
                     let is_repo_root = package_path == Path::new(".");
 
-                    if is_repo_root || delta_path.starts_with(&package_path) {
+                    if delta_path.ends_with("rust-toolchain.toml") {
+                        // We have a special case, the `rust-toolchain.toml` file, if it changed, everything should be considered as changed
+                        changed.push(package_path.clone());
+                        continue;
+                    }
+                    if is_repo_root
+                        || delta_path.starts_with(&package_path)
+                        || delta_path.ends_with("rust-toolchain.toml")
+                    {
                         changed.push(package_path.clone());
                         // Stop processing this change, we found the most specific package impacted
                         // Returning true will continue matching other file changed in case a commit targets several packages
