@@ -146,8 +146,6 @@ pub struct Options {
     fail_unit_error: bool,
     #[arg(long, default_value_t = false)]
     hide_dependencies: bool,
-    #[arg(long, default_value_t = false)]
-    ignore_dev_dependencies: bool,
 }
 
 impl Options {
@@ -162,11 +160,6 @@ impl Options {
 
     pub fn with_check_publish(mut self, check_publish: bool) -> Self {
         self.check_publish = check_publish;
-        self
-    }
-
-    pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
-        self.ignore_dev_dependencies = ignore_dev_dependencies;
         self
     }
 }
@@ -852,7 +845,7 @@ pub async fn check_workspace(
             LOOKING_GLASS
         );
     }
-    let limit_dependency_kind = match options.ignore_dev_dependencies {
+    let limit_dependency_kind = match common_options.ignore_dev_dependencies {
         true => Some(DependencyKind::Normal),
         false => None,
     };

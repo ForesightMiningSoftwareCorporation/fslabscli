@@ -987,9 +987,7 @@ pub async fn publish(
     common_options.whitelist = whitelist;
 
     // Check workspace information
-    let check_workspace_options = CheckWorkspaceOptions::new()
-        .with_check_publish(true)
-        .with_ignore_dev_dependencies(true);
+    let check_workspace_options = CheckWorkspaceOptions::new().with_check_publish(true);
 
     let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await

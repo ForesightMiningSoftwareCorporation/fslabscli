@@ -89,6 +89,9 @@ pub struct PackageRelatedOptions {
     /// Display progress
     #[arg(long, default_value_t = false)]
     progress: bool,
+    /// SHould the dev dependencies be ignored
+    #[arg(long, default_value_t = true)]
+    ignore_dev_dependencies: bool,
 }
 
 impl Default for PackageRelatedOptions {
@@ -102,6 +105,7 @@ impl Default for PackageRelatedOptions {
             whitelist: Default::default(),
             blacklist: Default::default(),
             progress: Default::default(),
+            ignore_dev_dependencies: true,
         }
     }
 }
