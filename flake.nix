@@ -109,22 +109,7 @@
           let
             inherit (arch2targets.${system}) rustTarget;
           in
-          (craneLib.buildPackage (
-            (generateCommonArgs craneLib)
-            // {
-              postInstall = ''
-                cd "$out"/bin
-                for f in "$(ls)"; do
-                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
-                    base="$(echo "$f" | cut -d. -f1)"
-                    mv "$f" "$base-${rustTarget}$ext"
-                  else
-                    mv "$f" "$f-${rustTarget}"
-                  fi
-                done
-              '';
-            }
-          ));
+          (craneLib.buildPackage (generateCommonArgs craneLib));
 
         mkCrossRustPackage =
           arch: packageName:
