@@ -923,7 +923,10 @@ pub async fn report_publish_to_github(
 
         let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
         let repo_releases = repo.releases();
-        if let Ok(release) = repo_releases.get_by_tag(&common_options.base_rev).await {
+        if let Ok(release) = repo_releases
+            .get_by_tag(common_options.base_rev.as_deref().unwrap_or("HEAD~"))
+            .await
+        {
             let paths = fs::read_dir(artifact_dir)?;
             for artifact in paths.flatten() {
                 let artifact_path = artifact.path();
@@ -967,13 +970,15 @@ pub async fn publish(
     // If the push regex is set, then we need to consider only the package that
     // match the first capturing group
     println!(
-        "Got whitelist, regex, baseref: {:?} -- {:?} -- {}",
+        "Got whitelist, regex, baseref: {:?} -- {:?} -- {:?}",
         common_options.whitelist, options.base_rev_regex, common_options.base_rev
     );
     let mut whitelist = common_options.whitelist.clone();
+
+    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     if let Some(regex) = &options.base_rev_regex {
         let re = Regex::new(regex)?;
-        if let Some(captures) = re.captures(&common_options.base_rev)
+        if let Some(captures) = re.captures(base_rev)
             && let Some(package_name_match) = captures.get(1)
         {
             whitelist.push(package_name_match.as_str().to_string());

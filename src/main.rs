@@ -62,7 +62,7 @@ struct Cli {
     fslabscli_auto_update: bool,
 }
 
-#[derive(Debug, Parser, Default, Clone)]
+#[derive(Debug, Parser, Clone)]
 #[command()]
 pub struct PackageRelatedOptions {
     #[clap(
@@ -72,13 +72,8 @@ pub struct PackageRelatedOptions {
         alias = "pull-pull-sha"
     )]
     head_rev: String,
-    #[clap(
-        long,
-        env = "PULL_BASE_SHA",
-        default_value = "HEAD~",
-        alias = "pull-base-sha"
-    )]
-    base_rev: String,
+    #[clap(long, env = "PULL_BASE_SHA", alias = "pull-base-sha")]
+    base_rev: Option<String>,
     #[arg(long, env, default_value = "1")]
     job_limit: usize,
     #[arg(long, env, default_value = "0")]
@@ -94,6 +89,21 @@ pub struct PackageRelatedOptions {
     /// Display progress
     #[arg(long, default_value_t = false)]
     progress: bool,
+}
+
+impl Default for PackageRelatedOptions {
+    fn default() -> Self {
+        Self {
+            head_rev: "HEAD".to_string(),
+            base_rev: None,
+            job_limit: Default::default(),
+            inner_job_limit: Default::default(),
+            cargo_main_registry: Default::default(),
+            whitelist: Default::default(),
+            blacklist: Default::default(),
+            progress: Default::default(),
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]
