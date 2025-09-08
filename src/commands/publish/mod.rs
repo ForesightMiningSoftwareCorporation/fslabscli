@@ -398,7 +398,6 @@ async fn publish_package(
 ) {
     if let Some(ref package_id) = package.package_id {
         loop {
-            println!("Looping on package: {}", package.package);
             let mut mark_failed = false;
             let mut process = true;
             {
