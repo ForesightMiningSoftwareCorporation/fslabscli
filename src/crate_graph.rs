@@ -275,14 +275,28 @@ impl From<&Package> for PackageKey {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct DependencyInstance {
+    pub kind: DependencyKind,
+    // Refer to a path only dep
+    pub is_local: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Dependency {
+    pub package_id: PackageId,
+    pub instances: Vec<DependencyInstance>,
+}
+
 /// The dependency graph of **local** crates from [`CrateGraph`].
 #[derive(Clone, Debug, Default)]
 pub struct DependencyGraph {
     path_to_id: HashMap<PathBuf, PackageId>,
     id_to_path: HashMap<PackageId, PathBuf>,
+    id_to_package: HashMap<PackageId, Package>,
 
     /// "KEY depends on VALUE"
-    pub dependencies: HashMap<PackageId, Vec<PackageId>>,
+    pub dependencies: HashMap<PackageId, Vec<Dependency>>,
     /// "KEY is depended on by VALUE"
     reverse_dependencies: HashMap<PackageId, Vec<PackageId>>,
 }
@@ -301,6 +315,7 @@ impl DependencyGraph {
                 let p_dir_path = package_path(repo_root, p).into_owned();
                 me.path_to_id.insert(p_dir_path.clone(), p.id.clone());
                 me.id_to_path.insert(p.id.clone(), p_dir_path);
+                me.id_to_package.insert(p.id.clone(), p.clone());
                 me.dependencies.insert(p.id.clone(), Default::default());
                 me.reverse_dependencies
                     .insert(p.id.clone(), Default::default());
@@ -312,9 +327,42 @@ impl DependencyGraph {
             let resolve = w.metadata.resolve.as_ref().unwrap();
             for node in &resolve.nodes {
                 if me.id_to_path.contains_key(&node.id) {
+                    let self_package = me.id_to_package.get(&node.id);
                     let deps = me.dependencies.get_mut(&node.id).unwrap();
                     for node_dep in &node.deps {
                         let dep_id = &node_dep.pkg;
+                        let instances = node_dep
+                            .dep_kinds
+                            .iter()
+                            .map(|k| {
+                                let dep_package = me.id_to_package.get(dep_id);
+                                let is_local = match dep_package {
+                                    Some(p) => match p.source {
+                                        Some(_) => false,
+                                        None => self_package
+                                            .and_then(|p| {
+                                                p.dependencies
+                                                    .iter()
+                                                    .find(|dependency| {
+                                                        dependency.rename.as_ref()
+                                                            == Some(&node_dep.name)
+                                                            || (dependency.rename.is_none()
+                                                                && dependency.name == node_dep.name)
+                                                            || format!("{}", node_dep.pkg)
+                                                                .starts_with(&dependency.name)
+                                                    })
+                                                    .map(|c| c.registry.is_none())
+                                            })
+                                            .unwrap_or(false),
+                                    },
+                                    None => true,
+                                };
+                                DependencyInstance {
+                                    kind: k.kind,
+                                    is_local,
+                                }
+                            })
+                            .collect();
                         let is_accepted_dep = match dep_kind {
                             Some(kind) => {
                                 let mut is_accepted_dep = false;
@@ -329,7 +377,11 @@ impl DependencyGraph {
                         };
                         if is_accepted_dep && me.id_to_path.contains_key(dep_id) {
                             let reverse_deps = me.reverse_dependencies.get_mut(dep_id).unwrap();
-                            deps.push(dep_id.clone());
+                            let dep = Dependency {
+                                package_id: dep_id.clone(),
+                                instances,
+                            };
+                            deps.push(dep);
                             reverse_deps.push(node.id.clone());
                         }
                     }
@@ -374,9 +426,10 @@ impl DependencyGraph {
         while let Some(current_package) = stack.pop() {
             if let Some(deps) = self.dependencies.get(&current_package) {
                 for dep in deps {
-                    if !visited.contains(&dep.clone()) {
-                        visited.insert(dep.clone());
-                        stack.push(dep.clone());
+                    let package_id = dep.package_id.clone();
+                    if !visited.contains(&package_id) {
+                        visited.insert(package_id.clone());
+                        stack.push(package_id.clone());
                     }
                 }
             }
@@ -394,37 +447,45 @@ impl DependencyGraph {
         // Helper function for DFS traversal, returns true if a cycle is detected
         fn dfs(
             graph: &DependencyGraph,
-            package: &PackageId,
+            package_id: &PackageId,
             visited: &mut HashSet<PackageId>,
             recursion_stack: &mut HashSet<PackageId>,
             cycle_path: &mut Vec<PackageId>,
         ) -> bool {
-            if recursion_stack.contains(package) {
+            if recursion_stack.contains(package_id) {
                 // Cycle detected, record the cycle path
-                cycle_path.push(package.clone());
+                cycle_path.push(package_id.clone());
                 return true;
             }
 
-            if visited.contains(package) {
+            if visited.contains(package_id) {
                 return false;
             }
 
             // Mark the package as visited
-            visited.insert(package.clone());
-            recursion_stack.insert(package.clone());
+            visited.insert(package_id.clone());
+            recursion_stack.insert(package_id.clone());
 
             // Traverse the dependencies
-            if let Some(deps) = graph.dependencies.get(package) {
+            if let Some(deps) = graph.dependencies.get(package_id) {
                 for dep in deps {
-                    if dfs(graph, dep, visited, recursion_stack, cycle_path) {
-                        cycle_path.push(package.clone());
+                    if dep
+                        .instances
+                        .iter()
+                        .all(|k| k.kind == DependencyKind::Development && k.is_local)
+                    {
+                        // if it's only a dev dep, we can ignore it
+                        continue;
+                    }
+                    if dfs(graph, &dep.package_id, visited, recursion_stack, cycle_path) {
+                        cycle_path.push(package_id.clone());
                         return true;
                     }
                 }
             }
 
             // Backtrack
-            recursion_stack.remove(package);
+            recursion_stack.remove(package_id);
             false
         }
 
@@ -470,10 +531,13 @@ fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, Strip
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::test::{commit_all_changes, commit_repo, modify_file, stage_file};
+    use crate::utils::test::{
+        FAKE_REGISTRY, commit_all_changes, commit_repo, create_complex_workspace, modify_file,
+        stage_file,
+    };
 
     use super::*;
-    use std::process::Command;
+    use std::{fs::OpenOptions, io::Write, process::Command};
 
     #[test]
     fn test_discover_standalone_workspace() {
@@ -690,13 +754,26 @@ mod tests {
         // Package 1 depends on Package 2 and Package 3
         graph.dependencies.insert(
             package_1.clone(),
-            vec![package_2.clone(), package_3.clone()],
+            vec![
+                Dependency {
+                    package_id: package_2.clone(),
+                    instances: vec![],
+                },
+                Dependency {
+                    package_id: package_3.clone(),
+                    instances: vec![],
+                },
+            ],
         );
 
         // Package 2 depends on Package 4
-        graph
-            .dependencies
-            .insert(package_2.clone(), vec![package_4.clone()]);
+        graph.dependencies.insert(
+            package_2.clone(),
+            vec![Dependency {
+                package_id: package_4.clone(),
+                instances: vec![],
+            }],
+        );
 
         // Package 3 has no dependencies
         graph.dependencies.insert(package_3.clone(), vec![]);
@@ -713,5 +790,110 @@ mod tests {
 
         // Assert that the returned transitive dependencies match the expected ones
         assert_eq!(transitive_deps, expected_deps);
+    }
+
+    #[test]
+    fn test_no_cycles_dont_fail() {
+        let repo = create_complex_workspace();
+        let graph = CrateGraph::new(&repo, "", None);
+        assert!(graph.is_ok());
+    }
+
+    #[test]
+    /// Tests if cycle between direct dependencies are detected
+    fn test_simple_cycles_are_detected() {
+        let repo = create_complex_workspace();
+        // Let's create a cycle dependencies, we already have crates_g ->  workspace_a/crates_b,
+        // Let's add workspace_a/crates_b -> crates_g
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../../../crates_g")
+            .arg("crates_g")
+            .current_dir(repo.join("workspace_a/crates/crates_b"))
+            .output()
+            .expect("Failed to add workspace_a__crates_b");
+        commit_all_changes(&repo, "Add simple cycle");
+        let graph = CrateGraph::new(&repo, "", None);
+        assert!(graph.is_err());
+        let error = graph.unwrap_err();
+        assert!(&format!("{}", error).starts_with("`cargo metadata` exited with an error:"));
+    }
+
+    #[test]
+    /// Tests if cycle between transitive dependencies are detected
+    fn test_transitive_cycles_are_detected() {
+        let repo = create_complex_workspace();
+        // Let's create a cycle dependencies,
+        // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
+        // So we can add workspace_a/crates_a -> crates_g
+        // to create a transitive cycle
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--registry")
+            .arg(FAKE_REGISTRY)
+            .arg("--path")
+            .arg("../../../crates_g")
+            .arg("crates_g")
+            .current_dir(repo.join("workspace_a/crates/crates_a"))
+            .output()
+            .expect("Failed to add workspace_a__crates_b");
+        commit_all_changes(&repo, "Add simple cycle");
+        println!("Got repo: {}", repo.display());
+        let graph = CrateGraph::new(&repo, "", None);
+        assert!(graph.is_err());
+        let error = graph.unwrap_err();
+        assert!(&format!("{}", error).starts_with("`cargo metadata` exited with an error:"));
+    }
+
+    #[test]
+    /// Path only Dev-dependencies should not create a cycle
+    fn test_cycles_without_dev_dependencies() {
+        let repo = create_complex_workspace();
+        // Let's create a cycle dependencies,
+        // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
+        // So we can add workspace_a/crates_a -> crates_g
+        // to create a transitive cycle
+        Command::new("cargo")
+            .arg("add")
+            .arg("--offline")
+            .arg("--dev")
+            .arg("--path")
+            .arg("../../../crates_g")
+            .current_dir(repo.join("workspace_a/crates/crates_a"))
+            .output()
+            .expect("Failed to add workspace_a__crates_b");
+        commit_all_changes(&repo, "Add simple cycle");
+        println!("Got repo: {}", repo.display());
+        let graph = CrateGraph::new(&repo, "", None);
+        assert!(graph.is_ok());
+    }
+
+    #[test]
+    /// Path only Dev-dependencies should not create a cycle except if they are version pinned
+    fn test_cycles_without_dev_dependencies_but_pinned() {
+        let repo = create_complex_workspace();
+        // Let's create a cycle dependencies,
+        // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
+        // So we can add workspace_a/crates_a -> crates_g
+        // to create a transitive cycle
+        let mut crates_a_cargo_toml = OpenOptions::new()
+            .append(true)
+            .open(repo.join("workspace_a/crates/crates_a/Cargo.toml"))
+            .unwrap();
+
+        writeln!(
+            crates_a_cargo_toml,
+            r#"[dev-dependencies]
+crates_g = {{ version = "0.1.0", path = "../../../crates_g", registry = "fake-registry" }}"#
+        )
+        .unwrap();
+        commit_all_changes(&repo, "Add simple cycle");
+        let graph = CrateGraph::new(&repo, "", None);
+        assert!(graph.is_err());
     }
 }

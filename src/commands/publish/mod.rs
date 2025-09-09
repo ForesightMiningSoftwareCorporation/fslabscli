@@ -29,6 +29,7 @@ use crate::{
     commands::check_workspace::{
         Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
+    crate_graph::Dependency,
     utils::{
         cargo::{Cargo, patch_crate_for_registry},
         execute_command,
@@ -388,7 +389,7 @@ async fn publish_package(
     repo_root: PathBuf,
     package: Package,
     semaphore: Arc<Semaphore>,
-    dependencies: Option<Vec<PackageId>>,
+    dependencies: Option<Vec<Dependency>>,
     statuses: Arc<RwLock<HashMap<PackageId, Option<PublishResult>>>>,
     output_dir: PathBuf,
     cargo: Arc<Cargo>,
@@ -402,9 +403,9 @@ async fn publish_package(
             let mut process = true;
             {
                 if let Some(ref deps) = dependencies {
-                    for dep_id in deps {
+                    for dep in deps {
                         let map = statuses.read().expect("RwLock poisoned");
-                        if let Some(dep_result) = map.get(dep_id) {
+                        if let Some(dep_result) = map.get(&dep.package_id) {
                             match dep_result {
                                 Some(result) => {
                                     if result.should_publish && !result.success {
