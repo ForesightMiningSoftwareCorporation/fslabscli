@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fslabscli"
-version = "2.26.0"
+version = "2.27.0"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -350,6 +350,7 @@ dependencies = [
  "itertools",
  "jsonwebtoken",
  "junit-report",
+ "mime_guess",
  "num",
  "object_store",
  "oci-distribution",
@@ -1804,10 +1805,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
+
+[[package]]
+name = "mime"
+version = "0.3.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -1969,6 +1996,7 @@ dependencies = [
  "humantime",
  "hyper",
  "itertools",
+ "md-5",
  "parking_lot",
  "percent-encoding",
  "quick-xml 0.38.3",

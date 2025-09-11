@@ -230,11 +230,13 @@
                   rustup
                   xunit-viewer
                   protobuf
+                  trunk
                 ];
                 languages = {
                   nix.enable = true;
                   rust = {
                     enable = true;
+                    toolchainPackage = toolchain;
                   };
                 };
 
