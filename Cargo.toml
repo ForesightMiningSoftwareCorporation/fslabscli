@@ -86,7 +86,7 @@ mime_guess = "2.0.5"
 
 [dependencies.anyhow]
 features = []
-version = "1.0.98"
+version = "1.0.99"
 
 [dependencies.clap]
 features = ["derive", "env"]
