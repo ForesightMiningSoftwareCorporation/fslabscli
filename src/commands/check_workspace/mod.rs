@@ -33,6 +33,7 @@ use cargo::PackageMetadataFslabsCiPublishCargo;
 use docker::PackageMetadataFslabsCiPublishDocker;
 use nix_binary::PackageMetadataFslabsCiPublishNixBinary;
 use npm::{Npm, PackageMetadataFslabsCiPublishNpmNapi};
+use s3::PackageMetadataFslabsCiPublishS3;
 
 use crate::{PackageRelatedOptions, PrettyPrintable};
 
@@ -41,6 +42,7 @@ mod cargo;
 mod docker;
 mod nix_binary;
 mod npm;
+mod s3;
 
 static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
@@ -128,6 +130,8 @@ pub struct Options {
     autopublish_cargo: bool,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
+    #[arg(long, default_value_t = false)]
+    skip_s3: bool,
     #[arg(long, env)]
     binary_store_storage_account: Option<String>,
     #[arg(long, env)]
@@ -248,6 +252,8 @@ pub struct PackageMetadataFslabsCiPublish {
     pub binary: PackageMetadataFslabsCiPublishBinary,
     #[serde(default = "PackageMetadataFslabsCiPublishNixBinary::default")]
     pub nix_binary: PackageMetadataFslabsCiPublishNixBinary,
+    #[serde(default = "PackageMetadataFslabsCiPublishS3::default")]
+    pub s3: PackageMetadataFslabsCiPublishS3,
     #[serde(default)]
     pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::PublishWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
     #[serde(default, serialize_with = "serialize_multiline_as_escaped")]
@@ -669,6 +675,7 @@ impl Result {
         skip_docker: bool,
         docker: &mut Docker,
         skip_binary: bool,
+        skip_s3: bool,
         binary_store: &Option<BinaryStore>,
     ) -> anyhow::Result<()> {
         if !skip_docker {
@@ -723,6 +730,12 @@ impl Result {
                 }
             };
         }
+        if !skip_s3 {
+            match self.publish_detail.s3.check().await {
+                Ok(_) => {}
+                Err(e) => self.publish_detail.s3.error = Some(e.to_string()),
+            };
+        }
 
         Ok(())
     }
@@ -732,7 +745,7 @@ impl Display for Result {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} -- {} -- {}: docker: {}, cargo: {}, npm_napi: {}, binary: {}, publish: {}",
+            "{} -- {} -- {}: docker: {}, cargo: {}, npm_napi: {}, binary: {}, nix: {}, s3: {}, publish: {}",
             self.workspace,
             self.package,
             self.version,
@@ -740,6 +753,8 @@ impl Display for Result {
             self.publish_detail.cargo.publish,
             self.publish_detail.npm_napi.publish,
             self.publish_detail.binary.publish,
+            self.publish_detail.nix_binary.publish,
+            self.publish_detail.s3.publish,
             self.publish
         )
     }
@@ -1070,6 +1085,7 @@ pub async fn check_workspace(
                         options.skip_docker,
                         &mut docker,
                         options.skip_binary,
+                        options.skip_s3,
                         &binary_store,
                     )
                     .await
@@ -1097,6 +1113,8 @@ pub async fn check_workspace(
                 package.publish_detail.cargo.publish,
                 package.publish_detail.npm_napi.publish,
                 package.publish_detail.binary.publish,
+                package.publish_detail.nix_binary.publish,
+                package.publish_detail.s3.publish,
             ]
             .into_iter()
             .any(|x| x);

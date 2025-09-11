@@ -3,6 +3,7 @@ use cargo_metadata::PackageId;
 use clap::Parser;
 use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
+use object_store::{Attribute, AttributeValue, Attributes, PutOptions};
 use octocrab::Octocrab;
 use octocrab::params::repos::Reference;
 use regex::Regex;
@@ -20,6 +21,9 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
+
+use object_store::{ObjectStore, path::Path as StorePath};
+use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
 use crate::utils::get_registry_env;
@@ -65,6 +69,12 @@ pub struct Options {
     npm_ghcr_scope: Option<String>,
     #[arg(long, env)]
     npm_ghcr_token: Option<String>,
+    #[arg(long, env)]
+    s3_access_key_id: Option<String>,
+    #[arg(long, env)]
+    s3_secret_access_key: Option<String>,
+    #[arg(long, env)]
+    s3_endpoint: Option<String>,
     #[arg(long, env, default_value = "false")]
     dry_run: bool,
     #[arg(long, env, default_value = "false")]
@@ -130,6 +140,7 @@ pub struct PublishResult {
     pub cargo: HashMap<String, PublishDetailResult>, // HashMap on Registries
     pub nix_binary: PublishDetailResult,
     pub git_tag: PublishDetailResult,
+    pub s3: PublishDetailResult,
     pub start_time: Option<SystemTime>,
     pub end_time: Option<SystemTime>,
 }
@@ -154,6 +165,12 @@ impl PublishResult {
                 name: "git tag".to_string(),
                 key: "git".to_string(),
                 should_publish: options.handle_tags,
+                ..Default::default()
+            },
+            s3: PublishDetailResult {
+                name: "s3".to_string(),
+                key: "s3".to_string(),
+                should_publish: package.publish_detail.s3.publish,
                 ..Default::default()
             },
             ..Default::default()
@@ -211,6 +228,7 @@ impl PublishResults {
                     &publish_result.nix_binary,
                     &publish_result.docker,
                     &publish_result.git_tag,
+                    &publish_result.s3,
                 ];
                 for cargo in publish_result.cargo.values() {
                     results.push(cargo);
@@ -285,12 +303,13 @@ impl Display for PublishResults {
             .join("│");
         writeln!(
             f,
-            "┌{:─^60}┬{:─^20}┬{:─^15}┬{:─^width$}┬{:─^15}┐",
+            "┌{:─^60}┬{:─^20}┬{:─^15}┬{:─^width$}┬{:─^15}┬{:─^15}┐",
             " Package ",
             " Version ",
             " Docker ",
             " Cargo ",
             " Nix Binary ",
+            " S3 ",
             width = cargo_size
         )?;
 
@@ -311,7 +330,7 @@ impl Display for PublishResults {
             if version.contains('@') {
                 version = version.split_once('@').unwrap().1;
             }
-            let cargo_reg = &registries
+            let mut cargo_reg = registries
                 .clone()
                 .into_iter()
                 .map(|(registry_name, size)| {
@@ -322,36 +341,44 @@ impl Display for PublishResults {
                     format!("{:^width$}", s, width = size + 4)
                 })
                 .collect::<Vec<String>>()
-                .join("│");
+                .join("│")
+                .clone();
+
+            if cargo_reg.is_empty() {
+                cargo_reg = format!("{:^width$}", "-", width = cargo_size);
+            }
             writeln!(
                 f,
-                "├{:─^60}┼{:─^20}┼{:─^15}┼{:─^width$}┼{:─^15}┤",
+                "├{:─^60}┼{:─^20}┼{:─^15}┼{:─^width$}┼{:─^15}┼{:─^15}┤",
                 "",
                 "",
                 "",
                 empty_cargo_reg_headers,
+                "",
                 "",
                 width = cargo_size
             )?;
 
             writeln!(
                 f,
-                "│{:^60}│{:^20}│{:^15}│{:^width$}│{:^15}│",
+                "│{:^60}│{:^20}│{:^15}│{:^width$}│{:^15}│{:^15}│",
                 name,
                 version,
                 publish_result.docker.get_status(),
                 cargo_reg,
                 publish_result.nix_binary.get_status(),
+                publish_result.s3.get_status(),
                 width = cargo_size,
             )?;
         }
         writeln!(
             f,
-            "└{:─^60}┴{:─^20}┴{:─^15}┴{:─^width$}┴{:─^15}┘",
+            "└{:─^60}┴{:─^20}┴{:─^15}┴{:─^width$}┴{:─^15}┴{:─^15}┘",
             "",
             "",
             "",
             empty_last_cargo_reg_headers,
+            "",
             "",
             width = cargo_size
         )?;
@@ -458,6 +485,33 @@ async fn publish_package(
     }
 }
 
+async fn create_s3_client(
+    bucket_name: Option<String>,
+    bucket_region: Option<String>,
+    access_key_id: Option<String>,
+    secret_access_key: Option<String>,
+    endpoint: Option<String>,
+) -> anyhow::Result<Arc<dyn ObjectStore>> {
+    if let (Some(bucket), Some(region), Some(access_key_id), Some(secret_access_key)) =
+        (bucket_name, bucket_region, access_key_id, secret_access_key)
+    {
+        let mut builder = object_store::aws::AmazonS3Builder::new()
+            .with_bucket_name(bucket)
+            .with_region(region)
+            .with_access_key_id(access_key_id)
+            .with_secret_access_key(secret_access_key);
+
+        if let Some(endpoint) = endpoint {
+            builder = builder.with_endpoint(endpoint).with_allow_http(true);
+        }
+
+        let store = builder.build()?;
+        Ok(Arc::new(store))
+    } else {
+        anyhow::bail!("missing credentials for s3 storage backend")
+    }
+}
+
 /// Actual Publish
 async fn do_publish_package(
     repo_root: PathBuf,
@@ -479,6 +533,173 @@ async fn do_publish_package(
     let package_name = &package.package;
     let package_path = repo_root.join(&package.path);
     let mut is_failed = false;
+    if !is_failed && package.publish_detail.s3.publish {
+        result.s3.start_time = Some(SystemTime::now());
+        if options.dry_run {
+            result.s3.success = true;
+        } else {
+            let mut envs = HashMap::new();
+            let mut blacklist_envs =
+                HashSet::from(["GIT_SSH_COMMAND".to_string(), "SSH_AUTH_SOCK".to_string()]);
+            for (key, _) in std::env::vars() {
+                if key.starts_with("CARGO_REGISTRIES_") {
+                    blacklist_envs.insert(key);
+                }
+            }
+
+            if let (Some(_), Some(npm_ghcr_token)) = (
+                options.npm_ghcr_scope.clone(),
+                options.npm_ghcr_token.clone(),
+            ) {
+                envs.insert("NPM_GHCR_TOKEN".to_string(), npm_ghcr_token);
+            }
+            let main_registry_prefix = format!(
+                "CARGO_REGISTRIES_{}",
+                common_options.cargo_main_registry.replace("-", "_")
+            )
+            .to_uppercase();
+
+            if let (Ok(user_agent), Ok(token)) = (
+                env::var(format!("{main_registry_prefix}_USER_AGENT")),
+                env::var(format!("{main_registry_prefix}_TOKEN")),
+            ) {
+                let user_agent_env = format!("{main_registry_prefix}_USER_AGENT");
+                let token_env = format!("{main_registry_prefix}_TOKEN");
+                let name_env = format!("{main_registry_prefix}_NAME");
+                envs.insert(user_agent_env.clone(), user_agent);
+                envs.insert(token_env.clone(), token);
+                envs.insert(name_env.clone(), common_options.cargo_main_registry.clone());
+            }
+            // First we build
+            let build_command = package.publish_detail.s3.build_command;
+            let (stdout, stderr, success) = execute_command(
+                &build_command,
+                &package_path,
+                &envs,
+                &blacklist_envs,
+                Some(tracing::Level::INFO),
+                Some(tracing::Level::INFO),
+            )
+            .await;
+            result.s3.success = success;
+            result.s3.stdout = stdout;
+            result.s3.stderr = stderr;
+            is_failed = !success;
+            if !is_failed {
+                match create_s3_client(
+                    package.publish_detail.s3.bucket_name.clone(),
+                    package.publish_detail.s3.bucket_region.clone(),
+                    options.s3_access_key_id.clone(),
+                    options.s3_secret_access_key.clone(),
+                    options.s3_endpoint.clone(),
+                )
+                .await
+                {
+                    Ok(store_client) => {
+                        // Let's upload the output dir to s3
+                        let prefix = package.publish_detail.s3.bucket_prefix;
+                        let build_dir = package_path.join(
+                            package
+                                .publish_detail
+                                .s3
+                                .output_dir
+                                .unwrap_or("".to_string()),
+                        );
+                        for entry in WalkDir::new(&build_dir) {
+                            match entry {
+                                Ok(entry) if entry.file_type().is_file() => {
+                                    let path = entry.path();
+                                    let relative = match path.strip_prefix(&build_dir) {
+                                        Ok(r) => r,
+                                        Err(e) => {
+                                            result.s3.success = false;
+                                            result.s3.stderr = format!(
+                                                "{}\nPath strip error: {}",
+                                                result.s3.stderr, e
+                                            );
+                                            is_failed = true;
+                                            break;
+                                        }
+                                    };
+                                    let key = match &prefix {
+                                        Some(p) => format!("{}/{}", p, relative.display()),
+                                        None => relative.display().to_string(),
+                                    };
+                                    match fs::read(path) {
+                                        Ok(bytes) => {
+                                            // Guess content type from extension
+                                            let content_type = mime_guess::from_path(path)
+                                                .first_or_octet_stream()
+                                                .to_string();
+
+                                            let mut attributes = Attributes::new();
+                                            attributes.insert(
+                                                Attribute::ContentType,
+                                                AttributeValue::from(content_type),
+                                            );
+                                            let opts = PutOptions {
+                                                attributes,
+                                                ..Default::default()
+                                            };
+                                            match store_client
+                                                .put_opts(
+                                                    &StorePath::from(key.clone()),
+                                                    bytes.into(),
+                                                    opts,
+                                                )
+                                                .await
+                                            {
+                                                Ok(_) => {
+                                                    result.s3.stdout = format!(
+                                                        "{}\nUploaded: {}",
+                                                        result.s3.stdout, key
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    result.s3.success = false;
+                                                    result.s3.stderr = format!(
+                                                        "{}\nUpload failed {}: {}",
+                                                        result.s3.stderr, key, e
+                                                    );
+                                                    is_failed = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            result.s3.success = false;
+                                            result.s3.stderr = format!(
+                                                "{}\nRead failed {}: {}",
+                                                result.s3.stderr,
+                                                path.display(),
+                                                e
+                                            );
+                                            is_failed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(_) => {} // directory, skip
+                                Err(e) => {
+                                    result.s3.success = false;
+                                    result.s3.stderr =
+                                        format!("{}\nWalk error: {}", result.s3.stderr, e);
+                                    is_failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        result.nix_binary.success = false;
+                        result.nix_binary.stderr = format!("{}\n{}", result.s3.stderr, e);
+                        is_failed = true;
+                    }
+                }
+            }
+        }
+        result.s3.end_time = Some(SystemTime::now());
+    }
     if !is_failed && package.publish_detail.nix_binary.publish {
         result.nix_binary.start_time = Some(SystemTime::now());
         if options.dry_run {

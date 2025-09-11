@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 # publish = ["fsl"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.26.0"
+version = "2.27.0"
 
 [package.metadata]
 
@@ -82,6 +82,7 @@ tempfile = "3.20.0"
 cargo-util = "0.2.21"
 diffy = "0.4.2"
 strum = "0.27.2"
+mime_guess = "2.0.5"
 
 [dependencies.anyhow]
 features = []
@@ -117,7 +118,7 @@ features = ["serde"]
 version = "2.10.0"
 
 [dependencies.object_store]
-features = ["azure"]
+features = ["azure", "aws"]
 version = "0.12.3"
 
 [dependencies.oci-distribution]
