@@ -107,29 +107,29 @@ async fn create_docker_container(
     let container_name = format!("{prefix}_{suffix}");
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
-    let (_, stderr, success) = execute_command_without_logging(
+    let command_output = execute_command_without_logging(
         &format!("docker run --name={container_name} -d {env} {port} {options} {image}"),
         &path,
         &envs,
         &HashSet::new(),
     )
     .await;
-    if !success {
-        return Err(anyhow::anyhow!(stderr));
+    if !command_output.success {
+        return Err(anyhow::anyhow!(command_output.stderr));
     }
     // Wait 5 Sec
     sleep(Duration::from_millis(5000));
-    let (container_id, stderr, success) = execute_command_without_logging(
+    let command_output = execute_command_without_logging(
         &format!("docker ps -q -f name={container_name}"),
         &path,
         &envs,
         &HashSet::new(),
     )
     .await;
-    if !success {
-        return Err(anyhow::anyhow!(stderr));
+    if !command_output.success {
+        return Err(anyhow::anyhow!(command_output.stderr));
     }
-    Ok(container_id)
+    Ok(command_output.stdout)
 }
 
 fn get_test_arg(test_args: &IndexMap<String, Value>, arg: &str) -> Option<String> {
@@ -395,7 +395,7 @@ async fn do_test_on_package(
         if let Some(db_url) = database_url.clone() {
             envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
-        let (stdout, stderr, success) = execute_command_without_logging(
+        let command_output = execute_command_without_logging(
             &cache_miss_command,
             &repo_root,
             &envs,
@@ -404,16 +404,16 @@ async fn do_test_on_package(
         .await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        tracing::debug!("cache_miss: {stdout}");
-        let mut cache_miss_tc = match success {
+        tracing::debug!("cache_miss: {}", command_output.stdout);
+        let mut cache_miss_tc = match command_output.success {
             true => TestCase::success(&cache_miss_command, duration),
             false => {
                 failed = true;
                 TestCase::failure(&cache_miss_command, duration, "", "required")
             }
         };
-        cache_miss_tc.set_system_out(&stderr);
-        cache_miss_tc.set_system_err(&stdout);
+        cache_miss_tc.set_system_out(&command_output.stderr);
+        cache_miss_tc.set_system_err(&command_output.stdout);
         ts_mandatory.add_testcase(cache_miss_tc);
     }
 
@@ -439,12 +439,12 @@ async fn do_test_on_package(
             if sub_failed {
                 continue;
             }
-            let (stdout, stderr, success) =
+            let command_output =
                 execute_command_without_logging(line, &package_path, &envs, &HashSet::new()).await;
-            a_stdout = format!("{a_stdout}\n{stdout}",);
-            a_stderr = format!("{a_stderr}\n{stderr}",);
-            tracing::debug!("additional_script: {line} {stdout}");
-            if !success {
+            a_stdout = format!("{a_stdout}\n{}", command_output.stdout);
+            a_stderr = format!("{a_stderr}\n{}", command_output.stderr);
+            tracing::debug!("additional_script: {line} {}", command_output.stdout);
+            if !command_output.success {
                 sub_failed = true;
             }
         }
@@ -584,7 +584,7 @@ async fn do_test_on_package(
                 )
                 .await;
             }
-            let (stdout, stderr, success) = match fslabs_test.id == "cargo_lock" {
+            let test_output = match fslabs_test.id == "cargo_lock" {
                 true => fix_workspace_lockfile(
                     &repo_root,
                     &package_path,
@@ -592,7 +592,7 @@ async fn do_test_on_package(
                     None,
                     true,
                 )
-                .unwrap_or_else(|e| ("error".to_string(), e.to_string(), false)),
+                .unwrap_or_else(|e| e.into()),
 
                 false => {
                     execute_command(
@@ -619,7 +619,7 @@ async fn do_test_on_package(
             let duration = end_time - start_time;
 
             let mut status = "PASS";
-            let mut tc = match success {
+            let mut tc = match test_output.success {
                 true => {
                     tracing::info!(
                         "│ {} │ 🟢 PASS in {}",
@@ -669,8 +669,8 @@ async fn do_test_on_package(
                     KeyValue::new("status", status),
                 ],
             );
-            tc.set_system_out(&stderr);
-            tc.set_system_err(&stdout);
+            tc.set_system_out(&test_output.stderr);
+            tc.set_system_err(&test_output.stdout);
             match fslabs_test.optional {
                 true => ts_optional.add_testcase(tc),
                 false => ts_mandatory.add_testcase(tc),
