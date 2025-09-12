@@ -202,7 +202,7 @@ pub async fn execute_command_without_logging(
     dir: &PathBuf,
     envs: &HashMap<String, String>,
     envs_remove: &HashSet<String>,
-) -> (String, String, bool) {
+) -> CommandOutput {
     execute_command(command, dir, envs, envs_remove, None, None).await
 }
 
@@ -218,7 +218,7 @@ pub async fn execute_command(
     envs_remove: &HashSet<String>,
     log_stdout: Option<tracing::Level>,
     log_stderr: Option<tracing::Level>,
-) -> (String, String, bool) {
+) -> CommandOutput {
     let shell = if cfg!(target_os = "windows") {
         "powershell.exe"
     } else {
@@ -288,9 +288,13 @@ pub async fn execute_command(
     match status {
         Ok(output) => {
             let exit_code = output.code().unwrap_or(1);
-            (stdout_string.to_string(), stderr_string, exit_code == 0)
+            CommandOutput {
+                stdout: stdout_string.to_string(),
+                stderr: stderr_string,
+                success: exit_code == 0,
+            }
         }
-        Err(e) => ("".to_string(), e.to_string(), false),
+        Err(e) => e.into(),
     }
 }
 
@@ -328,4 +332,40 @@ pub fn get_registry_env(registry_name: String) -> HashMap<String, String> {
         );
     }
     envs
+}
+
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+}
+
+impl From<std::process::Output> for CommandOutput {
+    fn from(output: std::process::Output) -> Self {
+        CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            success: output.status.success(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for CommandOutput {
+    fn from(error: anyhow::Error) -> Self {
+        CommandOutput {
+            stdout: "error".to_string(),
+            stderr: error.to_string(),
+            success: false,
+        }
+    }
+}
+
+impl From<std::io::Error> for CommandOutput {
+    fn from(error: std::io::Error) -> Self {
+        CommandOutput {
+            stdout: "error".to_string(),
+            stderr: error.to_string(),
+            success: false,
+        }
+    }
 }

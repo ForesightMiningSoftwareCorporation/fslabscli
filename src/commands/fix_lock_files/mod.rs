@@ -1,4 +1,6 @@
-use crate::{PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph};
+use crate::{
+    PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph, utils::CommandOutput,
+};
 use clap::Parser;
 use diffy::create_patch;
 use git2::{Repository, build::CheckoutBuilder};
@@ -34,7 +36,7 @@ pub fn fix_workspace_lockfile(
     head_rev: String,
     base_rev: Option<String>,
     check: bool,
-) -> anyhow::Result<(String, String, bool)> {
+) -> anyhow::Result<CommandOutput> {
     let lock_path = workspace_path.join("Cargo.lock");
     let orig_lockfile = match std::fs::read_to_string(&lock_path) {
         Ok(contents) => Some(contents),
@@ -78,11 +80,7 @@ pub fn fix_workspace_lockfile(
         .output()?;
 
     if !output.status.success() {
-        return Ok((
-            String::from_utf8_lossy(&output.stdout).to_string(),
-            String::from_utf8_lossy(&output.stderr).to_string(),
-            false,
-        ));
+        return Ok(output.into());
     }
 
     if check {
@@ -112,17 +110,21 @@ pub fn fix_workspace_lockfile(
             let updated = updated_lockfile.as_deref().unwrap_or("");
             let patch = create_patch(orig, updated);
             diff_output.push_str(&format!("{}", patch));
-            return Ok((
-                "".to_string(),
-                format!(
+            return Ok(CommandOutput {
+                stdout: "".to_string(),
+                stderr: format!(
                     "Cargo.lock is out of sync. Please run 'cargo update --workspace' locally and commit the changes.\n\n{}",
                     diff_output
                 ),
-                false,
-            ));
+                success: false,
+            });
         }
     }
-    Ok(("".to_string(), "".to_string(), true))
+    Ok(CommandOutput {
+        stdout: "".to_string(),
+        stderr: "".to_string(),
+        success: true,
+    })
 }
 
 pub type LockResult = String;
