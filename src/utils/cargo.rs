@@ -233,7 +233,7 @@ impl Cargo {
 
             if res.status().as_u16() == 404 {
                 // New crates
-                return Ok(true);
+                return Ok(false);
             }
             if res.status().as_u16() >= 400 {
                 anyhow::bail!(
