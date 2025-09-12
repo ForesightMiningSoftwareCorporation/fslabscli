@@ -26,8 +26,8 @@ use object_store::{ObjectStore, path::Path as StorePath};
 use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
-use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
+use crate::utils::{CommandOutput, get_registry_env};
 use crate::{
     PrettyPrintable,
     commands::check_workspace::{
@@ -129,6 +129,20 @@ impl PublishDetailResult {
                 tc
             }
             false => TestCase::skipped(&self.name),
+        }
+    }
+
+    fn update_from_command(&mut self, command_output: CommandOutput) {
+        self.success = command_output.success;
+        if self.stdout.is_empty() {
+            self.stdout = command_output.stdout;
+        } else {
+            self.stdout = format!("{}\n{}", self.stdout, command_output.stdout)
+        }
+        if self.stderr.is_empty() {
+            self.stderr = command_output.stderr;
+        } else {
+            self.stderr = format!("{}\n{}", self.stderr, command_output.stderr)
         }
     }
 }
@@ -572,7 +586,7 @@ async fn do_publish_package(
             }
             // First we build
             let build_command = package.publish_detail.s3.build_command;
-            let (stdout, stderr, success) = execute_command(
+            let command_output = execute_command(
                 &build_command,
                 &package_path,
                 &envs,
@@ -581,10 +595,8 @@ async fn do_publish_package(
                 Some(tracing::Level::INFO),
             )
             .await;
-            result.s3.success = success;
-            result.s3.stdout = stdout;
-            result.s3.stderr = stderr;
-            is_failed = !success;
+            result.s3.update_from_command(command_output);
+            is_failed = !result.s3.success;
             if !is_failed {
                 match create_s3_client(
                     package.publish_detail.s3.bucket_name.clone(),
@@ -711,7 +723,7 @@ async fn do_publish_package(
                 env::var("ATTICD_TOKEN"),
             ) {
                 info!("Login to atticd");
-                let (stdout, stderr, success) = execute_command(
+                let command_output = execute_command(
                     &format!("attic login central {atticd_url}/ {atticd_token}"),
                     &repo_root,
                     &HashMap::new(),
@@ -720,12 +732,10 @@ async fn do_publish_package(
                     Some(tracing::Level::DEBUG),
                 )
                 .await;
-                result.nix_binary.success = success;
-                result.nix_binary.stdout = stdout;
-                result.nix_binary.stderr = stderr;
-                is_failed = !success;
+                result.nix_binary.update_from_command(command_output);
+                is_failed = !result.nix_binary.success;
                 if !is_failed {
-                    let (stdout, stderr, success) = execute_command(
+                    let command_output = execute_command(
                         &format!("attic use central:{atticd_cache}"),
                         &package_path,
                         &HashMap::new(),
@@ -734,14 +744,12 @@ async fn do_publish_package(
                         Some(tracing::Level::DEBUG),
                     )
                     .await;
-                    result.nix_binary.success = success;
-                    result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                    result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
-                    is_failed = !success;
+                    result.nix_binary.update_from_command(command_output);
+                    is_failed = !result.nix_binary.success;
                 }
             }
             if !is_failed {
-                let (stdout, stderr, mut success) = execute_command(
+                let mut command_output = execute_command(
                     "nix build .#release",
                     &package_path,
                     &HashMap::new(),
@@ -750,19 +758,18 @@ async fn do_publish_package(
                     Some(tracing::Level::INFO),
                 )
                 .await;
-                if success {
+                if command_output.success {
                     // Let's copy the artifacts to the
-                    success = copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
+                    command_output.success =
+                        copy_files(&package_path.join("result/bin"), &output_dir).is_ok();
                 }
-                result.nix_binary.success = success;
-                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
-                is_failed = !success;
+                result.nix_binary.update_from_command(command_output);
+                is_failed = !result.nix_binary.success;
             }
             if !is_failed && let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
                 // Let's push the store to cachix by rebuilding and pushing
                 info!("Pushing to atticd");
-                let (stdout, stderr, success) = execute_command(
+                let command_output = execute_command(
                     &format!(
                         "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
                     ),
@@ -773,10 +780,8 @@ async fn do_publish_package(
                     Some(tracing::Level::INFO),
                 )
                 .await;
-                result.nix_binary.success = success;
-                result.nix_binary.stdout = format!("{}\n{}", result.nix_binary.stdout, stdout);
-                result.nix_binary.stderr = format!("{}\n{}", result.nix_binary.stderr, stderr);
-                is_failed = !success;
+                result.nix_binary.update_from_command(command_output);
+                is_failed = !result.nix_binary.success;
             }
         }
         result.nix_binary.end_time = Some(SystemTime::now());
@@ -837,7 +842,7 @@ async fn do_publish_package(
                         if options.dry_run {
                             args.push("--dry-run".to_string())
                         }
-                        let (stdout, stderr, success) = execute_command(
+                        let command_output = execute_command(
                             &format!("cargo publish {}", args.join(" ")),
                             &package_path,
                             &envs,
@@ -846,9 +851,7 @@ async fn do_publish_package(
                             Some(tracing::Level::INFO),
                         )
                         .await;
-                        r.success = success;
-                        r.stdout = stdout;
-                        r.stderr = stderr;
+                        r.update_from_command(command_output);
                     } else {
                         r.success = false;
                         r.stderr = format!(
@@ -964,7 +967,7 @@ async fn do_publish_package(
             }
             args.push(context.clone());
             // First we build
-            let (stdout, stderr, success) = execute_command(
+            let command_output = execute_command(
                 &format!("docker build {}", args.join(" ")),
                 &repo_root,
                 &envs,
@@ -973,13 +976,11 @@ async fn do_publish_package(
                 Some(tracing::Level::INFO),
             )
             .await;
-            result.docker.success = success;
-            result.docker.stdout = stdout;
-            result.docker.stderr = stderr;
-            is_failed = !success;
+            result.docker.update_from_command(command_output);
+            is_failed = !result.docker.success;
             if !is_failed {
                 // Tag as latest
-                let (stdout, stderr, success) = execute_command(
+                let command_output = execute_command(
                     &format!("docker tag {image_name} {image_latest}"),
                     &repo_root,
                     &HashMap::new(),
@@ -988,13 +989,11 @@ async fn do_publish_package(
                     Some(tracing::Level::INFO),
                 )
                 .await;
-                result.docker.success = success;
-                result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
-                result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
-                is_failed = !success;
+                result.docker.update_from_command(command_output);
+                is_failed = !result.docker.success;
                 if !is_failed {
                     // Push image
-                    let (stdout, stderr, success) = execute_command(
+                    let command_output = execute_command(
                         &format!("docker push {image_name}"),
                         &repo_root,
                         &HashMap::new(),
@@ -1003,13 +1002,11 @@ async fn do_publish_package(
                         Some(tracing::Level::INFO),
                     )
                     .await;
-                    result.docker.success = success;
-                    result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
-                    result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
-                    is_failed = !success;
+                    result.docker.update_from_command(command_output);
+                    is_failed = !result.docker.success;
                     if !is_failed {
                         // Push latest
-                        let (stdout, stderr, success) = execute_command(
+                        let command_output = execute_command(
                             &format!("docker push {image_latest}"),
                             &repo_root,
                             &HashMap::new(),
@@ -1018,10 +1015,8 @@ async fn do_publish_package(
                             Some(tracing::Level::INFO),
                         )
                         .await;
-                        result.docker.success = success;
-                        result.docker.stdout = format!("{}\n{}", result.docker.stdout, stdout);
-                        result.docker.stderr = format!("{}\n{}", result.docker.stderr, stderr);
-                        is_failed = !success;
+                        result.docker.update_from_command(command_output);
+                        is_failed = !result.docker.success;
                     }
                 }
             }
@@ -1091,7 +1086,7 @@ async fn do_publish_package(
 pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()> {
     // We might need to log to some docker registries
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
-        let (_stdout, stderr, success) = execute_command(
+        let command_output = execute_command(
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
             repo_root,
             &HashMap::new(),
@@ -1100,15 +1095,15 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
             Some(tracing::Level::INFO),
         )
         .await;
-        if !success {
-            return Err(anyhow::anyhow!(stderr));
+        if !command_output.success {
+            return Err(anyhow::anyhow!(command_output.stderr));
         }
     }
     if options.ghcr_oci_url.is_some()
         && options.ghcr_oci_username.is_some()
         && options.ghcr_oci_password.is_some()
     {
-        let (_stdout, stderr, success) = execute_command(
+        let command_output= execute_command(
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
             repo_root,
             &HashMap::new(),
@@ -1117,8 +1112,8 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
             Some(tracing::Level::INFO),
         )
         .await;
-        if !success {
-            return Err(anyhow::anyhow!(stderr));
+        if !command_output.success {
+            return Err(anyhow::anyhow!(command_output.stderr));
         }
     }
     Ok(())
