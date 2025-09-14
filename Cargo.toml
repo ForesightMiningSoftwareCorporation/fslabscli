@@ -137,7 +137,7 @@ version = "0.23.31"
 
 [dependencies.serde]
 features = ["derive", "std"]
-version = "1.0.220"
+version = "1.0.221"
 
 [dependencies.serde_with]
 features = ["macros"]
