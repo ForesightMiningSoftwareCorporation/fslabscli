@@ -115,7 +115,7 @@ version = "0.1.17"
 
 [dependencies.indexmap]
 features = ["serde"]
-version = "2.11.1"
+version = "2.11.2"
 
 [dependencies.object_store]
 features = ["azure", "aws"]
