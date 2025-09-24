@@ -67,7 +67,7 @@ struct Cli {
 pub struct PackageRelatedOptions {
     #[clap(
         long,
-        env = "PULL_PULL_REF",
+        env = "PULL_PULL_SHA",
         default_value = "HEAD",
         alias = "pull-pull-ref"
     )]
