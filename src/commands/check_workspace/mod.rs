@@ -169,6 +169,11 @@ impl Options {
         self
     }
 
+    pub fn with_autopublish_cargo(mut self, autopublish_cargo: bool) -> Self {
+        self.autopublish_cargo = autopublish_cargo;
+        self
+    }
+
     pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
         self.ignore_dev_dependencies = ignore_dev_dependencies;
         self
