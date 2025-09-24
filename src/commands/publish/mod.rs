@@ -1,5 +1,5 @@
 use anyhow::Context;
-use cargo_metadata::PackageId;
+use cargo_metadata::{DependencyKind, PackageId};
 use clap::Parser;
 use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
@@ -79,6 +79,8 @@ pub struct Options {
     dry_run: bool,
     #[arg(long, env, default_value = "false")]
     handle_tags: bool,
+    #[arg(long, default_value_t = false)]
+    autopublish_cargo: bool,
 }
 
 #[derive(Serialize, Default, Clone)]
@@ -806,74 +808,83 @@ async fn do_publish_package(
                 run = false;
             }
             if run {
-                let registry_prefix =
-                    format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_")).to_uppercase();
+                if !options.dry_run {
+                    let registry_prefix =
+                        format!("CARGO_REGISTRIES_{}", registry_name.replace("-", "_"))
+                            .to_uppercase();
 
-                if std::env::var(format!("{registry_prefix}_INDEX")).is_ok() {
-                    // For each reg we need to
-                    // 1. Ensure registry is in `publish = []`
-                    // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
-                    // 3. Ensure there are Cargo.lock
-                    // 4. Publish with --allow-dirty
-                    if patch_crate_for_registry(&repo_root, &package_path, registry_name.clone())
-                        .is_ok()
-                    {
-                        // to publish to a registry we need
-                        // - index url
-                        // - user agent if set
-                        // - ssh key
-                        let envs = get_registry_env(registry_name.clone());
-                        let mut blacklist_envs = HashSet::from([
-                            "GIT_SSH_COMMAND".to_string(),
-                            "SSH_AUTH_SOCK".to_string(),
-                        ]);
-                        for (key, _) in std::env::vars() {
-                            if key.starts_with("CARGO_REGISTRIES_") {
-                                blacklist_envs.insert(key);
-                            }
-                        }
-
-                        let mut args = vec![
-                            additional_args.clone(),
-                            "--registry".to_string(),
-                            registry_name.clone(),
-                            "--allow-dirty".to_string(),
-                        ];
-                        if options.dry_run {
-                            args.push("--dry-run".to_string())
-                        }
-                        let command_output = execute_command(
-                            &format!("cargo publish {}", args.join(" ")),
+                    if std::env::var(format!("{registry_prefix}_INDEX")).is_ok() {
+                        // For each reg we need to
+                        // 1. Ensure registry is in `publish = []`
+                        // 2. Find and replace `main_registry` to `current_registry` in Cargo.toml
+                        // 3. Ensure there are Cargo.lock
+                        // 4. Publish with --allow-dirty
+                        if patch_crate_for_registry(
+                            &repo_root,
                             &package_path,
-                            &envs,
-                            &blacklist_envs,
-                            Some(tracing::Level::INFO),
-                            Some(tracing::Level::INFO),
+                            registry_name.clone(),
                         )
-                        .await;
-                        r.update_from_command(command_output);
-                    } else {
-                        r.success = false;
-                        r.stderr = format!(
-                            "registry {registry_name} not setup correctly, missing index, private_key, and token"
-                        );
+                        .is_ok()
+                        {
+                            // to publish to a registry we need
+                            // - index url
+                            // - user agent if set
+                            // - ssh key
+                            let envs = get_registry_env(registry_name.clone());
+                            let mut blacklist_envs = HashSet::from([
+                                "GIT_SSH_COMMAND".to_string(),
+                                "SSH_AUTH_SOCK".to_string(),
+                            ]);
+                            for (key, _) in std::env::vars() {
+                                if key.starts_with("CARGO_REGISTRIES_") {
+                                    blacklist_envs.insert(key);
+                                }
+                            }
+
+                            let mut args = vec![
+                                additional_args.clone(),
+                                "--registry".to_string(),
+                                registry_name.clone(),
+                                "--allow-dirty".to_string(),
+                            ];
+                            if options.dry_run {
+                                args.push("--dry-run".to_string())
+                            }
+                            let command_output = execute_command(
+                                &format!("cargo publish {}", args.join(" ")),
+                                &package_path,
+                                &envs,
+                                &blacklist_envs,
+                                Some(tracing::Level::INFO),
+                                Some(tracing::Level::INFO),
+                            )
+                            .await;
+                            r.update_from_command(command_output);
+                        } else {
+                            r.success = false;
+                            r.stderr = format!(
+                                "registry {registry_name} not setup correctly, missing index, private_key, and token"
+                            );
+                        }
+                        // Path back to the main registry
+                        if patch_crate_for_registry(
+                            &repo_root,
+                            &package_path,
+                            common_options.cargo_main_registry.clone(),
+                        )
+                        .is_err()
+                        {
+                            r.success = false;
+                            r.stderr = format!(
+                                "registry {} not setup correctly, missing index, private_key, and token",
+                                common_options.cargo_main_registry.clone()
+                            );
+                        }
                     }
-                    // Path back to the main registry
-                    if patch_crate_for_registry(
-                        &repo_root,
-                        &package_path,
-                        common_options.cargo_main_registry.clone(),
-                    )
-                    .is_err()
-                    {
-                        r.success = false;
-                        r.stderr = format!(
-                            "registry {} not setup correctly, missing index, private_key, and token",
-                            common_options.cargo_main_registry.clone()
-                        );
-                    }
+                    is_failed = !r.success;
+                } else {
+                    r.success = true;
                 }
-                is_failed = !r.success;
             }
             r.end_time = Some(SystemTime::now());
             result.cargo.insert(registry_name.clone(), r);
@@ -1205,6 +1216,7 @@ pub async fn publish(
     // Check workspace information
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
+        .with_autopublish_cargo(options.autopublish_cargo)
         .with_ignore_dev_dependencies(true);
 
     let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
@@ -1260,7 +1272,17 @@ pub async fn publish(
                 .dependency_graph()
                 .dependencies
                 .get(member_id)
-                .cloned(),
+                .map(|deps| {
+                    // We should remove the dev and path only dependencies from the tree
+                    deps.into_iter()
+                        .filter(|d| {
+                            d.instances
+                                .iter()
+                                .any(|k| k.kind != DependencyKind::Development || !k.is_local)
+                        })
+                        .cloned()
+                        .collect::<Vec<Dependency>>()
+                }),
             status,
             o,
             c,
