@@ -1274,7 +1274,7 @@ pub async fn publish(
                 .get(member_id)
                 .map(|deps| {
                     // We should remove the dev and path only dependencies from the tree
-                    deps.into_iter()
+                    deps.iter()
                         .filter(|d| {
                             d.instances
                                 .iter()
