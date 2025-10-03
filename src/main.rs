@@ -72,7 +72,7 @@ pub struct PackageRelatedOptions {
         alias = "pull-pull-ref"
     )]
     head_rev: String,
-    #[clap(long, env = "PULL_BASE_REF", alias = "pull-base-ref")]
+    #[clap(long, env = "PULL_BASE_SHA", alias = "pull-base-ref")]
     base_rev: Option<String>,
     #[arg(long, env, default_value = "1")]
     job_limit: usize,
