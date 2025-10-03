@@ -223,15 +223,20 @@
                 ...
               }:
               {
-                packages = with pkgs; [
-                  # self.packages.${system}.default
-                  # updatecli
-                  cargo-deny
-                  rustup
-                  xunit-viewer
-                  protobuf
-                  trunk
-                ];
+                packages =
+                  (with pkgs; [
+                    # self.packages.${system}.default
+                    # updatecli
+                    cargo-deny
+                    cargo-nextest
+                    xunit-viewer
+                    protobuf
+                    trunk
+                  ])
+                  ++ [
+                    # Use fenix's rust-analyzer for compatibility with fenix toolchain
+                    fenixPkgs.rust-analyzer
+                  ];
                 languages = {
                   nix.enable = true;
                   rust = {
