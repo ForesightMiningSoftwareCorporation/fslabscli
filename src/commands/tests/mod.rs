@@ -15,7 +15,8 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fmt::{Display, Formatter},
-    fs::File,
+    fs::{File, create_dir_all, remove_dir_all},
+    io::Write,
     path::PathBuf,
     sync::Arc,
     thread::sleep,
@@ -75,6 +76,7 @@ struct FslabsTest {
     pub post_command: Option<String>,
     pub envs: HashMap<String, String>,
     pub skip: bool,
+    pub parse_subtests: bool,
 }
 
 async fn teardown_container(container_id: String) {
@@ -140,6 +142,161 @@ fn get_test_arg(test_args: &IndexMap<String, Value>, arg: &str) -> Option<String
 
 fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<bool> {
     test_args.get(arg).and_then(|v| v.as_bool())
+}
+
+async fn has_cargo_nextest() -> bool {
+    if let Ok(output) = tokio::process::Command::new("cargo")
+        .args(["nextest", "--version"])
+        .output()
+        .await
+    {
+        output.status.success()
+    } else {
+        false
+    }
+}
+
+/// Count the number of test cases using `cargo nextest list`
+async fn count_nextest_tests(package_path: &PathBuf) -> usize {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    struct NextestList {
+        #[serde(rename = "test-count")]
+        test_count: usize,
+    }
+
+    let output = tokio::process::Command::new("cargo")
+        .arg("nextest")
+        .arg("list")
+        .arg("--message-format")
+        .arg("json")
+        .current_dir(package_path)
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return 0;
+    };
+
+    if !output.status.success() {
+        return 0;
+    }
+
+    let Ok(json_str) = String::from_utf8(output.stdout) else {
+        return 0;
+    };
+
+    // Parse the JSON output
+    match serde_json::from_str::<NextestList>(&json_str) {
+        Ok(list) => list.test_count,
+        Err(_) => 0,
+    }
+}
+
+fn merge_nextest_junit(
+    testsuite: &mut junit_report::TestSuite,
+    junit_path: &PathBuf,
+    package_name: &str,
+    current_step: usize,
+    total_steps: usize,
+) -> anyhow::Result<()> {
+    use quick_xml::de::from_str;
+
+    if !junit_path.exists() {
+        tracing::debug!("Nextest JUnit file not found at {:?}", junit_path);
+        return Ok(());
+    }
+
+    let xml_content = std::fs::read_to_string(junit_path)?;
+
+    // Nextest generates: <testsuites><testsuite><testcase/></testsuite></testsuites>
+    #[derive(Debug, serde::Deserialize)]
+    struct JUnitTestSuites {
+        #[serde(rename = "testsuite", default)]
+        testsuite: Vec<JUnitTestSuite>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct JUnitTestSuite {
+        #[serde(rename = "testcase", default)]
+        testcase: Vec<JUnitTestCase>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct JUnitTestCase {
+        #[serde(rename = "@name")]
+        name: String,
+        #[serde(rename = "@time")]
+        time: f64,
+        #[serde(default)]
+        failure: Option<JUnitFailure>,
+        #[serde(default)]
+        skipped: Option<JUnitSkipped>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct JUnitFailure {
+        #[serde(rename = "@message", default)]
+        message: String,
+        #[serde(rename = "$text", default)]
+        text: String,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct JUnitSkipped {
+        #[serde(rename = "@message", default)]
+        #[allow(dead_code)]
+        message: String,
+    }
+
+    match from_str::<JUnitTestSuites>(&xml_content) {
+        Ok(junit_data) => {
+            let mut merged_count = 0;
+            let mut subtest_num = current_step;
+            for suite in junit_data.testsuite {
+                for test_case in suite.testcase {
+                    let duration = junit_report::Duration::nanoseconds(
+                        (test_case.time * 1_000_000_000.0) as i64,
+                    );
+
+                    // Format with package name and step count like high-level steps
+                    let test_name = format!(
+                        "{:30.30} {}/{} │ {}",
+                        package_name, subtest_num, total_steps, test_case.name
+                    );
+
+                    let tc = if let Some(failure) = test_case.failure {
+                        TestCase::failure(
+                            &test_name,
+                            duration,
+                            "test",
+                            &format!("{}\n{}", failure.message, failure.text),
+                        )
+                    } else if test_case.skipped.is_some() {
+                        TestCase::skipped(&test_name)
+                    } else {
+                        TestCase::success(&test_name, duration)
+                    };
+
+                    testsuite.add_testcase(tc);
+                    merged_count += 1;
+                    subtest_num += 1;
+                }
+            }
+            if merged_count > 0 {
+                tracing::debug!(
+                    "Merged {} nextest test cases into JUnit report",
+                    merged_count
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("Failed to parse nextest JUnit XML: {}", e);
+            Ok(())
+        }
+    }
 }
 
 pub async fn tests(
@@ -296,9 +453,13 @@ async fn do_test_on_package(
     let test_args = member.test_detail.args.unwrap_or_default();
     let additional_args = get_test_arg(&test_args, "additional_args").unwrap_or_default();
     let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
+    let use_nextest = has_cargo_nextest().await;
+    let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
     let mut service_database_container_id: Option<String> = None;
     let mut database_url: Option<String> = None;
     let mut service_azurite_container_id: Option<String> = None;
+    let mut service_minio_container_id: Option<String> = None;
+    let mut minio_endpoint: Option<String> = None;
 
     if member.changed {
         metrics.changed_counter.add(
@@ -385,6 +546,61 @@ async fn do_test_on_package(
             }
         };
         ts_mandatory.add_testcase(service_azurite_tc);
+    }
+
+    // Handle service minio
+    if !failed && get_test_arg_bool(&test_args, "service_minio") == Some(true) {
+        tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
+        let start_time = OffsetDateTime::now_utc();
+        let minio_port = free_local_port().unwrap();
+        let minio_console_port = free_local_port().unwrap();
+        let minio_container = create_docker_container(
+            "minio".to_string(),
+            "-e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin".to_string(),
+            format!("-p {minio_port}:9000 -p {minio_console_port}:9001"),
+            "server /data --console-address :9001".to_string(),
+            "minio/minio:latest".to_string(),
+        )
+        .await;
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        let service_minio_tc = match minio_container {
+            Ok(container_id) => {
+                service_minio_container_id = Some(container_id.clone());
+                minio_endpoint = Some(format!("http://127.0.0.1:{minio_port}"));
+
+                // Wait for MinIO to be ready and create default bucket
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                // Create bucket using MinIO client (mc)
+                let create_bucket_result = tokio::process::Command::new("docker")
+                    .args([
+                        "exec",
+                        &container_id,
+                        "sh",
+                        "-c",
+                        "mc alias set myminio http://localhost:9000 minioadmin minioadmin && mc mb myminio/test-bucket --ignore-existing"
+                    ])
+                    .output()
+                    .await;
+
+                if let Err(e) = create_bucket_result {
+                    tracing::warn!("Failed to create MinIO bucket: {}", e);
+                }
+
+                TestCase::success("service_minio", duration)
+            }
+            Err(e) => {
+                failed = true;
+                TestCase::failure(
+                    "service_minio",
+                    duration,
+                    "service_minio",
+                    e.to_string().as_str(),
+                )
+            }
+        };
+        ts_mandatory.add_testcase(service_minio_tc);
     }
 
     // Handle cache miss (this should be dropped and only additional script)
@@ -506,18 +722,52 @@ async fn do_test_on_package(
         },
         FslabsTest {
             id: "cargo_test".to_string(),
-            command: format!(
-                "cargo test --all-targets {additional_args} {}",
-                if common_options.inner_job_limit != 0 {
-                    format!("--jobs {}", common_options.inner_job_limit)
-                } else {
-                    "".to_string()
+            command: if use_nextest {
+                format!(
+                    "cargo nextest run --all-targets {additional_args} --profile default {} --no-fail-fast",
+                    if common_options.inner_job_limit != 0 {
+                        format!("--test-threads {}", common_options.inner_job_limit)
+                    } else {
+                        "".to_string()
+                    }
+                )
+            } else {
+                format!(
+                    "cargo test --all-targets {additional_args} {}",
+                    if common_options.inner_job_limit != 0 {
+                        format!("--jobs {}", common_options.inner_job_limit)
+                    } else {
+                        "".to_string()
+                    }
+                )
+            },
+            pre_command: {
+                let mut env_lines = Vec::new();
+
+                if let Some(db_url) = database_url.clone() {
+                    env_lines.push(format!("DATABASE_URL={}", db_url));
                 }
-            ),
-            pre_command: database_url
-                .clone()
-                .map(|d| format!("echo DATABASE_URL={d} > .env")),
-            post_command: database_url.clone().map(|_| "rm .env".to_string()),
+
+                if let Some(endpoint) = minio_endpoint.clone() {
+                    env_lines.push(format!("S3_ENDPOINT={}", endpoint));
+                    env_lines.push("S3_REGION=us-east-1".to_string());
+                    env_lines.push("S3_BUCKET=test-bucket".to_string());
+                    env_lines.push("S3_ACCESS_KEY_ID=minioadmin".to_string());
+                    env_lines.push("S3_SECRET_ACCESS_KEY=minioadmin".to_string());
+                }
+
+                if !env_lines.is_empty() {
+                    Some(format!("echo '{}' > .env", env_lines.join("\\n")))
+                } else {
+                    None
+                }
+            },
+            post_command: if database_url.is_some() || minio_endpoint.is_some() {
+                Some("rm .env".to_string())
+            } else {
+                None
+            },
+            parse_subtests: use_nextest,
             ..Default::default()
         },
     ]
@@ -533,7 +783,13 @@ async fn do_test_on_package(
     })
     .collect();
 
-    let test_steps = fslabs_tests.len();
+    // Count nextest subtests if available to adjust total step count
+    let nextest_subtest_count = if use_nextest {
+        count_nextest_tests(&package_path).await
+    } else {
+        0
+    };
+    let test_steps = fslabs_tests.len() + nextest_subtest_count;
 
     for (mut i, fslabs_test) in fslabs_tests.into_iter().enumerate() {
         i += 1;
@@ -575,6 +831,22 @@ async fn do_test_on_package(
         } else {
             tracing::info!("│ {} │ ► START", tc_prefix,);
             let start_time = OffsetDateTime::now_utc();
+
+            // Setup nextest configuration if this is the cargo_test step and nextest is available
+            if fslabs_test.id == "cargo_test" && use_nextest {
+                let config_dir = package_path.join(".config");
+                let config_file = config_dir.join("nextest.toml");
+
+                if let Err(e) = create_dir_all(&config_dir) {
+                    tracing::warn!("Failed to create .config directory: {}", e);
+                } else if let Ok(mut file) = File::create(&config_file) {
+                    let config_content = "[profile.default.junit]\npath = \"junit.xml\"\n";
+                    if let Err(e) = file.write_all(config_content.as_bytes()) {
+                        tracing::warn!("Failed to write nextest config: {}", e);
+                    }
+                }
+            }
+
             if let Some(pre_command) = fslabs_test.pre_command {
                 execute_command_without_logging(
                     &pre_command,
@@ -615,6 +887,15 @@ async fn do_test_on_package(
                 )
                 .await;
             }
+
+            // Cleanup nextest configuration if this is the cargo_test step and nextest was used
+            if fslabs_test.id == "cargo_test" && use_nextest {
+                let config_dir = package_path.join(".config");
+                if let Err(e) = remove_dir_all(&config_dir) {
+                    tracing::debug!("Failed to cleanup .config directory: {}", e);
+                }
+            }
+
             let end_time = OffsetDateTime::now_utc();
             let duration = end_time - start_time;
 
@@ -675,6 +956,24 @@ async fn do_test_on_package(
                 true => ts_optional.add_testcase(tc),
                 false => ts_mandatory.add_testcase(tc),
             };
+
+            // Parse and merge nextest JUnit XML if this is a cargo_test step with subtests
+            if fslabs_test.parse_subtests
+                && fslabs_test.id == "cargo_test"
+                && let Err(e) = merge_nextest_junit(
+                    if fslabs_test.optional {
+                        &mut ts_optional
+                    } else {
+                        &mut ts_mandatory
+                    },
+                    &nextest_junit_path,
+                    &package_name,
+                    i, // current_step - this is the cargo_test step number
+                    test_steps,
+                )
+            {
+                tracing::warn!("Failed to merge nextest JUnit results: {}", e);
+            }
         }
     }
 
@@ -691,6 +990,10 @@ async fn do_test_on_package(
             "│ {:30.30}     │ Tearing down service azurite",
             package_name
         );
+        teardown_container(container_id).await;
+    }
+    if let Some(container_id) = service_minio_container_id {
+        tracing::info!("│ {:30.30}     │ Tearing down service minio", package_name);
         teardown_container(container_id).await;
     }
     junit_report.add_testsuite(ts_mandatory);
