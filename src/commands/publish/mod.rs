@@ -81,6 +81,10 @@ pub struct Options {
     handle_tags: bool,
     #[arg(long, default_value_t = false)]
     autopublish_cargo: bool,
+    /// Pattern for matching release tags (e.g., "v*" or "cargo-fslabscli-*")
+    /// Used to filter which tags are considered for GitHub release lookup
+    #[arg(long, env, default_value = "v*")]
+    tag_pattern: String,
 }
 
 #[derive(Serialize, Default, Clone)]
@@ -1130,10 +1134,60 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Resolves a commit SHA (or git reference) to a git tag name.
+/// This is used to find the GitHub release tag associated with a commit.
+/// Uses `git describe --tags --exact-match --match <pattern>` for efficient lookup.
+/// Filters tags by the provided pattern (e.g., "v*" or "cargo-fslabscli-*")
+fn resolve_commit_to_tag(
+    repo_root: &PathBuf,
+    commit_ref: &str,
+    tag_pattern: &str,
+) -> anyhow::Result<String> {
+    use std::process::Command;
+
+    // Use git describe for efficient exact-match tag lookup
+    let output = Command::new("git")
+        .arg("describe")
+        .arg("--tags")
+        .arg("--exact-match")
+        .arg(format!("--match={}", tag_pattern))
+        .arg(commit_ref)
+        .current_dir(repo_root)
+        .output()
+        .with_context(|| format!("Failed to execute git describe for {}", commit_ref))?;
+
+    if output.status.success() {
+        let tag = String::from_utf8(output.stdout)
+            .context("git describe output is not valid UTF-8")?
+            .trim()
+            .to_string();
+
+        tracing::debug!("Resolved {} to tag: {}", commit_ref, tag);
+        Ok(tag)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Parse the commit SHA from stderr if available for better error message
+        let commit_sha = if stderr.contains("fatal:") {
+            commit_ref.to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+
+        Err(anyhow::anyhow!(
+            "No tag matching pattern '{}' found for commit {}. Git error: {}",
+            tag_pattern,
+            commit_sha,
+            stderr.trim()
+        ))
+    }
+}
+
 pub async fn report_publish_to_github(
     common_options: &PackageRelatedOptions,
     options: &Options,
     artifact_dir: &PathBuf,
+    repo_root: &PathBuf,
 ) -> anyhow::Result<()> {
     if let (Some(github_app_id), Some(github_app_private_key)) = (
         options.github_app_id,
@@ -1148,12 +1202,20 @@ pub async fn report_publish_to_github(
         .await?;
         let octocrab = Octocrab::builder().personal_token(github_token).build()?;
 
+        // Resolve the base_rev (commit SHA) to a git tag using the configured pattern
+        let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
+        let release_tag = resolve_commit_to_tag(repo_root, base_rev, &options.tag_pattern)?;
+
+        tracing::info!(
+            "Resolved commit {} to tag: {} (pattern: {})",
+            base_rev,
+            release_tag,
+            options.tag_pattern
+        );
+
         let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
         let repo_releases = repo.releases();
-        if let Ok(release) = repo_releases
-            .get_by_tag(common_options.base_rev.as_deref().unwrap_or("HEAD~"))
-            .await
-        {
+        if let Ok(release) = repo_releases.get_by_tag(&release_tag).await {
             let paths = fs::read_dir(artifact_dir)?;
             for artifact in paths.flatten() {
                 let artifact_path = artifact.path();
@@ -1295,7 +1357,7 @@ pub async fn publish(
     futures::future::join_all(handles).await;
 
     // Report publish result to github
-    report_publish_to_github(common_options, options, &artifact_dir)
+    report_publish_to_github(common_options, options, &artifact_dir, &repo_root)
         .await
         .with_context(|| "Issue reporting to GitHub")?;
 
@@ -1317,4 +1379,340 @@ pub async fn publish(
     // Craft Junit Results
     r.craft_junit(&options.artifacts)?;
     Ok(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use git2::{Repository, Signature};
+    use std::path::PathBuf;
+
+    use super::resolve_commit_to_tag;
+    use crate::utils::test::{commit_all_changes, modify_file};
+
+    /// Helper function to create a test git repository with initial commit
+    fn create_test_repo() -> (assert_fs::TempDir, PathBuf) {
+        let temp_dir = assert_fs::TempDir::new().expect("Failed to create temp directory");
+        let repo_path = temp_dir.path().to_path_buf();
+
+        let repo = Repository::init(&repo_path).expect("Failed to init repository");
+
+        // Configure Git user info (required for commits)
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Test User")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "test@example.com")
+            .unwrap();
+
+        // Create initial file and commit
+        modify_file(&repo_path, "README.md", "# Test Repository");
+        commit_all_changes(&repo_path, "Initial commit");
+
+        (temp_dir, repo_path)
+    }
+
+    /// Helper function to create a commit in the repository
+    fn create_commit(repo_path: &PathBuf, message: &str) -> git2::Oid {
+        // Modify a file to have something to commit
+        modify_file(repo_path, "test.txt", &format!("Content for {}", message));
+        commit_all_changes(repo_path, message);
+
+        // Get the commit OID
+        let repo = Repository::open(repo_path).expect("Failed to open repository");
+        repo.head()
+            .expect("Failed to get HEAD")
+            .target()
+            .expect("HEAD has no target")
+    }
+
+    /// Helper function to create a lightweight tag pointing to a commit
+    fn create_tag(repo_path: &PathBuf, tag_name: &str, commit_oid: git2::Oid) {
+        let repo = Repository::open(repo_path).expect("Failed to open repository");
+        let commit = repo.find_commit(commit_oid).expect("Failed to find commit");
+        let obj = commit.as_object();
+
+        repo.tag_lightweight(tag_name, obj, false)
+            .expect("Failed to create tag");
+    }
+
+    #[test]
+    fn test_resolve_commit_with_cargo_fslabscli_tag() {
+        // Test: A commit with cargo-fslabscli-* tag (project's actual format)
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Add feature");
+        create_tag(&repo_path, "cargo-fslabscli-2.29.1", commit_oid);
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "cargo-fslabscli-*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+        assert_eq!(result.unwrap(), "cargo-fslabscli-2.29.1");
+    }
+
+    #[test]
+    fn test_resolve_commit_with_version_tag() {
+        // Test: A commit with a version tag (v-prefixed) should return that tag
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Add feature");
+        create_tag(&repo_path, "v2.29.1", commit_oid);
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+        assert_eq!(result.unwrap(), "v2.29.1");
+    }
+
+    #[test]
+    fn test_resolve_commit_with_multiple_tags_filters_by_pattern() {
+        // Test: When multiple tags exist, pattern matching filters correctly
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Release commit");
+
+        // Create tags with different patterns
+        create_tag(&repo_path, "latest", commit_oid);
+        create_tag(&repo_path, "release-1.0.0", commit_oid);
+        create_tag(&repo_path, "v1.0.0", commit_oid);
+        create_tag(&repo_path, "stable", commit_oid);
+
+        // Should find only v-prefixed tag when pattern is "v*"
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+        assert_eq!(result.unwrap(), "v1.0.0", "Should return v-prefixed tag");
+    }
+
+    #[test]
+    fn test_resolve_commit_filters_by_exact_pattern() {
+        // Test: Pattern matching is exact - only matches the specified pattern
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Release commit");
+
+        // Create both tag formats
+        create_tag(&repo_path, "v2.0.0", commit_oid);
+        create_tag(&repo_path, "cargo-fslabscli-2.29.1", commit_oid);
+
+        // When searching for "v*", should only return v-prefixed tag
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+        assert_eq!(result.unwrap(), "v2.0.0", "Should return only v-prefixed tag");
+
+        // When searching for "cargo-fslabscli-*", should only return that tag
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "cargo-fslabscli-*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+        assert_eq!(result.unwrap(), "cargo-fslabscli-2.29.1");
+    }
+
+    #[test]
+    fn test_resolve_commit_with_pattern_mismatch_returns_error() {
+        // Test: When no tags match the pattern, should return error
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Tagged commit");
+
+        create_tag(&repo_path, "latest", commit_oid);
+        create_tag(&repo_path, "stable", commit_oid);
+
+        // Try to find v* tags when only "latest" and "stable" exist
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_err(), "Should return error when no tags match pattern");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("No tag matching pattern"),
+            "Error message should mention pattern mismatch, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_resolve_commit_with_no_tags_returns_error() {
+        // Test: A commit with no tags should return an error
+        let (_temp_dir, repo_path) = create_test_repo();
+        create_commit(&repo_path, "Untagged commit");
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_err(), "Should return error for untagged commit");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("No tag matching pattern"),
+            "Error message should mention no tags matching pattern, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_resolve_invalid_commit_reference_returns_error() {
+        // Test: An invalid reference should return an error
+        let (_temp_dir, repo_path) = create_test_repo();
+
+        let result = resolve_commit_to_tag(&repo_path, "nonexistent-ref", "v*");
+        assert!(result.is_err(), "Should return error for invalid reference");
+
+        let err_msg = result.unwrap_err().to_string();
+        // git describe will produce an error about the bad revision
+        assert!(
+            err_msg.contains("No tag matching pattern") || err_msg.contains("Git error"),
+            "Error message should indicate failure, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_resolve_commit_sha_directly() {
+        // Test: Should be able to resolve using a commit SHA directly
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Feature commit");
+        create_tag(&repo_path, "v3.0.0", commit_oid);
+
+        let commit_sha = commit_oid.to_string();
+        let result = resolve_commit_to_tag(&repo_path, &commit_sha, "v*");
+        assert!(result.is_ok(), "Should resolve commit SHA to tag");
+        assert_eq!(result.unwrap(), "v3.0.0");
+    }
+
+    #[test]
+    fn test_resolve_commit_sha_short_form() {
+        // Test: Should be able to resolve using a short commit SHA
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Short SHA test");
+        create_tag(&repo_path, "v4.0.0", commit_oid);
+
+        let commit_sha = commit_oid.to_string();
+        let short_sha = &commit_sha[..7]; // Use first 7 characters
+        let result = resolve_commit_to_tag(&repo_path, short_sha, "v*");
+        assert!(result.is_ok(), "Should resolve short commit SHA to tag");
+        assert_eq!(result.unwrap(), "v4.0.0");
+    }
+
+    #[test]
+    fn test_resolve_head_reference() {
+        // Test: Should resolve HEAD reference to tag
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "HEAD commit");
+        create_tag(&repo_path, "v5.0.0", commit_oid);
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should resolve HEAD to tag");
+        assert_eq!(result.unwrap(), "v5.0.0");
+    }
+
+    #[test]
+    fn test_resolve_branch_reference() {
+        // Test: Should resolve a branch reference to tag
+        let (_temp_dir, repo_path) = create_test_repo();
+        let repo = Repository::open(&repo_path).expect("Failed to open repository");
+
+        // Create a commit and tag it
+        let commit_oid = create_commit(&repo_path, "Branch commit");
+        create_tag(&repo_path, "v6.0.0", commit_oid);
+
+        // Create a branch pointing to this commit
+        let commit = repo.find_commit(commit_oid).expect("Failed to find commit");
+        repo.branch("feature-branch", &commit, false)
+            .expect("Failed to create branch");
+
+        let result = resolve_commit_to_tag(&repo_path, "feature-branch", "v*");
+        assert!(result.is_ok(), "Should resolve branch reference to tag");
+        assert_eq!(result.unwrap(), "v6.0.0");
+    }
+
+    #[test]
+    fn test_resolve_older_commit_with_tag() {
+        // Test: Should resolve to tag on an older commit (not HEAD)
+        let (_temp_dir, repo_path) = create_test_repo();
+
+        // Create first commit with tag
+        let first_commit_oid = create_commit(&repo_path, "First release");
+        create_tag(&repo_path, "v1.0.0", first_commit_oid);
+
+        // Create second commit (HEAD) without tag
+        create_commit(&repo_path, "Second commit");
+
+        // Should still be able to resolve the first commit by its SHA
+        let commit_sha = first_commit_oid.to_string();
+        let result = resolve_commit_to_tag(&repo_path, &commit_sha, "v*");
+        assert!(result.is_ok(), "Should resolve older commit to tag");
+        assert_eq!(result.unwrap(), "v1.0.0");
+    }
+
+    #[test]
+    fn test_multiple_version_tags_returns_matching_tag() {
+        // Test: When multiple v-prefixed tags exist, returns one that matches the pattern
+        // Note: git describe doesn't guarantee which tag when multiple match the same commit
+        let (_temp_dir, repo_path) = create_test_repo();
+        let commit_oid = create_commit(&repo_path, "Multi-version commit");
+
+        // Create multiple tags
+        create_tag(&repo_path, "v1.0.0", commit_oid);
+        create_tag(&repo_path, "v2.0.0", commit_oid);
+        create_tag(&repo_path, "v1.0.1", commit_oid);
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should successfully resolve to tag");
+
+        // Should return one of the v-prefixed tags
+        let tag = result.unwrap();
+        assert!(
+            tag.starts_with("v"),
+            "Should return a v-prefixed tag, got: {}",
+            tag
+        );
+
+        // Verify it's deterministic by calling again (should return same tag)
+        let result2 = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert_eq!(result2.unwrap(), tag, "Should return same tag consistently");
+    }
+
+    #[test]
+    fn test_resolve_head_tilde_reference() {
+        // Test: Should resolve HEAD~ reference to tag on parent commit
+        let (_temp_dir, repo_path) = create_test_repo();
+
+        // First commit with tag
+        let first_commit_oid = create_commit(&repo_path, "First release");
+        create_tag(&repo_path, "v1.0.0", first_commit_oid);
+
+        // Second commit (becomes HEAD)
+        create_commit(&repo_path, "Second commit");
+
+        // Should resolve HEAD~ to the first commit's tag
+        let result = resolve_commit_to_tag(&repo_path, "HEAD~", "v*");
+        assert!(result.is_ok(), "Should resolve HEAD~ to tag");
+        assert_eq!(result.unwrap(), "v1.0.0");
+    }
+
+    #[test]
+    fn test_annotated_tag_resolution() {
+        // Test: Should resolve annotated tags (not just lightweight tags)
+        let (_temp_dir, repo_path) = create_test_repo();
+        let repo = Repository::open(&repo_path).expect("Failed to open repository");
+
+        let commit_oid = create_commit(&repo_path, "Annotated tag commit");
+        let commit = repo.find_commit(commit_oid).expect("Failed to find commit");
+        let obj = commit.as_object();
+
+        // Create an annotated tag
+        let sig =
+            Signature::now("Test User", "test@example.com").expect("Failed to create signature");
+        repo.tag("v7.0.0", obj, &sig, "Release v7.0.0", false)
+            .expect("Failed to create annotated tag");
+
+        let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
+        assert!(result.is_ok(), "Should resolve annotated tag");
+        assert_eq!(result.unwrap(), "v7.0.0");
+    }
+
+    #[test]
+    fn test_invalid_repo_path_returns_error() {
+        // Test: Invalid repository path should return error
+        let invalid_path = PathBuf::from("/nonexistent/path/to/repo");
+
+        let result = resolve_commit_to_tag(&invalid_path, "HEAD", "v*");
+        assert!(result.is_err(), "Should return error for invalid repo path");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to execute git describe") || err_msg.contains("Git error"),
+            "Error message should mention git failure, got: {}",
+            err_msg
+        );
+    }
 }
