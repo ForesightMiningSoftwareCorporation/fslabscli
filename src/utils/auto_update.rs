@@ -7,6 +7,53 @@ use self_update::{
 use tempfile::TempDir;
 use tracing::info;
 
+/// Returns a list of compatible target patterns for the detected target.
+///
+/// This function handles platform-specific compatibility, particularly for Linux
+/// where musl-built binaries can run on glibc-based systems. The function returns
+/// the detected target first, followed by any compatible alternatives.
+///
+/// # Arguments
+///
+/// * `detected_target` - The target triple detected by self_update
+///
+/// # Returns
+///
+/// A vector of target patterns to search for in release assets, ordered by preference.
+///
+/// # Examples
+///
+/// ```
+/// let targets = get_compatible_targets("x86_64-unknown-linux-gnu");
+/// assert_eq!(targets, vec!["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]);
+/// ```
+fn get_compatible_targets(detected_target: &str) -> Vec<String> {
+    let mut targets = vec![detected_target.to_string()];
+
+    // On Linux, musl binaries can run on glibc systems, so if we detect a gnu target,
+    // we should also try the corresponding musl target as a fallback.
+    // This handles the case where binaries are built with musl (e.g., via Nix)
+    // but the runtime system uses glibc.
+    match detected_target {
+        "x86_64-unknown-linux-gnu" => {
+            targets.push("x86_64-unknown-linux-musl".to_string());
+        }
+        "aarch64-unknown-linux-gnu" => {
+            targets.push("aarch64-unknown-linux-musl".to_string());
+        }
+        "i686-unknown-linux-gnu" => {
+            targets.push("i686-unknown-linux-musl".to_string());
+        }
+        "armv7-unknown-linux-gnueabihf" => {
+            targets.push("armv7-unknown-linux-musleabihf".to_string());
+        }
+        // For other platforms (Windows, macOS, or already-musl Linux), no fallback needed
+        _ => {}
+    }
+
+    targets
+}
+
 pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
     let checker = self_update::backends::github::Update::configure()
         .repo_owner("ForesightMiningSoftwareCorporation")
@@ -21,11 +68,18 @@ pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
     let latest_version = latest_release.version.split("-").last().unwrap();
 
     if bump_is_greater(&current_version, latest_version).unwrap_or(false) {
-        // Find the correct release asset to download
-        let release_asset_for_arch = latest_release
-            .assets
-            .iter()
-            .find(|a| a.name.contains(&checker.target()));
+        // Get the list of compatible targets to search for
+        let detected_target = checker.target();
+        let compatible_targets = get_compatible_targets(&detected_target);
+
+        // Find the correct release asset to download by checking all compatible targets
+        // We iterate through compatible targets in order of preference (detected first, then fallbacks)
+        let release_asset_for_arch = compatible_targets.iter().find_map(|target| {
+            latest_release
+                .assets
+                .iter()
+                .find(|a| a.name.contains(target))
+        });
 
         if let Some(release_asset) = release_asset_for_arch {
             info!("Updating to version {latest_version} (from {current_version}).");
@@ -56,12 +110,71 @@ pub fn auto_update() -> Result<(), Box<dyn error::Error>> {
                 .args(&std::env::args_os().skip(1).collect::<Vec<_>>())
                 .exec_replace()?;
         } else {
+            let tried_targets = compatible_targets.join(", ");
             info!(
-                "Update available ({current_version} to {latest_version}), but no pre-built version found for your architecture \"{}\".",
-                checker.target()
+                "Update available ({current_version} to {latest_version}), but no pre-built version found for any compatible architecture. Tried: {}",
+                tried_targets
             );
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_compatible_targets_x86_64_gnu() {
+        let targets = get_compatible_targets("x86_64-unknown-linux-gnu");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], "x86_64-unknown-linux-gnu");
+        assert_eq!(targets[1], "x86_64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_aarch64_gnu() {
+        let targets = get_compatible_targets("aarch64-unknown-linux-gnu");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], "aarch64-unknown-linux-gnu");
+        assert_eq!(targets[1], "aarch64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_i686_gnu() {
+        let targets = get_compatible_targets("i686-unknown-linux-gnu");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], "i686-unknown-linux-gnu");
+        assert_eq!(targets[1], "i686-unknown-linux-musl");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_armv7_gnueabihf() {
+        let targets = get_compatible_targets("armv7-unknown-linux-gnueabihf");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], "armv7-unknown-linux-gnueabihf");
+        assert_eq!(targets[1], "armv7-unknown-linux-musleabihf");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_musl_no_fallback() {
+        let targets = get_compatible_targets("x86_64-unknown-linux-musl");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], "x86_64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_macos_no_fallback() {
+        let targets = get_compatible_targets("x86_64-apple-darwin");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], "x86_64-apple-darwin");
+    }
+
+    #[test]
+    fn test_get_compatible_targets_windows_no_fallback() {
+        let targets = get_compatible_targets("x86_64-pc-windows-msvc");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], "x86_64-pc-windows-msvc");
+    }
 }
