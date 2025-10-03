@@ -1158,15 +1158,12 @@ fn resolve_commit_to_tag(
         .show_commit_oid_as_fallback(false)
         .pattern(tag_pattern);
 
-    let describe_result = obj
-        .describe(&describe_options)
-        .with_context(|| {
-            format!(
-                "No tag matching pattern '{}' found for commit {}",
-                tag_pattern,
-                commit_ref
-            )
-        })?;
+    let describe_result = obj.describe(&describe_options).with_context(|| {
+        format!(
+            "No tag matching pattern '{}' found for commit {}",
+            tag_pattern, commit_ref
+        )
+    })?;
 
     // Format without any suffix (just the tag name)
     let mut format_options = git2::DescribeFormatOptions::new();
@@ -1489,7 +1486,11 @@ mod tests {
         // When searching for "v*", should only return v-prefixed tag
         let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
         assert!(result.is_ok(), "Should successfully resolve to tag");
-        assert_eq!(result.unwrap(), "v2.0.0", "Should return only v-prefixed tag");
+        assert_eq!(
+            result.unwrap(),
+            "v2.0.0",
+            "Should return only v-prefixed tag"
+        );
 
         // When searching for "cargo-fslabscli-*", should only return that tag
         let result = resolve_commit_to_tag(&repo_path, "HEAD", "cargo-fslabscli-*");
@@ -1508,7 +1509,10 @@ mod tests {
 
         // Try to find v* tags when only "latest" and "stable" exist
         let result = resolve_commit_to_tag(&repo_path, "HEAD", "v*");
-        assert!(result.is_err(), "Should return error when no tags match pattern");
+        assert!(
+            result.is_err(),
+            "Should return error when no tags match pattern"
+        );
 
         let err_msg = result.unwrap_err().to_string();
         assert!(
