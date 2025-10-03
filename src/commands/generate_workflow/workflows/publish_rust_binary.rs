@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use serde_yaml::Value;
+use serde_yml::Value;
 
 use super::Workflow;
 

@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use serde_yaml::Value;
+use serde_yml::Value;
 pub mod publish_docker;
 pub mod publish_npm_napi;
 pub mod publish_rust_binary;
