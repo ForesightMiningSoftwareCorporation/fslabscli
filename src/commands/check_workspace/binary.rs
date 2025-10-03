@@ -1,9 +1,5 @@
 use indexmap::IndexMap;
-use object_store::{
-    ObjectStore,
-    azure::{MicrosoftAzure, MicrosoftAzureBuilder},
-    path::Path,
-};
+use opendal::{Operator, services};
 use serde::{Deserialize, Serialize};
 
 use super::ResultDependency;
@@ -143,8 +139,12 @@ impl PackageMetadataFslabsCiPublishBinary {
         let mut publish = false;
         if let (Some(blob_dir), Some(blob_name)) = (&self.blob_dir, &self.blob_name) {
             let blob_path = format!("{blob_dir}/{blob_name}");
-            match object_store.get_client().head(&Path::from(blob_path)).await {
-                Ok(_) => {}
+            match object_store.get_client().exists(&blob_path).await {
+                Ok(exists) => {
+                    if !exists {
+                        publish = true;
+                    }
+                }
                 Err(_) => {
                     publish = true;
                 }
@@ -153,8 +153,12 @@ impl PackageMetadataFslabsCiPublishBinary {
         let mut publish_installer = false;
         if let (Some(blob_dir), Some(blob_name)) = (&self.blob_dir, &self.blob_name) {
             let blob_path = format!("{blob_dir}/{blob_name}");
-            match object_store.get_client().head(&Path::from(blob_path)).await {
-                Ok(_) => {}
+            match object_store.get_client().exists(&blob_path).await {
+                Ok(exists) => {
+                    if !exists {
+                        publish_installer = true;
+                    }
+                }
                 Err(_) => {
                     publish_installer = true;
                 }
@@ -168,7 +172,7 @@ impl PackageMetadataFslabsCiPublishBinary {
 }
 
 pub struct BinaryStore {
-    pub client: MicrosoftAzure,
+    pub client: Operator,
 }
 
 impl BinaryStore {
@@ -177,19 +181,34 @@ impl BinaryStore {
         container_name: Option<String>,
         access_key: Option<String>,
     ) -> anyhow::Result<Option<Self>> {
+        Self::new_with_endpoint(storage_account, container_name, access_key, None)
+    }
+
+    pub fn new_with_endpoint(
+        storage_account: Option<String>,
+        container_name: Option<String>,
+        access_key: Option<String>,
+        endpoint: Option<String>,
+    ) -> anyhow::Result<Option<Self>> {
         match (storage_account, container_name, access_key) {
-            (Some(storage_account), Some(container_name), Some(access_key)) => Ok(Some(Self {
-                client: MicrosoftAzureBuilder::new()
-                    .with_account(storage_account)
-                    .with_access_key(access_key)
-                    .with_container_name(container_name)
-                    .build()?,
-            })),
+            (Some(storage_account), Some(container_name), Some(access_key)) => {
+                let endpoint = endpoint.unwrap_or_else(|| {
+                    format!("https://{}.blob.core.windows.net", storage_account)
+                });
+                let builder = services::Azblob::default()
+                    .account_name(&storage_account)
+                    .account_key(&access_key)
+                    .container(&container_name)
+                    .endpoint(&endpoint);
+
+                let op = Operator::new(builder)?.finish();
+                Ok(Some(Self { client: op }))
+            }
             _ => Ok(None),
         }
     }
 
-    pub fn get_client(&self) -> &MicrosoftAzure {
+    pub fn get_client(&self) -> &Operator {
         &self.client
     }
 }

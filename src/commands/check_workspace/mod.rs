@@ -16,7 +16,6 @@ use console::{Emoji, style};
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use object_store::{ObjectStore, path::Path as BSPath};
 use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -37,7 +36,7 @@ use s3::PackageMetadataFslabsCiPublishS3;
 
 use crate::{PackageRelatedOptions, PrettyPrintable};
 
-mod binary;
+pub mod binary;
 mod cargo;
 mod docker;
 mod nix_binary;
@@ -632,13 +631,13 @@ impl Result {
                         let sub_app_name = sub_app_name
                             .strip_suffix(&"-signed.exe")
                             .unwrap_or_else(|| &sub_app_name);
-                        let mut list_stream = store
-                            .get_client()
-                            .list(Some(&BSPath::from(sub_app_dir.to_string())));
+                        let mut list_stream =
+                            store.get_client().lister(&sub_app_dir).await.unwrap();
                         // Print a line about each object
                         let mut candidates = vec![];
-                        while let Some(meta) = list_stream.next().await.transpose().unwrap() {
-                            let filename = format!("{}", meta.location);
+                        while let Some(entry) = list_stream.next().await {
+                            let entry = entry.unwrap();
+                            let filename = entry.path().to_string();
                             if filename.starts_with(&format!("{sub_app_dir}/{sub_app_name}"))
                                 && filename.ends_with(&suffix)
                             {
