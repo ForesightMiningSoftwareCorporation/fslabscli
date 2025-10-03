@@ -446,7 +446,7 @@ dependencies = [
  "indicatif 0.18.0",
  "indoc",
  "itertools",
- "jsonwebtoken",
+ "jsonwebtoken 10.0.0",
  "junit-report",
  "mime_guess",
  "num",
@@ -1855,6 +1855,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1417155a38e99d7704ddb3ea7445fe57fdbd5d756d727740a9ed8b9ebaed6e1"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.2.16",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature",
+ "simple_asn1",
+]
+
+[[package]]
 name = "junit-report"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2250,7 +2266,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-timeout",
  "hyper-util",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "once_cell",
  "percent-encoding",
  "pin-project",
@@ -3503,6 +3519,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2a4719bff48cee6b39d12c020eeb490953ad2443b7055bd0b21fca26bd8c28b"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]
