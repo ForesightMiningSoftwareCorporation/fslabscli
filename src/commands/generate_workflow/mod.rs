@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::{OneOrMany, formats::PreferOne, serde_as};
-use serde_yaml::Value;
+use serde_yml::Value;
 use void::Void;
 
 use cargo_metadata::PackageId;
@@ -409,9 +409,9 @@ fn get_base_workflow(template: &Option<PathBuf>, name: String) -> anyhow::Result
         Some(template) => {
             let file = File::open(template)?;
             let reader = BufReader::new(file);
-            serde_yaml::from_reader(reader)
+            serde_yml::from_reader(reader)
         }
-        None => serde_yaml::from_str(EMPTY_WORKFLOW),
+        None => serde_yml::from_str(EMPTY_WORKFLOW),
     })
     .with_context(|| "Could not parse workflow template")?;
     workflow.name = Some(name);
@@ -777,6 +777,6 @@ pub async fn generate_workflow(
     let release_file_path = working_directory.join(".github/workflows/release_publish.yml");
     let release_file = File::create(release_file_path)?;
     let mut release_writer = BufWriter::new(release_file);
-    serde_yaml::to_writer(&mut release_writer, &publish_workflow)?;
+    serde_yml::to_writer(&mut release_writer, &publish_workflow)?;
     Ok(GenerateResult {})
 }
