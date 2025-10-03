@@ -170,7 +170,7 @@ impl PublishResult {
         let mut s = Self {
             should_publish: package.publish,
             docker: PublishDetailResult {
-                name: "docker build && docker push".to_string(),
+                name: "docker buildx build && docker push".to_string(),
                 key: "docker".to_string(),
                 should_publish: package.publish_detail.docker.publish,
                 ..Default::default()
@@ -920,13 +920,14 @@ async fn do_publish_package(
                 .to_string();
             let image_name = format!("{registry}/{package_name}:{package_version}");
             let image_latest = format!("{registry}/{package_name}:latest");
+            let cache_ref = format!("{registry}/{package_name}:buildcache");
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),
-                // "--cache-to".to_string(),
-                // format!("type=registry,ref={}/{}-cache", registry, package_name),
-                // "--cache-from".to_string(),
-                // format!("type=registry,ref={}/{}-cache", registry, package_name),
+                "--cache-from".to_string(),
+                format!("type=registry,ref={}", cache_ref),
+                "--cache-to".to_string(),
+                format!("type=registry,ref={},mode=max", cache_ref),
                 "-f".to_string(),
                 dockerfile.clone(),
             ];
@@ -983,7 +984,7 @@ async fn do_publish_package(
             args.push(context.clone());
             // First we build
             let command_output = execute_command(
-                &format!("docker build {}", args.join(" ")),
+                &format!("docker buildx build --progress plain {}", args.join(" ")),
                 &repo_root,
                 &envs,
                 &blacklist_envs,
