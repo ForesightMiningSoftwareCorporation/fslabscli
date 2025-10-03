@@ -3,9 +3,9 @@ use cargo_metadata::{DependencyKind, PackageId};
 use clap::Parser;
 use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
-use object_store::{Attribute, AttributeValue, Attributes, PutOptions};
 use octocrab::Octocrab;
 use octocrab::params::repos::Reference;
+use opendal::{Operator, services};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -21,8 +21,6 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
-
-use object_store::{ObjectStore, path::Path as StorePath};
 use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
@@ -505,28 +503,28 @@ async fn publish_package(
     }
 }
 
-async fn create_s3_client(
+pub async fn create_s3_client(
     bucket_name: Option<String>,
     bucket_region: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
     endpoint: Option<String>,
-) -> anyhow::Result<Arc<dyn ObjectStore>> {
+) -> anyhow::Result<Operator> {
     if let (Some(bucket), Some(region), Some(access_key_id), Some(secret_access_key)) =
         (bucket_name, bucket_region, access_key_id, secret_access_key)
     {
-        let mut builder = object_store::aws::AmazonS3Builder::new()
-            .with_bucket_name(bucket)
-            .with_region(region)
-            .with_access_key_id(access_key_id)
-            .with_secret_access_key(secret_access_key);
+        let mut builder = services::S3::default()
+            .bucket(&bucket)
+            .region(&region)
+            .access_key_id(&access_key_id)
+            .secret_access_key(&secret_access_key);
 
         if let Some(endpoint) = endpoint {
-            builder = builder.with_endpoint(endpoint).with_allow_http(true);
+            builder = builder.endpoint(&endpoint);
         }
 
-        let store = builder.build()?;
-        Ok(Arc::new(store))
+        let op = Operator::new(builder)?.finish();
+        Ok(op)
     } else {
         anyhow::bail!("missing credentials for s3 storage backend")
     }
@@ -644,46 +642,23 @@ async fn do_publish_package(
                                         None => relative.display().to_string(),
                                     };
                                     match fs::read(path) {
-                                        Ok(bytes) => {
-                                            // Guess content type from extension
-                                            let content_type = mime_guess::from_path(path)
-                                                .first_or_octet_stream()
-                                                .to_string();
-
-                                            let mut attributes = Attributes::new();
-                                            attributes.insert(
-                                                Attribute::ContentType,
-                                                AttributeValue::from(content_type),
-                                            );
-                                            let opts = PutOptions {
-                                                attributes,
-                                                ..Default::default()
-                                            };
-                                            match store_client
-                                                .put_opts(
-                                                    &StorePath::from(key.clone()),
-                                                    bytes.into(),
-                                                    opts,
-                                                )
-                                                .await
-                                            {
-                                                Ok(_) => {
-                                                    result.s3.stdout = format!(
-                                                        "{}\nUploaded: {}",
-                                                        result.s3.stdout, key
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    result.s3.success = false;
-                                                    result.s3.stderr = format!(
-                                                        "{}\nUpload failed {}: {}",
-                                                        result.s3.stderr, key, e
-                                                    );
-                                                    is_failed = true;
-                                                    break;
-                                                }
+                                        Ok(bytes) => match store_client.write(&key, bytes).await {
+                                            Ok(_) => {
+                                                result.s3.stdout = format!(
+                                                    "{}\nUploaded: {}",
+                                                    result.s3.stdout, key
+                                                );
                                             }
-                                        }
+                                            Err(e) => {
+                                                result.s3.success = false;
+                                                result.s3.stderr = format!(
+                                                    "{}\nUpload failed {}: {}",
+                                                    result.s3.stderr, key, e
+                                                );
+                                                is_failed = true;
+                                                break;
+                                            }
+                                        },
                                         Err(e) => {
                                             result.s3.success = false;
                                             result.s3.stderr = format!(
@@ -1718,3 +1693,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod storage_tests;
