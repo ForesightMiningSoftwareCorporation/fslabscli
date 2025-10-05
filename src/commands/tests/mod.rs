@@ -410,8 +410,37 @@ async fn do_test_on_package(
         .set_timestamp(OffsetDateTime::now_utc())
         .build();
 
+    // Handle Pre-Service Script
+    if !failed && let Some(pre_service_script) = test_args.pre_service_script.clone() {
+        tracing::info!(
+            "│ {:30.30}     │ Running pre-service script command",
+            package_name
+        );
+        let start_time = OffsetDateTime::now_utc();
+        let CommandOutput {
+            stdout,
+            stderr,
+            success,
+        } = Script::new(pre_service_script)
+            .current_dir(&package_path)
+            .execute()
+            .await;
+        let end_time = OffsetDateTime::now_utc();
+        let duration = end_time - start_time;
+        let mut pre_service_script_tx = match success {
+            true => TestCase::success("pre_service_script", duration),
+            false => {
+                failed = true;
+                TestCase::failure("pre_service_script", duration, "", "required")
+            }
+        };
+        pre_service_script_tx.set_system_out(&stdout);
+        pre_service_script_tx.set_system_err(&stderr);
+        ts_mandatory.add_testcase(pre_service_script_tx);
+    }
+
     // Handle service database
-    if !failed && test_args.service_database {
+    if !failed && test_args.services.postgres {
         tracing::info!("│ {:30.30}     │ Setting up service database", package_name);
         let start_time = OffsetDateTime::now_utc();
         let pg_port = free_local_port().unwrap();
@@ -437,7 +466,7 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(service_db_tc);
     }
     // Handle service azurite
-    if !failed && test_args.service_azurite {
+    if !failed && test_args.services.azurite {
         tracing::info!("│ {:30.30}     │ Setting up service azurite", package_name);
         let start_time = OffsetDateTime::now_utc();
         let docker_process = DockerContainer::azurite().create().await;
@@ -462,7 +491,7 @@ async fn do_test_on_package(
     }
 
     // Handle service minio
-    if !failed && test_args.service_minio {
+    if !failed && test_args.services.minio {
         tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
         let start_time = OffsetDateTime::now_utc();
         let minio_port = free_local_port().unwrap();
@@ -486,6 +515,29 @@ async fn do_test_on_package(
             }
         };
         ts_mandatory.add_testcase(service_minio_tc);
+    }
+
+    // Handle custom services.
+    let mut daemon_children = Vec::new();
+    for (name, command) in &test_args.custom_services {
+        tracing::info!(
+            "│ {:30.30}     │ Starting custom service '{name}'",
+            package_name
+        );
+        let start_time = OffsetDateTime::now_utc();
+        match Script::new(command).current_dir(&package_path).spawn() {
+            Ok(daemon) => daemon_children.push((name, daemon)),
+            Err(err) => {
+                failed = true;
+                let duration = OffsetDateTime::now_utc() - start_time;
+                ts_mandatory.add_testcase(TestCase::failure(
+                    name,
+                    duration,
+                    "custom service",
+                    &err.to_string(),
+                ));
+            }
+        }
     }
 
     // Handle cache miss (this should be dropped and only use pre_test_script)
@@ -859,6 +911,17 @@ async fn do_test_on_package(
         tracing::info!("│ {:30.30}     │ Tearing down service minio", package_name);
         process.teardown().await;
     }
+    // Tear down custom services.
+    for (name, daemon) in daemon_children {
+        tracing::info!(
+            "│ {:30.30}     │ Tearing down custom service {name}",
+            package_name
+        );
+        if let Err(err) = daemon.kill().await {
+            tracing::error!("Failed to kill custom service {name} failed: {err}");
+        }
+    }
+
     junit_report.add_testsuite(ts_mandatory);
     junit_report.add_testsuite(ts_optional);
 

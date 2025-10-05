@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /// Options provided by the `package.metadata.fslabs.test.args` object in
 /// a Cargo.toml.
 ///
@@ -5,15 +7,17 @@
 /// extra test fixture behavior beyond what is provided by cargo.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct TestArgs {
-    /// Enable an Azurite service accessible during the test.
+    /// Script that runs before services are started.
+    pub pre_service_script: Option<String>,
+    /// Required services that are known by `fslabscli`.
     #[serde(default)]
-    pub service_azurite: bool,
-    /// Enable a Postgres service accessible during the test.
+    pub services: KnownServices,
+    /// Required services defined by user-provided commands.
+    ///
+    /// A service command will be spawned in a child process and kept alive for
+    /// the duration of tests.
     #[serde(default)]
-    pub service_database: bool,
-    /// Enable a Minio (S3) service accessible during the test.
-    #[serde(default)]
-    pub service_minio: bool,
+    pub custom_services: HashMap<ServiceName, ServiceCommand>,
     // TODO: remove and replace users with `pre_test_script`
     //
     /// TODO: what is this for?
@@ -31,3 +35,13 @@ pub struct TestArgs {
     #[serde(default)]
     pub additional_args: String,
 }
+
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+pub struct KnownServices {
+    pub azurite: bool,
+    pub minio: bool,
+    pub postgres: bool,
+}
+
+pub type ServiceName = String;
+pub type ServiceCommand = String;
