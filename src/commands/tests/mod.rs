@@ -1,3 +1,5 @@
+mod docker_service;
+
 use anyhow::Context;
 use clap::Parser;
 use humanize_duration::{Truncate, prelude::DurationExt};
@@ -7,7 +9,6 @@ use opentelemetry::{
     metrics::{Counter, Histogram, MeterProvider},
 };
 use port_check::free_local_port;
-use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -17,8 +18,6 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Arc,
-    thread::sleep,
-    time::Duration,
 };
 use tokio::sync::Semaphore;
 
@@ -27,13 +26,11 @@ use crate::{
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
+        tests::docker_service::{DockerContainer, postgres_url},
     },
     init_metrics,
     utils::{execute_command, execute_command_without_logging},
 };
-
-static DB_PASSWORD: &str = "mypassword";
-static DB_NAME: &str = "tests";
 
 #[derive(Debug, Parser, Default, Clone)]
 #[command(about = "Run tests")]
@@ -75,62 +72,6 @@ struct FslabsTest {
     pub envs: HashMap<String, String>,
     pub skip: bool,
     pub parse_subtests: bool,
-}
-
-async fn teardown_container(container_id: String) {
-    let path = env::current_dir().unwrap();
-    let envs: HashMap<String, String> = HashMap::default();
-    execute_command_without_logging(
-        &format!("docker stop {container_id}"),
-        &path,
-        &envs,
-        &HashSet::new(),
-    )
-    .await;
-    execute_command_without_logging(
-        &format!("docker rm {container_id}"),
-        &path,
-        &envs,
-        &HashSet::new(),
-    )
-    .await;
-}
-
-async fn create_docker_container(
-    prefix: String,
-    env: String,
-    port: String,
-    options: String,
-    image: String,
-    command: String,
-) -> anyhow::Result<String> {
-    let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
-    let container_name = format!("{prefix}_{suffix}");
-    let path = env::current_dir().unwrap();
-    let envs: HashMap<String, String> = HashMap::default();
-    let command_output = execute_command_without_logging(
-        &format!("docker run --name={container_name} -d {env} {port} {options} {image} {command}"),
-        &path,
-        &envs,
-        &HashSet::new(),
-    )
-    .await;
-    if !command_output.success {
-        return Err(anyhow::anyhow!(command_output.stderr));
-    }
-    // Wait 5 Sec
-    sleep(Duration::from_millis(5000));
-    let command_output = execute_command_without_logging(
-        &format!("docker ps -q -f name={container_name}"),
-        &path,
-        &envs,
-        &HashSet::new(),
-    )
-    .await;
-    if !command_output.success {
-        return Err(anyhow::anyhow!(command_output.stderr));
-    }
-    Ok(command_output.stdout)
 }
 
 async fn has_cargo_nextest() -> bool {
@@ -443,11 +384,11 @@ async fn do_test_on_package(
     let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     let use_nextest = has_cargo_nextest().await;
     let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
-    let mut service_database_container_id: Option<String> = None;
-    let mut database_url: Option<String> = None;
-    let mut service_azurite_container_id: Option<String> = None;
-    let mut service_minio_container_id: Option<String> = None;
-    let mut minio_endpoint: Option<String> = None;
+    let mut postgres_process = None;
+    let mut database_url = None;
+    let mut azurite_process = None;
+    let mut minio_process = None;
+    let mut minio_endpoint = None;
 
     if member.changed {
         metrics.changed_counter.add(
@@ -474,23 +415,13 @@ async fn do_test_on_package(
         tracing::info!("│ {:30.30}     │ Setting up service database", package_name);
         let start_time = OffsetDateTime::now_utc();
         let pg_port = free_local_port().unwrap();
-        let service_db_container = create_docker_container(
-            "postgres".to_string(),
-            format!("-e POSTGRES_PASSWORD={DB_PASSWORD} -e POSTGRES_DB={DB_NAME}"),
-            format!("-p {pg_port}:5432"),
-            "".to_string(),
-            "postgres:alpine".to_string(),
-            "".to_string(),
-        )
-        .await;
+        let docker_process = DockerContainer::postgres(pg_port).create().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        let service_db_tc = match service_db_container {
-            Ok(container_id) => {
-                service_database_container_id = Some(container_id);
-                database_url = Some(format!(
-                    "postgres://postgres:{DB_PASSWORD}@localhost:{pg_port}/{DB_NAME}"
-                ));
+        let service_db_tc = match docker_process {
+            Ok(process) => {
+                postgres_process = Some(process);
+                database_url = Some(postgres_url(pg_port));
                 TestCase::success("service_database", duration)
             }
             Err(e) => {
@@ -509,20 +440,12 @@ async fn do_test_on_package(
     if !failed && test_args.service_azurite {
         tracing::info!("│ {:30.30}     │ Setting up service azurite", package_name);
         let start_time = OffsetDateTime::now_utc();
-        let azurite_container = create_docker_container(
-            "azurite".to_string(),
-            "".to_string(),
-            "-p 10000:10000 -p 10001:10001 -p 10002:10002".to_string(),
-            "".to_string(),
-            "mcr.microsoft.com/azure-storage/azurite".to_string(),
-            "".to_string(),
-        )
-        .await;
+        let docker_process = DockerContainer::azurite().create().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        let service_azurite_tc = match azurite_container {
-            Ok(container_id) => {
-                service_azurite_container_id = Some(container_id.clone());
+        let service_azurite_tc = match docker_process {
+            Ok(process) => {
+                azurite_process = Some(process);
                 TestCase::success("service_azurite", duration)
             }
             Err(e) => {
@@ -543,20 +466,12 @@ async fn do_test_on_package(
         tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
         let start_time = OffsetDateTime::now_utc();
         let minio_port = free_local_port().unwrap();
-        let minio_container = create_docker_container(
-            "minio".to_string(),
-            "-e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin".to_string(),
-            format!("-p {minio_port}:9000"),
-            "".to_string(),
-            "minio/minio:latest".to_string(),
-            "server /data --address=0.0.0.0:9000".to_string(),
-        )
-        .await;
+        let docker_process = DockerContainer::minio(minio_port).create().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        let service_minio_tc = match minio_container {
-            Ok(container_id) => {
-                service_minio_container_id = Some(container_id.clone());
+        let service_minio_tc = match docker_process {
+            Ok(process) => {
+                minio_process = Some(process.clone());
                 minio_endpoint = Some(format!("http://127.0.0.1:{minio_port}"));
                 TestCase::success("service_minio", duration)
             }
@@ -945,23 +860,23 @@ async fn do_test_on_package(
     }
 
     // Tear down docker containers
-    if let Some(container_id) = service_database_container_id {
+    if let Some(process) = postgres_process {
         tracing::info!(
             "│ {:30.30}     │ Tearing down service database",
             package_name
         );
-        teardown_container(container_id).await;
+        process.teardown().await;
     }
-    if let Some(container_id) = service_azurite_container_id {
+    if let Some(process) = azurite_process {
         tracing::info!(
             "│ {:30.30}     │ Tearing down service azurite",
             package_name
         );
-        teardown_container(container_id).await;
+        process.teardown().await;
     }
-    if let Some(container_id) = service_minio_container_id {
+    if let Some(process) = minio_process {
         tracing::info!("│ {:30.30}     │ Tearing down service minio", package_name);
-        teardown_container(container_id).await;
+        process.teardown().await;
     }
     junit_report.add_testsuite(ts_mandatory);
     junit_report.add_testsuite(ts_optional);
