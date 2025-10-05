@@ -26,6 +26,7 @@ use strum_macros::EnumString;
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;
 use crate::crate_graph::CrateGraph;
+use crate::test_args::TestArgs;
 use crate::utils::cargo::Cargo;
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::PackageMetadataFslabsCiPublishCargo;
@@ -73,32 +74,6 @@ where
     if let Some(v) = value {
         let escaped = v.replace('\n', "\\n");
         serializer.serialize_some(&escaped)
-    } else {
-        serializer.serialize_none()
-    }
-}
-
-// Custom serialization function for `IndexMap<String, Value>`
-fn serialize_indexmap_multiline_as_escaped<S>(
-    map: &Option<IndexMap<String, Value>>,
-    serializer: S,
-) -> CoreResult<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    if let Some(map) = map {
-        let escaped_map: IndexMap<_, _> = map
-            .iter()
-            .map(|(key, value)| {
-                let escaped_value = match value {
-                    Value::String(s) => Value::String(s.replace('\n', "\\n")),
-                    _ => value.clone(),
-                };
-                (key.clone(), escaped_value)
-            })
-            .collect();
-
-        serializer.serialize_some(&escaped_map)
     } else {
         serializer.serialize_none()
     }
@@ -272,8 +247,7 @@ pub struct PackageMetadataFslabsCiPublish {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct PackageMetadataFslabsCiTest {
-    #[serde(default, serialize_with = "serialize_indexmap_multiline_as_escaped")]
-    pub args: Option<IndexMap<String, Value>>, // This could be generate_workflow::TestWorkflowArgs but keeping it like this, we can have new args without having to update fslabscli
+    pub args: Option<TestArgs>,
     pub env: Option<IndexMap<String, String>>,
     pub skip: Option<bool>,
 }
