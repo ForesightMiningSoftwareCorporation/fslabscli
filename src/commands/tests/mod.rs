@@ -1,7 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
 use humanize_duration::{Truncate, prelude::DurationExt};
-use indexmap::IndexMap;
 use junit_report::{OffsetDateTime, Report, ReportBuilder, TestCase, TestSuiteBuilder};
 use opentelemetry::{
     KeyValue, global,
@@ -10,7 +9,6 @@ use opentelemetry::{
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
-use serde_yml::Value;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -133,16 +131,6 @@ async fn create_docker_container(
         return Err(anyhow::anyhow!(command_output.stderr));
     }
     Ok(command_output.stdout)
-}
-
-fn get_test_arg(test_args: &IndexMap<String, Value>, arg: &str) -> Option<String> {
-    test_args
-        .get(arg)
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-}
-
-fn get_test_arg_bool(test_args: &IndexMap<String, Value>, arg: &str) -> Option<bool> {
-    test_args.get(arg).and_then(|v| v.as_bool())
 }
 
 async fn has_cargo_nextest() -> bool {
@@ -452,7 +440,6 @@ async fn do_test_on_package(
     let package_version = member.version;
     let package_path = repo_root.join(member.path);
     let test_args = member.test_detail.args.unwrap_or_default();
-    let additional_args = get_test_arg(&test_args, "additional_args").unwrap_or_default();
     let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     let use_nextest = has_cargo_nextest().await;
     let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
@@ -483,7 +470,7 @@ async fn do_test_on_package(
         .build();
 
     // Handle service database
-    if !failed && get_test_arg_bool(&test_args, "service_database") == Some(true) {
+    if !failed && test_args.service_database {
         tracing::info!("│ {:30.30}     │ Setting up service database", package_name);
         let start_time = OffsetDateTime::now_utc();
         let pg_port = free_local_port().unwrap();
@@ -519,7 +506,7 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(service_db_tc);
     }
     // Handle service azurite
-    if !failed && get_test_arg_bool(&test_args, "service_azurite") == Some(true) {
+    if !failed && test_args.service_azurite {
         tracing::info!("│ {:30.30}     │ Setting up service azurite", package_name);
         let start_time = OffsetDateTime::now_utc();
         let azurite_container = create_docker_container(
@@ -552,7 +539,7 @@ async fn do_test_on_package(
     }
 
     // Handle service minio
-    if !failed && get_test_arg_bool(&test_args, "service_minio") == Some(true) {
+    if !failed && test_args.service_minio {
         tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
         let start_time = OffsetDateTime::now_utc();
         let minio_port = free_local_port().unwrap();
@@ -587,28 +574,24 @@ async fn do_test_on_package(
     }
 
     // Handle cache miss (this should be dropped and only additional script)
-    if !failed && let Some(cache_miss_command) = get_test_arg(&test_args, "additional_cache_miss") {
+    if !failed && let Some(cache_miss_command) = &test_args.additional_cache_miss {
         tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
         let start_time = OffsetDateTime::now_utc();
         let mut envs: HashMap<String, String> = HashMap::new();
         if let Some(db_url) = database_url.clone() {
             envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
-        let command_output = execute_command_without_logging(
-            &cache_miss_command,
-            &repo_root,
-            &envs,
-            &HashSet::new(),
-        )
-        .await;
+        let command_output =
+            execute_command_without_logging(cache_miss_command, &repo_root, &envs, &HashSet::new())
+                .await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
         tracing::debug!("cache_miss: {}", command_output.stdout);
         let mut cache_miss_tc = match command_output.success {
-            true => TestCase::success(&cache_miss_command, duration),
+            true => TestCase::success(cache_miss_command, duration),
             false => {
                 failed = true;
-                TestCase::failure(&cache_miss_command, duration, "", "required")
+                TestCase::failure(cache_miss_command, duration, "", "required")
             }
         };
         cache_miss_tc.set_system_out(&command_output.stderr);
@@ -617,7 +600,7 @@ async fn do_test_on_package(
     }
 
     // Handle Additional Script
-    if !failed && let Some(additional_scripts) = get_test_arg(&test_args, "additional_script") {
+    if !failed && let Some(additional_scripts) = &test_args.additional_script {
         tracing::info!(
             "│ {:30.30}     │ Running additional script command",
             package_name
@@ -661,6 +644,7 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(additional_script_tc);
     }
     // Handle Tests
+    let additional_args = &test_args.additional_args;
     let fslabs_tests: Vec<FslabsTest> = vec![
         FslabsTest {
             id: "cargo_fmt".to_string(),
