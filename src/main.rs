@@ -32,6 +32,7 @@ use tracing_core::Level;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod command_ext;
 mod commands;
 mod crate_graph;
 mod test_args;
