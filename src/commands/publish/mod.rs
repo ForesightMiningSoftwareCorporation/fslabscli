@@ -24,18 +24,16 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
+use crate::command_ext::{Command, CommandOutput};
+use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
-use crate::utils::{CommandOutput, get_registry_env};
 use crate::{
     PrettyPrintable,
     commands::check_workspace::{
         Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
     crate_graph::Dependency,
-    utils::{
-        cargo::{Cargo, patch_crate_for_registry},
-        execute_command,
-    },
+    utils::cargo::{Cargo, patch_crate_for_registry},
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -590,15 +588,14 @@ async fn do_publish_package(
             }
             // First we build
             let build_command = package.publish_detail.s3.build_command;
-            let command_output = execute_command(
-                &build_command,
-                &package_path,
-                &envs,
-                &blacklist_envs,
-                Some(tracing::Level::INFO),
-                Some(tracing::Level::INFO),
-            )
-            .await;
+            let command_output = Command::new(&build_command)
+                .current_dir(&package_path)
+                .envs(&envs)
+                .env_removals(&blacklist_envs)
+                .log_stdout(tracing::Level::INFO)
+                .log_stderr(tracing::Level::INFO)
+                .execute()
+                .await;
             result.s3.update_from_command(command_output);
             is_failed = !result.s3.success;
             if !is_failed {
@@ -704,41 +701,33 @@ async fn do_publish_package(
                 env::var("ATTICD_TOKEN"),
             ) {
                 info!("Login to atticd");
-                let command_output = execute_command(
-                    &format!("attic login central {atticd_url}/ {atticd_token}"),
-                    &repo_root,
-                    &HashMap::new(),
-                    &HashSet::new(),
-                    Some(tracing::Level::DEBUG),
-                    Some(tracing::Level::DEBUG),
-                )
-                .await;
+                let command_output =
+                    Command::new(format!("attic login central {atticd_url}/ {atticd_token}"))
+                        .current_dir(&repo_root)
+                        .log_stdout(tracing::Level::DEBUG)
+                        .log_stderr(tracing::Level::DEBUG)
+                        .execute()
+                        .await;
                 result.nix_binary.update_from_command(command_output);
                 is_failed = !result.nix_binary.success;
                 if !is_failed {
-                    let command_output = execute_command(
-                        &format!("attic use central:{atticd_cache}"),
-                        &package_path,
-                        &HashMap::new(),
-                        &HashSet::new(),
-                        Some(tracing::Level::DEBUG),
-                        Some(tracing::Level::DEBUG),
-                    )
-                    .await;
+                    let command_output = Command::new(format!("attic use central:{atticd_cache}"))
+                        .current_dir(&package_path)
+                        .log_stdout(tracing::Level::DEBUG)
+                        .log_stderr(tracing::Level::DEBUG)
+                        .execute()
+                        .await;
                     result.nix_binary.update_from_command(command_output);
                     is_failed = !result.nix_binary.success;
                 }
             }
             if !is_failed {
-                let mut command_output = execute_command(
-                    "nix build .#release",
-                    &package_path,
-                    &HashMap::new(),
-                    &HashSet::new(),
-                    Some(tracing::Level::INFO),
-                    Some(tracing::Level::INFO),
-                )
-                .await;
+                let mut command_output = Command::new("nix build .#release")
+                    .current_dir(&package_path)
+                    .log_stdout(tracing::Level::INFO)
+                    .log_stderr(tracing::Level::INFO)
+                    .execute()
+                    .await;
                 if command_output.success {
                     // Let's copy the artifacts to the
                     command_output.success =
@@ -750,17 +739,13 @@ async fn do_publish_package(
             if !is_failed && let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
                 // Let's push the store to cachix by rebuilding and pushing
                 info!("Pushing to atticd");
-                let command_output = execute_command(
-                    &format!(
-                        "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
-                    ),
-                    &package_path,
-                    &HashMap::new(),
-                    &HashSet::new(),
-                    Some(tracing::Level::INFO),
-                    Some(tracing::Level::INFO),
-                )
-                .await;
+                let command_output = Command::new(format!(
+                    "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
+                ))
+                    .current_dir(&package_path)
+                    .log_stdout(tracing::Level::INFO)
+                    .log_stderr(tracing::Level::INFO)
+                    .execute().await;
                 result.nix_binary.update_from_command(command_output);
                 is_failed = !result.nix_binary.success;
             }
@@ -829,15 +814,15 @@ async fn do_publish_package(
                             if options.dry_run {
                                 args.push("--dry-run".to_string())
                             }
-                            let command_output = execute_command(
-                                &format!("cargo publish {}", args.join(" ")),
-                                &package_path,
-                                &envs,
-                                &blacklist_envs,
-                                Some(tracing::Level::INFO),
-                                Some(tracing::Level::INFO),
-                            )
-                            .await;
+                            let command_output =
+                                Command::new(format!("cargo publish {}", args.join(" ")))
+                                    .current_dir(&package_path)
+                                    .envs(&envs)
+                                    .env_removals(&blacklist_envs)
+                                    .log_stdout(tracing::Level::INFO)
+                                    .log_stderr(tracing::Level::INFO)
+                                    .execute()
+                                    .await;
                             r.update_from_command(command_output);
                         } else {
                             r.success = false;
@@ -958,54 +943,48 @@ async fn do_publish_package(
             }
             args.push(context.clone());
             // First we build
-            let command_output = execute_command(
-                &format!("docker buildx build --progress plain {}", args.join(" ")),
-                &repo_root,
-                &envs,
-                &blacklist_envs,
-                Some(tracing::Level::INFO),
-                Some(tracing::Level::INFO),
-            )
+            let command_output = Command::new(format!(
+                "docker buildx build --progress plain {}",
+                args.join(" ")
+            ))
+            .current_dir(&repo_root)
+            .envs(&envs)
+            .env_removals(&blacklist_envs)
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO)
+            .execute()
             .await;
             result.docker.update_from_command(command_output);
             is_failed = !result.docker.success;
             if !is_failed {
                 // Tag as latest
-                let command_output = execute_command(
-                    &format!("docker tag {image_name} {image_latest}"),
-                    &repo_root,
-                    &HashMap::new(),
-                    &HashSet::new(),
-                    Some(tracing::Level::INFO),
-                    Some(tracing::Level::INFO),
-                )
-                .await;
+                let command_output =
+                    Command::new(format!("docker tag {image_name} {image_latest}"))
+                        .current_dir(&repo_root)
+                        .log_stdout(tracing::Level::INFO)
+                        .log_stderr(tracing::Level::INFO)
+                        .execute()
+                        .await;
                 result.docker.update_from_command(command_output);
                 is_failed = !result.docker.success;
                 if !is_failed {
                     // Push image
-                    let command_output = execute_command(
-                        &format!("docker push {image_name}"),
-                        &repo_root,
-                        &HashMap::new(),
-                        &HashSet::new(),
-                        Some(tracing::Level::INFO),
-                        Some(tracing::Level::INFO),
-                    )
-                    .await;
+                    let command_output = Command::new(format!("docker push {image_name}"))
+                        .current_dir(&repo_root)
+                        .log_stdout(tracing::Level::INFO)
+                        .log_stderr(tracing::Level::INFO)
+                        .execute()
+                        .await;
                     result.docker.update_from_command(command_output);
                     is_failed = !result.docker.success;
                     if !is_failed {
                         // Push latest
-                        let command_output = execute_command(
-                            &format!("docker push {image_latest}"),
-                            &repo_root,
-                            &HashMap::new(),
-                            &HashSet::new(),
-                            Some(tracing::Level::INFO),
-                            Some(tracing::Level::INFO),
-                        )
-                        .await;
+                        let command_output = Command::new(format!("docker push {image_latest}"))
+                            .current_dir(&repo_root)
+                            .log_stdout(tracing::Level::INFO)
+                            .log_stderr(tracing::Level::INFO)
+                            .execute()
+                            .await;
                         result.docker.update_from_command(command_output);
                         is_failed = !result.docker.success;
                     }
@@ -1077,15 +1056,13 @@ async fn do_publish_package(
 pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()> {
     // We might need to log to some docker registries
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
-        let command_output = execute_command(
+        let command_output = Command::new(
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
-            repo_root,
-            &HashMap::new(),
-&HashSet::new(),
-            Some(tracing::Level::INFO),
-            Some(tracing::Level::INFO),
         )
-        .await;
+            .current_dir(repo_root)
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO)
+            .execute().await;
         if !command_output.success {
             return Err(anyhow::anyhow!(command_output.stderr));
         }
@@ -1094,15 +1071,13 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
         && options.ghcr_oci_username.is_some()
         && options.ghcr_oci_password.is_some()
     {
-        let command_output= execute_command(
+        let command_output = Command::new(
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
-            repo_root,
-            &HashMap::new(),
-            &HashSet::new(),
-            Some(tracing::Level::INFO),
-            Some(tracing::Level::INFO),
         )
-        .await;
+            .current_dir(repo_root)
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO)
+        .execute().await;
         if !command_output.success {
             return Err(anyhow::anyhow!(command_output.stderr));
         }

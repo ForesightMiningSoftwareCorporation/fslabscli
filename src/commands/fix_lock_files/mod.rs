@@ -1,5 +1,5 @@
 use crate::{
-    PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph, utils::CommandOutput,
+    PackageRelatedOptions, PrettyPrintable, command_ext::CommandOutput, crate_graph::CrateGraph,
 };
 use clap::Parser;
 use diffy::create_patch;

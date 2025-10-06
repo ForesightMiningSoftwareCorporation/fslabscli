@@ -11,7 +11,7 @@ use opentelemetry::{
 use port_check::free_local_port;
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     fmt::{Display, Formatter},
     fs::{File, create_dir_all, remove_dir_all},
@@ -23,13 +23,13 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
+    command_ext::Command,
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
         tests::docker_service::{DockerContainer, postgres_url},
     },
     init_metrics,
-    utils::{execute_command, execute_command_without_logging},
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -496,9 +496,11 @@ async fn do_test_on_package(
         if let Some(db_url) = database_url.clone() {
             envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
-        let command_output =
-            execute_command_without_logging(cache_miss_command, &repo_root, &envs, &HashSet::new())
-                .await;
+        let command_output = Command::new(cache_miss_command)
+            .current_dir(&repo_root)
+            .envs(&envs)
+            .execute()
+            .await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
         tracing::debug!("cache_miss: {}", command_output.stdout);
@@ -521,12 +523,8 @@ async fn do_test_on_package(
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
-        let mut envs: HashMap<String, String> = HashMap::new();
-        if let Some(db_url) = database_url.clone() {
-            envs.insert("DATABASE_URL".to_string(), db_url.clone());
-        }
-        let mut a_stdout: String = "".to_string();
-        let mut a_stderr: String = "".to_string();
+        let mut all_stdout = "".to_string();
+        let mut all_stderr = "".to_string();
         let mut sub_failed = false;
 
         for line in additional_scripts.split("\n") {
@@ -536,10 +534,15 @@ async fn do_test_on_package(
             if sub_failed {
                 continue;
             }
-            let command_output =
-                execute_command_without_logging(line, &package_path, &envs, &HashSet::new()).await;
-            a_stdout = format!("{a_stdout}\n{}", command_output.stdout);
-            a_stderr = format!("{a_stderr}\n{}", command_output.stderr);
+            let mut command = Command::new(line).current_dir(&package_path);
+            if let Some(db_url) = &database_url {
+                command = command.env("DATABASE_URL", db_url);
+            }
+            let command_output = command.execute().await;
+            all_stdout.push_str(&command_output.stdout);
+            all_stdout.push('\n');
+            all_stderr.push_str(&command_output.stderr);
+            all_stderr.push('\n');
             tracing::debug!("additional_script: {line} {}", command_output.stdout);
             if !command_output.success {
                 sub_failed = true;
@@ -554,8 +557,8 @@ async fn do_test_on_package(
                 TestCase::failure("additional_script", duration, "", "required")
             }
         };
-        additional_script_tc.set_system_out(&a_stderr);
-        additional_script_tc.set_system_err(&a_stdout);
+        additional_script_tc.set_system_out(&all_stderr);
+        additional_script_tc.set_system_err(&all_stdout);
         ts_mandatory.add_testcase(additional_script_tc);
     }
     // Handle Tests
@@ -730,13 +733,11 @@ async fn do_test_on_package(
             }
 
             if let Some(pre_command) = fslabs_test.pre_command {
-                execute_command_without_logging(
-                    &pre_command,
-                    &package_path,
-                    &fslabs_test.envs,
-                    &HashSet::new(),
-                )
-                .await;
+                Command::new(&pre_command)
+                    .current_dir(&package_path)
+                    .envs(&fslabs_test.envs)
+                    .execute()
+                    .await;
             }
             let test_output = match fslabs_test.id == "cargo_lock" {
                 true => fix_workspace_lockfile(
@@ -749,25 +750,21 @@ async fn do_test_on_package(
                 .unwrap_or_else(|e| e.into()),
 
                 false => {
-                    execute_command(
-                        &fslabs_test.command,
-                        &package_path,
-                        &fslabs_test.envs,
-                        &HashSet::new(),
-                        Some(tracing::Level::DEBUG),
-                        Some(tracing::Level::DEBUG),
-                    )
-                    .await
+                    Command::new(&fslabs_test.command)
+                        .current_dir(&package_path)
+                        .envs(&fslabs_test.envs)
+                        .log_stdout(tracing::Level::DEBUG)
+                        .log_stderr(tracing::Level::DEBUG)
+                        .execute()
+                        .await
                 }
             };
             if let Some(post_command) = fslabs_test.post_command {
-                execute_command_without_logging(
-                    &post_command,
-                    &package_path,
-                    &fslabs_test.envs,
-                    &HashSet::new(),
-                )
-                .await;
+                Command::new(&post_command)
+                    .current_dir(&package_path)
+                    .envs(&fslabs_test.envs)
+                    .execute()
+                    .await;
             }
 
             // Cleanup nextest configuration if this is the cargo_test step and nextest was used

@@ -1,9 +1,7 @@
-use crate::utils::execute_command_without_logging;
 use rand::distr::{Alphanumeric, SampleString};
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::time::Duration;
+
+use crate::command_ext::Command;
 
 pub struct DockerContainer {
     pub prefix: String,
@@ -60,28 +58,21 @@ impl DockerContainer {
         let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
         let container_name = format!("{prefix}_{suffix}");
         let path = std::env::current_dir().unwrap();
-        let envs: HashMap<String, String> = HashMap::default();
-        let command_output = execute_command_without_logging(
-            &format!(
-                "docker run --name={container_name} -d {env} {port} {options} {image} {command}"
-            ),
-            &path,
-            &envs,
-            &HashSet::new(),
-        )
+        let command_output = Command::new(format!(
+            "docker run --name={container_name} -d {env} {port} {options} {image} {command}"
+        ))
+        .current_dir(&path)
+        .execute()
         .await;
         if !command_output.success {
             return Err(anyhow::anyhow!(command_output.stderr));
         }
         // HACK: Wait 5 Sec
         tokio::time::sleep(Duration::from_millis(5000)).await;
-        let command_output = execute_command_without_logging(
-            &format!("docker ps -q -f name={container_name}"),
-            &path,
-            &envs,
-            &HashSet::new(),
-        )
-        .await;
+        let command_output = Command::new(format!("docker ps -q -f name={container_name}"))
+            .current_dir(&path)
+            .execute()
+            .await;
         if !command_output.success {
             return Err(anyhow::anyhow!(command_output.stderr));
         }
@@ -100,21 +91,14 @@ impl DockerProcess {
     pub async fn teardown(self) {
         let Self { container_id } = self;
         let path = std::env::current_dir().unwrap();
-        let envs: HashMap<String, String> = HashMap::default();
-        execute_command_without_logging(
-            &format!("docker stop {container_id}"),
-            &path,
-            &envs,
-            &HashSet::new(),
-        )
-        .await;
-        execute_command_without_logging(
-            &format!("docker rm {container_id}"),
-            &path,
-            &envs,
-            &HashSet::new(),
-        )
-        .await;
+        Command::new(format!("docker stop {container_id}"))
+            .current_dir(&path)
+            .execute()
+            .await;
+        Command::new(format!("docker rm {container_id}"))
+            .current_dir(&path)
+            .execute()
+            .await;
     }
 }
 
