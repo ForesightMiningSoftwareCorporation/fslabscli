@@ -104,13 +104,14 @@ async fn create_docker_container(
     port: String,
     options: String,
     image: String,
+    command: String,
 ) -> anyhow::Result<String> {
     let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
     let container_name = format!("{prefix}_{suffix}");
     let path = env::current_dir().unwrap();
     let envs: HashMap<String, String> = HashMap::default();
     let command_output = execute_command_without_logging(
-        &format!("docker run --name={container_name} -d {env} {port} {options} {image}"),
+        &format!("docker run --name={container_name} -d {env} {port} {options} {image} {command}"),
         &path,
         &envs,
         &HashSet::new(),
@@ -492,6 +493,7 @@ async fn do_test_on_package(
             format!("-p {pg_port}:5432"),
             "".to_string(),
             "postgres:alpine".to_string(),
+            "".to_string(),
         )
         .await;
         let end_time = OffsetDateTime::now_utc();
@@ -526,6 +528,7 @@ async fn do_test_on_package(
             "-p 10000:10000 -p 10001:10001 -p 10002:10002".to_string(),
             "".to_string(),
             "mcr.microsoft.com/azure-storage/azurite".to_string(),
+            "".to_string(),
         )
         .await;
         let end_time = OffsetDateTime::now_utc();
@@ -558,8 +561,9 @@ async fn do_test_on_package(
             "minio".to_string(),
             "-e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin".to_string(),
             format!("-p {minio_port}:9000 -p {minio_console_port}:9001"),
-            "server /data --console-address :9001".to_string(),
+            "".to_string(),
             "minio/minio:latest".to_string(),
+            "server /data --console-address :9001".to_string(),
         )
         .await;
         let end_time = OffsetDateTime::now_utc();

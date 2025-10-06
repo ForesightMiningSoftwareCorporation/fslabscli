@@ -1,5 +1,6 @@
 {
-  description = "fslabscli";
+  description = "fslabscli - A CLI tool for FSLABS CI/CD operations";
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
@@ -8,6 +9,7 @@
     gitignore.url = "github:hercules-ci/gitignore.nix";
     devenv.url = "github:cachix/devenv";
   };
+
   outputs =
     inputs@{
       self,
@@ -22,196 +24,300 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ ];
-        pkgs = import nixpkgs {
-          inherit system overlays;
-          stdenv = nixpkgs.clangStdenv;
-        };
+        # Use standard stdenv (better compatibility with native deps)
+        pkgs = import nixpkgs { inherit system; };
         inherit (pkgs.stdenv) isDarwin isLinux;
         inherit (gitignore.lib) gitignoreSource;
         lib = pkgs.lib;
+
+        # Extract Rust channel from rust-toolchain.toml
+        rustToolchainToml = lib.importTOML ./rust-toolchain.toml;
+        rustChannel = rustToolchainToml.toolchain.channel;
+
+        # Rust toolchain from rust-toolchain.toml
         fenixPkgs = fenix.packages.${system};
-        toolchain = fenixPkgs.fromToolchainFile {
-          file = ./rust-toolchain.toml;
+        toolchain = fenixPkgs.fromToolchainName {
+          name = (lib.importTOML ./rust-toolchain.toml).toolchain.channel;
           sha256 = "sha256-+9FmLhAOezBZCOziO0Qct1NOrfpjNsXxc/8I0c7BdKE=";
         };
+
+        # Crane library for building Rust projects
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+
+        # Package metadata
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         rustSrc = craneLib.cleanCargoSource ./.;
-        arch2targets =
-          let
-            generateCross =
-              target:
-              import nixpkgs {
-                system = system;
-                crossSystem.config = target;
-              };
-          in
+
+        # Helper to create Rust target toolchain
+        mkToolchain =
+          target:
+          fenixPkgs.combine [
+            toolchain.rustc
+            toolchain.cargo
+            fenixPkgs.targets.${target}.stable.rust-std
+          ];
+
+        # Native build for current system
+        nativeTarget =
+          if system == "x86_64-linux" then
+            "x86_64-unknown-linux-musl"
+          else if system == "aarch64-linux" then
+            "aarch64-unknown-linux-musl"
+          else if system == "x86_64-darwin" then
+            "x86_64-apple-darwin"
+          else if system == "aarch64-darwin" then
+            "aarch64-apple-darwin"
+          else
+            throw "Unsupported system: ${system}";
+
+        # Common args for all builds
+        mkCommonArgs =
           {
-            "x86_64-linux" = rec {
-              rustTarget = "x86_64-unknown-linux-musl";
-              pkgsCross = generateCross rustTarget;
-              depsBuildBuild = [ ];
-            };
-            "aarch64-darwin" = rec {
-              rustTarget = "aarch64-apple-darwin";
-              pkgsCross = generateCross rustTarget;
-              depsBuildBuild = [ ];
-            };
-            "x86_64-windows" =
-              let
-                pkgsCross = pkgs.pkgsCross.mingwW64;
-              in
-              {
-                inherit pkgsCross;
-                rustTarget = "x86_64-pc-windows-gnu";
-                depsBuildBuild = [
-                  pkgsCross.stdenv.cc
-                  pkgsCross.windows.pthreads
-                ];
-              };
-          };
+            target,
+            pkgsCross ? pkgs,
+          }:
+          {
+            pname = manifest.name;
+            version = manifest.version;
+            src = rustSrc;
+            strictDeps = true;
+            doCheck = false;
+            auditable = true;
 
-        generateCommonArgs = craneLib': {
-          pname = manifest.name;
-          version = manifest.version;
-          src = rustSrc;
-          nativeBuildInputs = [
-            pkgs.perl
-            pkgs.llvmPackages.libclang
-            pkgs.clang
-            pkgs.git
-            pkgs.installShellFiles # Shell Completions
-            pkgs.rustPlatform.bindgenHook
-          ];
-          buildInputs = [
-            pkgs.stdenv.cc
-          ]
-          ++ lib.optionals isDarwin [
-            pkgs.apple-sdk
-            pkgs.libiconv
-          ];
-          # auditable = false;
-          doCheck = false;
-          # strictDeps = false;
+            CARGO_BUILD_TARGET = target;
+            CARGO_BUILD_RUSTFLAGS =
+              if lib.hasInfix "linux-musl" target then
+                [
+                  "-C"
+                  "target-feature=+crt-static"
+                  "-C"
+                  "link-arg=-static"
+                ]
+              else if lib.hasInfix "windows" target then
+                [
+                  "-C"
+                  "target-feature=+crt-static"
+                ]
+              else
+                [ ];
 
-          auditable = true;
-          # doCheck = true;
-          strictDeps = true;
-
-          LIBCLANG_PATH = pkgs.lib.makeLibraryPath [
-            pkgs.llvmPackages.libclang.lib
-          ];
-        };
-
-        mkRustPackage =
-          packageName:
-          let
-            inherit (arch2targets.${system}) rustTarget;
-          in
-          (craneLib.buildPackage (
-            (generateCommonArgs craneLib)
-            // {
-              postInstall = ''
-                cd "$out"/bin
-                for f in "$(ls)"; do
-                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
-                    base="$(echo "$f" | cut -d. -f1)"
-                    mv "$f" "$base-${rustTarget}$ext"
-                  else
-                    mv "$f" "$f-${rustTarget}"
-                  fi
-                done
-              '';
-            }
-          ));
-
-        mkCrossRustPackage =
-          arch: packageName:
-          let
-            inherit (arch2targets.${arch}) rustTarget pkgsCross depsBuildBuild;
-            toolchain = fenixPkgs.combine [
-              fenixPkgs.stable.rustc
-              fenixPkgs.stable.cargo
-              fenixPkgs.targets.${rustTarget}.stable.rust-std
-            ];
-            craneLibCross = craneLib.overrideToolchain toolchain;
-            TARGET_CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-            commonArgs = (generateCommonArgs craneLibCross) // {
-              inherit depsBuildBuild TARGET_CC;
-
-              CARGO_BUILD_TARGET = rustTarget;
-              CARGO_BUILD_RUSTFLAGS = [
-                "-C"
-                "linker=${TARGET_CC}"
-                "-C"
-                "target-feature=+crt-static"
+            nativeBuildInputs =
+              with pkgs;
+              [
+                pkg-config
+                perl
+                git
+                installShellFiles
+              ]
+              ++ lib.optionals isDarwin [
+                libiconv
               ];
 
-              CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-              LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-            };
-            cargoArtifacts = craneLibCross.buildDepsOnly (commonArgs // { });
+            buildInputs =
+              if lib.hasInfix "linux-musl" target then
+                # Static Linux: use musl
+                [ pkgs.pkgsStatic.openssl ]
+              else if lib.hasInfix "darwin" target then
+                # macOS: use modern apple-sdk (includes frameworks)
+                [ pkgs.apple-sdk ]
+              else
+                [ ];
+          };
 
+        # Build a Rust package for a specific target
+        mkPackage =
+          {
+            target,
+            pkgsCross ? pkgs,
+          }:
+          let
+            toolchainForTarget = mkToolchain target;
+            craneLibForTarget = craneLib.overrideToolchain toolchainForTarget;
+            commonArgs = mkCommonArgs { inherit target pkgsCross; };
+            cargoArtifacts = craneLibForTarget.buildDepsOnly commonArgs;
           in
-          craneLibCross.buildPackage (
+          craneLibForTarget.buildPackage (
             commonArgs
             // {
               inherit cargoArtifacts;
-              CARGO_BUILD_RUSTFLAGS = [
-                "-C"
-                "linker=${TARGET_CC}"
-                "-C"
-                "target-feature=+crt-static"
-              ];
+
               postInstall = ''
                 cd "$out"/bin
-                for f in "$(ls)"; do
-                  if ext="$(echo "$f" | grep -oP '\.[a-z]+$')"; then
-                    base="$(echo "$f" | cut -d. -f1)"
-                    mv "$f" "$base-${rustTarget}$ext"
-                  else
-                    mv "$f" "$f-${rustTarget}"
+                for f in *; do
+                  if [[ -f "$f" ]]; then
+                    if [[ "$f" == *.exe ]]; then
+                      base="''${f%.exe}"
+                      [[ "$base" =~ -${target} ]] || mv "$f" "''${base}-${target}.exe"
+                    else
+                      [[ "$f" =~ -${target} ]] || mv "$f" "$f-${target}"
+                    fi
                   fi
                 done
               '';
             }
           );
 
-        individualPackages =
+        # Cross-compilation for Windows from Linux
+        mkWindowsPackage =
           let
-            packageName = manifest.name;
-            filteredTargets = lib.attrsets.filterAttrs (
-              k: _: (k == system || isDarwin || (!lib.strings.hasInfix "darwin" k))
-            ) arch2targets;
+            target = "x86_64-pc-windows-gnu";
+            pkgsCross = pkgs.pkgsCross.mingwW64;
+            toolchainWindows = mkToolchain target;
+            craneLibWindows = craneLib.overrideToolchain toolchainWindows;
+
+            TARGET_CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+
+            commonArgs = (mkCommonArgs { inherit target pkgsCross; }) // {
+              depsBuildBuild = with pkgsCross; [
+                stdenv.cc
+                windows.pthreads
+              ];
+
+              nativeBuildInputs = (mkCommonArgs { inherit target pkgsCross; }).nativeBuildInputs ++ [
+                pkgsCross.stdenv.cc
+              ];
+
+              buildInputs = [ ]; # Static linking
+
+              CARGO_BUILD_RUSTFLAGS = [
+                "-C"
+                "linker=${TARGET_CC}"
+                "-C"
+                "target-feature=+crt-static"
+              ];
+
+              TARGET_CC = TARGET_CC;
+              CC = TARGET_CC;
+              HOST_CC = "${pkgs.stdenv.cc}/bin/cc";
+            };
+
+            cargoArtifacts = craneLibWindows.buildDepsOnly commonArgs;
           in
-          lib.attrsets.mapAttrs' (
-            arch: _:
-            let
-              shouldCross = arch != system;
-            in
-            lib.nameValuePair (packageName + "-" + arch) (
-              if shouldCross then (mkCrossRustPackage arch packageName) else (mkRustPackage packageName)
-            )
-          ) filteredTargets;
+          craneLibWindows.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+
+              postInstall = ''
+                cd "$out"/bin
+                for f in *.exe; do
+                  if [[ -f "$f" ]]; then
+                    base="''${f%.exe}"
+                    [[ "$base" =~ -${target} ]] || mv "$f" "''${base}-${target}.exe"
+                  fi
+                done
+              '';
+            }
+          );
+
+        # Cross-compilation for Linux ARM64 from Linux x86_64
+        mkLinuxAarch64Package =
+          let
+            target = "aarch64-unknown-linux-musl";
+            pkgsCross = pkgs.pkgsCross.aarch64-multiplatform-musl;
+            toolchainAarch64 = mkToolchain target;
+            craneLibAarch64 = craneLib.overrideToolchain toolchainAarch64;
+
+            TARGET_CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+
+            commonArgs = (mkCommonArgs { inherit target pkgsCross; }) // {
+              depsBuildBuild = [
+                pkgsCross.stdenv.cc
+              ];
+
+              nativeBuildInputs = (mkCommonArgs { inherit target pkgsCross; }).nativeBuildInputs ++ [
+                pkgsCross.stdenv.cc
+              ];
+
+              buildInputs = [
+                pkgsCross.pkgsStatic.openssl
+              ];
+
+              CARGO_BUILD_RUSTFLAGS = [
+                "-C"
+                "linker=${TARGET_CC}"
+                "-C"
+                "target-feature=+crt-static"
+                "-C"
+                "link-arg=-static"
+              ];
+
+              TARGET_CC = TARGET_CC;
+              CC = TARGET_CC;
+              HOST_CC = "${pkgs.stdenv.cc}/bin/cc";
+            };
+
+            cargoArtifacts = craneLibAarch64.buildDepsOnly commonArgs;
+          in
+          craneLibAarch64.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+
+              postInstall = ''
+                cd "$out"/bin
+                for f in *; do
+                  if [[ -f "$f" ]]; then
+                    [[ "$f" =~ -${target} ]] || mv "$f" "$f-${target}"
+                  fi
+                done
+              '';
+            }
+          );
+
+        # Cross-compilation packages based on system
+        crossPackages =
+          if system == "x86_64-linux" then
+            {
+              # Linux runner builds: x86_64-linux, aarch64-linux, windows
+              cargo-fslabscli-aarch64-linux = mkLinuxAarch64Package;
+              cargo-fslabscli-windows = mkWindowsPackage;
+            }
+          # macOS builds only native architecture (ARM64 only)
+          # x86_64-darwin is not supported (Intel Macs can use Rosetta 2)
+          else
+            { };
+
+        # Native package
+        nativePackage = mkPackage { target = nativeTarget; };
+
       in
       {
-        packages = individualPackages // {
-          default = mkRustPackage "cargo-fslabscli";
+        packages = {
+          default = nativePackage;
+          cargo-fslabscli = nativePackage;
+        }
+        // crossPackages
+        // {
+          # Release bundle: combines native + all cross-compiled builds for this runner
           release = pkgs.runCommand "release-binaries" { } ''
             mkdir -p "$out/bin"
-            for pkg in ${
-              builtins.concatStringsSep " " (
-                map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualPackages [ "release" ]))
-              )
-            }; do
-              for file in "$pkg"/*; do
-                install -Dm755 "$file" "$out/bin/$(basename "$file")"
-              done
+
+            # Copy native build
+            for file in ${nativePackage}/bin/*; do
+              if [ -f "$file" ]; then
+                cp -L "$file" "$out/bin/"
+              fi
             done
-            (cd "$out/bin" && sha256sum * > sha256.txt)
+
+            # Copy all cross-compiled builds
+            ${lib.concatMapStringsSep "\n" (name: ''
+              for file in ${crossPackages.${name}}/bin/*; do
+                if [ -f "$file" ]; then
+                  cp -L "$file" "$out/bin/"
+                fi
+              done
+            '') (lib.attrNames crossPackages)}
+
+            # Generate checksums
+            cd "$out/bin"
+            if ls * >/dev/null 2>&1; then
+              sha256sum * > sha256.txt
+            fi
           '';
         };
+
+        # Development shell
         devShells.default = devenv.lib.mkShell {
           inherit inputs pkgs;
           modules = [
@@ -223,45 +329,76 @@
                 ...
               }:
               {
+                # Required for devenv flake integration
                 packages =
-                  (with pkgs; [
-                    # self.packages.${system}.default
-                    # updatecli
+                  with pkgs;
+                  [
+                    # Development tools
                     cargo-deny
                     cargo-nextest
                     xunit-viewer
                     protobuf
                     trunk
-                  ])
+                  ]
                   ++ [
-                    # Use fenix's rust-analyzer for compatibility with fenix toolchain
+                    # Use fenix's rust-analyzer
                     fenixPkgs.rust-analyzer
                   ];
+
                 languages = {
                   nix.enable = true;
                   rust = {
                     enable = true;
-                    toolchainPackage = toolchain;
+                    toolchainPackage = toolchain.toolchain;
                   };
                 };
 
                 enterShell = ''
+                  # Load .env if it exists
                   [ ! -f .env ] || export $(grep -v '^#' .env | xargs)
-                  echo 👋 Welcome to fslabscli Development Environment. 🚀
-                  echo
-                  echo If you see this message, it means your are inside the Nix shell ❄️.
-                  echo
-                  echo ------------------------------------------------------------------
-                  echo
-                  echo Commands: available
+
+                  echo "👋 Welcome to fslabscli Development Environment 🚀"
+                  echo ""
+                  echo "If you see this message, it means you are inside the Nix shell ❄️"
+                  echo ""
+                  echo "──────────────────────────────────────────────────────────"
+                  echo ""
+                  echo "Commands available:"
                   ${pkgs.gnused}/bin/sed -e 's| |••|g' -e 's|=| |' <<EOF | ${pkgs.util-linuxMinimal}/bin/column -t | ${pkgs.gnused}/bin/sed -e 's|^|💪 |' -e 's|••| |g'
                   ${lib.generators.toKeyValue { } (lib.mapAttrs (name: value: value.description) config.scripts)}
                   EOF
-                  echo
-                  echo Repository:
-                  echo  - https://github.com/ForesightMiningSoftwareCorporation/fslabscli
-                  echo ------------------------------------------------------------------
-                  echo
+                  echo ""
+                  echo "Quick start:"
+                  echo "  - cargo build              # Build the project"
+                  echo "  - cargo test               # Run tests"
+                  echo "  - cargo nextest run        # Run tests with nextest"
+                  echo "  - nix build                # Build native (${nativeTarget})"
+                  echo "  - nix build .#release      # Build all targets for this runner"
+                  echo "  - nix flake check          # Run all checks"
+                  echo ""
+                  echo "This runner builds:"
+                  ${
+                    if system == "x86_64-linux" then
+                      ''
+                        echo "  ✓ x86_64-unknown-linux-musl (native)"
+                        echo "  ✓ aarch64-unknown-linux-musl (cross)"
+                        echo "  ✓ x86_64-pc-windows-gnu (cross)"
+                      ''
+                    else if system == "aarch64-darwin" then
+                      ''
+                        echo "  ✓ aarch64-apple-darwin (native only)"
+                        echo "  Note: x86_64-darwin not supported (use Rosetta 2)"
+                      ''
+                    else
+                      ''
+                        echo "  ✓ ${nativeTarget} (native)"
+                      ''
+                  }
+                  echo ""
+                  echo "Repository:"
+                  echo "  https://github.com/ForesightMiningSoftwareCorporation/fslabscli"
+                  echo "──────────────────────────────────────────────────────────"
+                  echo ""
                 '';
               }
             )
