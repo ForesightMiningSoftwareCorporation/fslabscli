@@ -535,7 +535,7 @@ async fn do_test_on_package(
         let duration = end_time - start_time;
         let service_azurite_tc = match azurite_container {
             Ok(container_id) => {
-                service_azurite_container_id = Some(container_id);
+                service_azurite_container_id = Some(container_id.clone());
                 TestCase::success("service_azurite", duration)
             }
             Err(e) => {
@@ -556,14 +556,13 @@ async fn do_test_on_package(
         tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
         let start_time = OffsetDateTime::now_utc();
         let minio_port = free_local_port().unwrap();
-        let minio_console_port = free_local_port().unwrap();
         let minio_container = create_docker_container(
             "minio".to_string(),
             "-e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin".to_string(),
-            format!("-p {minio_port}:9000 -p {minio_console_port}:9001"),
+            format!("-p {minio_port}:9000"),
             "".to_string(),
             "minio/minio:latest".to_string(),
-            "server /data --console-address :9001".to_string(),
+            "server /data --address=0.0.0.0:9000".to_string(),
         )
         .await;
         let end_time = OffsetDateTime::now_utc();
@@ -572,26 +571,6 @@ async fn do_test_on_package(
             Ok(container_id) => {
                 service_minio_container_id = Some(container_id.clone());
                 minio_endpoint = Some(format!("http://127.0.0.1:{minio_port}"));
-
-                // Wait for MinIO to be ready and create default bucket
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-                // Create bucket using MinIO client (mc)
-                let create_bucket_result = tokio::process::Command::new("docker")
-                    .args([
-                        "exec",
-                        &container_id,
-                        "sh",
-                        "-c",
-                        "mc alias set myminio http://localhost:9000 minioadmin minioadmin && mc mb myminio/test-bucket --ignore-existing"
-                    ])
-                    .output()
-                    .await;
-
-                if let Err(e) = create_bucket_result {
-                    tracing::warn!("Failed to create MinIO bucket: {}", e);
-                }
-
                 TestCase::success("service_minio", duration)
             }
             Err(e) => {
@@ -728,7 +707,7 @@ async fn do_test_on_package(
             id: "cargo_test".to_string(),
             command: if use_nextest {
                 format!(
-                    "cargo nextest run --all-targets {additional_args} --profile default {} --no-fail-fast",
+                    "cargo nextest run --all-targets {additional_args} --profile default --no-fail-fast --no-tests pass {}",
                     if common_options.inner_job_limit != 0 {
                         format!("--test-threads {}", common_options.inner_job_limit)
                     } else {
@@ -761,7 +740,7 @@ async fn do_test_on_package(
                 }
 
                 if !env_lines.is_empty() {
-                    Some(format!("echo '{}' > .env", env_lines.join("\\n")))
+                    Some(format!("echo -e '{}' > .env", env_lines.join("\\n")))
                 } else {
                     None
                 }
