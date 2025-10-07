@@ -13,6 +13,10 @@ at your option. This means you can select the license you prefer! This dual-lice
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
+## Installation
+
+To install, run the following command:
+``cargo install --git https://github.com/ForesightMiningSoftwareCorporation/fslabscli``
 
 ## Release Process
 ``` mermaid
