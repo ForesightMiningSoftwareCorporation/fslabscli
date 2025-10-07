@@ -19,6 +19,3 @@ impl PackageMetadataFslabsCiPublishNixBinary {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {}
