@@ -1262,39 +1262,32 @@ pub async fn publish(
     // Filters members based on regex
     // Spawn a task for each object
     for (member_id, member) in &results.members {
-        let o = artifact_dir.clone();
-        let m = member.clone();
-        let r = repo_root.clone();
-        let s = Arc::clone(&semaphore);
-        let c = Arc::clone(&cargo);
-        let status = Arc::clone(&publish_status);
-        let cmn_opt = Arc::new(common_options.clone());
-        let opt = Arc::new(options.clone());
+        let dependencies = results
+            .crate_graph
+            .dependency_graph()
+            .dependencies
+            .get(member_id)
+            .map(|deps| {
+                // We should remove the dev and path only dependencies from the tree
+                deps.iter()
+                    .filter(|d| {
+                        d.instances
+                            .iter()
+                            .any(|k| k.kind != DependencyKind::Development || !k.is_local)
+                    })
+                    .cloned()
+                    .collect::<Vec<Dependency>>()
+            });
         let task_handle = tokio::spawn(publish_package(
-            r,
-            m,
-            s,
-            results
-                .crate_graph
-                .dependency_graph()
-                .dependencies
-                .get(member_id)
-                .map(|deps| {
-                    // We should remove the dev and path only dependencies from the tree
-                    deps.iter()
-                        .filter(|d| {
-                            d.instances
-                                .iter()
-                                .any(|k| k.kind != DependencyKind::Development || !k.is_local)
-                        })
-                        .cloned()
-                        .collect::<Vec<Dependency>>()
-                }),
-            status,
-            o,
-            c,
-            cmn_opt,
-            opt,
+            repo_root.clone(),
+            member.clone(),
+            semaphore.clone(),
+            dependencies,
+            publish_status.clone(),
+            artifact_dir.clone(),
+            cargo.clone(),
+            Arc::new(common_options.clone()),
+            Arc::new(options.clone()),
             registries.clone(),
         ));
         handles.push(task_handle);
