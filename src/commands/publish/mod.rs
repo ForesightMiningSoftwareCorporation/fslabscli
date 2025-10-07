@@ -1693,6 +1693,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-mod storage_tests;

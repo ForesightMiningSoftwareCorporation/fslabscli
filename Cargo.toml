@@ -12,7 +12,7 @@ version = "2.29.4"
 
 [package.metadata.fslabs]
 
-[package.metadata.fslabs.test]
+[package.metadata.fslabs.test.args]
 service_azurite = true
 service_minio = true
 [package.metadata.fslabs.publish]
@@ -152,6 +152,7 @@ version = "1.47.1"
 
 [dev-dependencies]
 assert_fs = "1.1.3"
+dotenvy = "0.15"
 indoc = "2.0.6"
 reqwest = "0.12"
 serial_test = "3.2.0"
