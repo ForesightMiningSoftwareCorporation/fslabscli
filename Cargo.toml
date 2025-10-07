@@ -8,15 +8,6 @@ name = "cargo-fslabscli"
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
 version = "2.29.4"
 
-[package.metadata]
-
-[package.metadata.fslabs]
-
-[package.metadata.fslabs.test.args]
-service_azurite = true
-service_minio = true
-[package.metadata.fslabs.publish]
-
 [package.metadata.fslabs.publish.binary]
 name = "FSLABS Cli tool"
 publish = true
