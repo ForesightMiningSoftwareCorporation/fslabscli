@@ -3,7 +3,10 @@ use std::{
     path::Path,
     process::Stdio,
 };
-use tokio::io::AsyncBufReadExt;
+use tokio::{
+    io::AsyncBufReadExt,
+    process::{ChildStderr, ChildStdout},
+};
 use tracing::{debug, error, info, trace, warn};
 
 /// A wrapper around [`tokio::process::Command`] with some extended behavior.
@@ -75,6 +78,20 @@ impl Command {
     // TODO: this should return Result and allow for error handling.
     //
     pub async fn execute(self) -> CommandOutput {
+        let collect_stdio = true;
+        let task = self._spawn(collect_stdio).unwrap();
+        match task.wait().await {
+            Ok(out) => out,
+            Err(e) => e.into(),
+        }
+    }
+
+    pub fn spawn(self) -> anyhow::Result<CommandTask> {
+        let collect_stdio = false;
+        self._spawn(collect_stdio)
+    }
+
+    fn _spawn(self, collect_stdio: bool) -> anyhow::Result<CommandTask> {
         let Self {
             mut inner,
             command,
@@ -88,60 +105,20 @@ impl Command {
         // Disable colors in log to get clean strings
         inner.env("NO_COLOR", "true");
 
-        let mut child = inner.spawn().expect("Unable to spawn command");
+        let mut child = inner.spawn()?;
 
-        let stdout = child.stdout.take().expect("Failed to get stdout");
-        let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
-        let mut stdout_string = String::new();
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let pipe_task = tokio::task::spawn(pipe_stdio(
+            stdout,
+            stderr,
+            collect_stdio,
+            collect_stdio,
+            log_stdout,
+            log_stderr,
+        ));
 
-        let stderr = child.stderr.take().expect("Failed to get stderr");
-        let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
-        let mut stderr_string = String::new();
-
-        loop {
-            tokio::select! {
-                Ok(Some(line)) = stdout_stream.next_line() =>  {
-                    stdout_string.push_str(&format!("{line}\n"));
-                    if let Some(level) = log_stdout {
-                        let stdout = format!(" | {line}");
-                        match level {
-                            tracing::Level::ERROR => error!(stdout),
-                            tracing::Level::WARN => warn!(stdout),
-                            tracing::Level::INFO => info!(stdout),
-                            tracing::Level::DEBUG => debug!(stdout),
-                            tracing::Level::TRACE => trace!(stdout),
-                        }
-                    }
-                },
-                Ok(Some(line)) = stderr_stream.next_line() =>  {
-                    stderr_string.push_str(&format!("{line}\n"));
-                    if let Some(level) = log_stderr {
-                        let stderr = format!(" | {line}");
-                        match level {
-                            tracing::Level::ERROR => error!(stderr),
-                            tracing::Level::WARN => warn!(stderr),
-                            tracing::Level::INFO => info!(stderr),
-                            tracing::Level::DEBUG => debug!(stderr),
-                            tracing::Level::TRACE => trace!(stderr),
-                        }
-                    }
-                },
-                else => break,
-            }
-        }
-
-        let status = child.wait().await;
-        match status {
-            Ok(output) => {
-                let exit_code = output.code().unwrap_or(1);
-                CommandOutput {
-                    stdout: stdout_string.to_string(),
-                    stderr: stderr_string,
-                    success: exit_code == 0,
-                }
-            }
-            Err(e) => e.into(),
-        }
+        Ok(CommandTask { child, pipe_task })
     }
 }
 
@@ -179,4 +156,85 @@ impl From<std::io::Error> for CommandOutput {
             success: false,
         }
     }
+}
+
+pub struct CommandTask {
+    child: tokio::process::Child,
+    pipe_task: tokio::task::JoinHandle<(Option<String>, Option<String>)>,
+}
+
+impl CommandTask {
+    pub async fn kill(mut self) -> anyhow::Result<()> {
+        // TODO: We should check the target_os and send SIGTERM on Unix.
+        self.child.kill().await?;
+        self.pipe_task.await?;
+        Ok(())
+    }
+
+    pub async fn wait(mut self) -> anyhow::Result<CommandOutput> {
+        let status = self.child.wait().await?;
+        let (stdout, stderr) = self.pipe_task.await?;
+        Ok(CommandOutput {
+            stdout: stdout.unwrap_or_default(),
+            stderr: stderr.unwrap_or_default(),
+            success: status.success(),
+        })
+    }
+}
+
+// TODO: return Result
+async fn pipe_stdio(
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    collect_stdout: bool,
+    collect_stderr: bool,
+    log_stdout: Option<tracing::Level>,
+    log_stderr: Option<tracing::Level>,
+) -> (Option<String>, Option<String>) {
+    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
+    let mut stdout_string = String::new();
+
+    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
+    let mut stderr_string = String::new();
+
+    loop {
+        tokio::select! {
+            Ok(Some(line)) = stdout_stream.next_line() =>  {
+                if collect_stdout {
+                    stdout_string.push_str(&format!("{line}\n"));
+                }
+                if let Some(level) = log_stdout {
+                    let stdout = format!(" | {line}");
+                    match level {
+                        tracing::Level::ERROR => error!(stdout),
+                        tracing::Level::WARN => warn!(stdout),
+                        tracing::Level::INFO => info!(stdout),
+                        tracing::Level::DEBUG => debug!(stdout),
+                        tracing::Level::TRACE => trace!(stdout),
+                    }
+                }
+            },
+            Ok(Some(line)) = stderr_stream.next_line() =>  {
+                if collect_stderr {
+                    stderr_string.push_str(&format!("{line}\n"));
+                }
+                if let Some(level) = log_stderr {
+                    let stderr = format!(" | {line}");
+                    match level {
+                        tracing::Level::ERROR => error!(stderr),
+                        tracing::Level::WARN => warn!(stderr),
+                        tracing::Level::INFO => info!(stderr),
+                        tracing::Level::DEBUG => debug!(stderr),
+                        tracing::Level::TRACE => trace!(stderr),
+                    }
+                }
+            },
+            else => break,
+        }
+    }
+
+    (
+        collect_stdout.then_some(stdout_string),
+        collect_stderr.then_some(stderr_string),
+    )
 }
