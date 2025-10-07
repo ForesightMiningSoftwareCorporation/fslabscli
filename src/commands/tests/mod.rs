@@ -598,6 +598,7 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(pre_test_script_tx);
     }
     // Handle Tests
+    let test_command = &test_args.test_command;
     let additional_args = &test_args.additional_args;
     let fslabs_tests: Vec<FslabsTest> = vec![
         FslabsTest {
@@ -643,7 +644,9 @@ async fn do_test_on_package(
         },
         FslabsTest {
             id: "cargo_test".to_string(),
-            command: if use_nextest {
+            command: if let Some(test_command) = test_command {
+                format!("{test_command} {additional_args}")
+            } else if use_nextest {
                 format!(
                     "cargo nextest run --all-targets {additional_args} --profile default --no-fail-fast --no-tests pass {}",
                     if common_options.inner_job_limit != 0 {
