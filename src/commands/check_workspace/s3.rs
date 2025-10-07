@@ -30,6 +30,3 @@ impl PackageMetadataFslabsCiPublishS3 {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {}

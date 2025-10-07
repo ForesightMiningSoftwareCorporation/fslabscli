@@ -212,6 +212,3 @@ impl BinaryStore {
         &self.client
     }
 }
-
-#[cfg(test)]
-mod tests {}
