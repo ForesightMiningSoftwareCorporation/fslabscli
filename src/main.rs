@@ -35,6 +35,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod command_ext;
 mod commands;
 mod crate_graph;
+mod script;
 mod test_args;
 mod utils;
 
