@@ -14,10 +14,19 @@ pub struct TestArgs {
     /// Enable a Minio (S3) service accessible during the test.
     #[serde(default)]
     pub service_minio: bool,
+    // TODO: remove and replace users with `pre_test_script`
+    //
+    /// TODO: what is this for?
     pub additional_cache_miss: Option<String>,
     /// A script that runs after services are started and
     /// before the test command is run.
-    pub additional_script: Option<String>,
+    pub pre_test_script: Option<String>,
+    /// The command used to run tests for a package.
+    ///
+    /// If no value is provided, the default command is "cargo test --all-targets".
+    ///
+    /// For testing with `wasm-bindgen-test`, you could use `test_command = "wasm-pack test"`.
+    pub test_command: Option<String>,
     /// Arguments appended to the test command.
     #[serde(default)]
     pub additional_args: String,

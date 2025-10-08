@@ -488,7 +488,7 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(service_minio_tc);
     }
 
-    // Handle cache miss (this should be dropped and only additional script)
+    // Handle cache miss (this should be dropped and only use pre_test_script)
     if !failed && let Some(cache_miss_command) = &test_args.additional_cache_miss {
         tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
         let start_time = OffsetDateTime::now_utc();
@@ -516,10 +516,10 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(cache_miss_tc);
     }
 
-    // Handle Additional Script
-    if !failed && let Some(additional_scripts) = &test_args.additional_script {
+    // Handle Pre-Test Script
+    if !failed && let Some(pre_test_script) = &test_args.pre_test_script {
         tracing::info!(
-            "│ {:30.30}     │ Running additional script command",
+            "│ {:30.30}     │ Running pre-test script command",
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
@@ -527,7 +527,7 @@ async fn do_test_on_package(
         let mut all_stderr = "".to_string();
         let mut sub_failed = false;
 
-        for line in additional_scripts.split("\n") {
+        for line in pre_test_script.split("\n") {
             if line.is_empty() {
                 continue;
             }
@@ -543,23 +543,23 @@ async fn do_test_on_package(
             all_stdout.push('\n');
             all_stderr.push_str(&command_output.stderr);
             all_stderr.push('\n');
-            tracing::debug!("additional_script: {line} {}", command_output.stdout);
+            tracing::debug!("pre_test_script: {line} {}", command_output.stdout);
             if !command_output.success {
                 sub_failed = true;
             }
         }
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        let mut additional_script_tc = match sub_failed {
-            false => TestCase::success("additional_script", duration),
+        let mut pre_test_script_tx = match sub_failed {
+            false => TestCase::success("pre_test_script", duration),
             true => {
                 failed = true;
-                TestCase::failure("additional_script", duration, "", "required")
+                TestCase::failure("pre_test_script", duration, "", "required")
             }
         };
-        additional_script_tc.set_system_out(&all_stderr);
-        additional_script_tc.set_system_err(&all_stdout);
-        ts_mandatory.add_testcase(additional_script_tc);
+        pre_test_script_tx.set_system_out(&all_stderr);
+        pre_test_script_tx.set_system_err(&all_stdout);
+        ts_mandatory.add_testcase(pre_test_script_tx);
     }
     // Handle Tests
     let additional_args = &test_args.additional_args;
