@@ -23,13 +23,14 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
-    command_ext::Command,
+    command_ext::{Command, CommandOutput},
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
         tests::docker_service::{DockerContainer, postgres_url},
     },
     init_metrics,
+    script::Script,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -517,48 +518,32 @@ async fn do_test_on_package(
     }
 
     // Handle Pre-Test Script
-    if !failed && let Some(pre_test_script) = &test_args.pre_test_script {
+    if !failed && let Some(pre_test_script) = test_args.pre_test_script.clone() {
         tracing::info!(
             "│ {:30.30}     │ Running pre-test script command",
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
-        let mut all_stdout = "".to_string();
-        let mut all_stderr = "".to_string();
-        let mut sub_failed = false;
-
-        for line in pre_test_script.split("\n") {
-            if line.is_empty() {
-                continue;
-            }
-            if sub_failed {
-                continue;
-            }
-            let mut command = Command::new(line).current_dir(&package_path);
-            if let Some(db_url) = &database_url {
-                command = command.env("DATABASE_URL", db_url);
-            }
-            let command_output = command.execute().await;
-            all_stdout.push_str(&command_output.stdout);
-            all_stdout.push('\n');
-            all_stderr.push_str(&command_output.stderr);
-            all_stderr.push('\n');
-            tracing::debug!("pre_test_script: {line} {}", command_output.stdout);
-            if !command_output.success {
-                sub_failed = true;
-            }
+        let mut script = Script::new("pre_test_script", pre_test_script).current_dir(&package_path);
+        if let Some(url) = &database_url {
+            script = script.env("DATABASE_URL", url);
         }
+        let CommandOutput {
+            stdout,
+            stderr,
+            success,
+        } = script.run().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
-        let mut pre_test_script_tx = match sub_failed {
-            false => TestCase::success("pre_test_script", duration),
-            true => {
+        let mut pre_test_script_tx = match success {
+            true => TestCase::success("pre_test_script", duration),
+            false => {
                 failed = true;
                 TestCase::failure("pre_test_script", duration, "", "required")
             }
         };
-        pre_test_script_tx.set_system_out(&all_stderr);
-        pre_test_script_tx.set_system_err(&all_stdout);
+        pre_test_script_tx.set_system_out(&stdout);
+        pre_test_script_tx.set_system_err(&stderr);
         ts_mandatory.add_testcase(pre_test_script_tx);
     }
     // Handle Tests
