@@ -3,7 +3,6 @@ use tokio::{
     io::AsyncBufReadExt,
     process::{ChildStderr, ChildStdout},
 };
-use tracing::{debug, error, info, trace, warn};
 
 /// A wrapper around a [`tokio::process::Command`] that runs a Bash script.
 ///
@@ -14,6 +13,7 @@ use tracing::{debug, error, info, trace, warn};
 /// during script execution. This is useful in cases where the script might hang. If the script
 /// does hang, the partially complete output would never be visible without enabling this logging.
 pub struct Script {
+    name: Option<String>,
     inner: tokio::process::Command,
     log_stdout: Option<tracing::Level>,
     log_stderr: Option<tracing::Level>,
@@ -40,10 +40,18 @@ impl Script {
         let mut inner = tokio::process::Command::new(shell);
         inner.arg("-c").arg(&script);
         Self {
+            name: None,
             inner,
             log_stdout: Default::default(),
             log_stderr: Default::default(),
         }
+    }
+
+    /// Set the name of this script, which will appear at the start of all logs
+    /// when using [`Self::log_stdout`] or [`Self::log_stderr`].
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     pub fn current_dir(mut self, dir: impl AsRef<Path>) -> Self {
@@ -101,6 +109,7 @@ impl Script {
 
     fn _spawn(self, collect_stdio: bool) -> anyhow::Result<ScriptTask> {
         let Self {
+            name,
             mut inner,
             log_stdout,
             log_stderr,
@@ -115,6 +124,7 @@ impl Script {
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
         let pipe_task = tokio::task::spawn(pipe_stdio(
+            name,
             stdout,
             stderr,
             collect_stdio,
@@ -187,8 +197,21 @@ impl ScriptTask {
     }
 }
 
+macro_rules! dyn_event {
+    ($lvl:ident, $($arg:tt)+) => {
+        match $lvl {
+            ::tracing::Level::TRACE => ::tracing::trace!($($arg)+),
+            ::tracing::Level::DEBUG => ::tracing::debug!($($arg)+),
+            ::tracing::Level::INFO => ::tracing::info!($($arg)+),
+            ::tracing::Level::WARN => ::tracing::warn!($($arg)+),
+            ::tracing::Level::ERROR => ::tracing::error!($($arg)+),
+        }
+    };
+}
+
 // TODO: return Result
 async fn pipe_stdio(
+    script_name: Option<String>,
     stdout: ChildStdout,
     stderr: ChildStderr,
     collect_stdout: bool,
@@ -206,31 +229,27 @@ async fn pipe_stdio(
         tokio::select! {
             Ok(Some(line)) = stdout_stream.next_line() =>  {
                 if collect_stdout {
-                    stdout_string.push_str(&format!("{line}\n"));
+                    stdout_string.push_str(&line);
+                    stdout_string.push('n');
                 }
                 if let Some(level) = log_stdout {
-                    let stdout = format!(" | {line}");
-                    match level {
-                        tracing::Level::ERROR => error!(stdout),
-                        tracing::Level::WARN => warn!(stdout),
-                        tracing::Level::INFO => info!(stdout),
-                        tracing::Level::DEBUG => debug!(stdout),
-                        tracing::Level::TRACE => trace!(stdout),
+                    if let Some(name) = &script_name {
+                        dyn_event!(level, name, io = "stdout", "{line}");
+                    } else {
+                        dyn_event!(level, io = "stdout", "{line}");
                     }
                 }
             },
             Ok(Some(line)) = stderr_stream.next_line() =>  {
                 if collect_stderr {
-                    stderr_string.push_str(&format!("{line}\n"));
+                    stderr_string.push_str(&line);
+                    stderr_string.push('n');
                 }
                 if let Some(level) = log_stderr {
-                    let stderr = format!(" | {line}");
-                    match level {
-                        tracing::Level::ERROR => error!(stderr),
-                        tracing::Level::WARN => warn!(stderr),
-                        tracing::Level::INFO => info!(stderr),
-                        tracing::Level::DEBUG => debug!(stderr),
-                        tracing::Level::TRACE => trace!(stderr),
+                    if let Some(name) = &script_name {
+                        dyn_event!(level, name, io = "stderr", "{line}");
+                    } else {
+                        dyn_event!(level, io = "stderr", "{line}");
                     }
                 }
             },
