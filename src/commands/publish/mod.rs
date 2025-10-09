@@ -24,7 +24,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
-use crate::command_ext::{Script, CommandOutput};
+use crate::script::{CommandOutput, Script};
 use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
@@ -958,13 +958,12 @@ async fn do_publish_package(
             is_failed = !result.docker.success;
             if !is_failed {
                 // Tag as latest
-                let command_output =
-                    Script::new(format!("docker tag {image_name} {image_latest}"))
-                        .current_dir(&repo_root)
-                        .log_stdout(tracing::Level::INFO)
-                        .log_stderr(tracing::Level::INFO)
-                        .execute()
-                        .await;
+                let command_output = Script::new(format!("docker tag {image_name} {image_latest}"))
+                    .current_dir(&repo_root)
+                    .log_stdout(tracing::Level::INFO)
+                    .log_stderr(tracing::Level::INFO)
+                    .execute()
+                    .await;
                 result.docker.update_from_command(command_output);
                 is_failed = !result.docker.success;
                 if !is_failed {

@@ -23,13 +23,13 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
-    command_ext::{CommandOutput, Script},
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
         tests::docker_service::{DockerContainer, postgres_url},
     },
     init_metrics,
+    script::{CommandOutput, Script},
 };
 
 #[derive(Debug, Parser, Default, Clone)]
