@@ -1,7 +1,7 @@
 use rand::distr::{Alphanumeric, SampleString};
 use std::time::Duration;
 
-use crate::command_ext::Command;
+use crate::command_ext::Script;
 
 pub struct DockerContainer {
     pub prefix: String,
@@ -58,7 +58,7 @@ impl DockerContainer {
         let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
         let container_name = format!("{prefix}_{suffix}");
         let path = std::env::current_dir().unwrap();
-        let command_output = Command::new(format!(
+        let command_output = Script::new(format!(
             "docker run --name={container_name} -d {env} {port} {options} {image} {command}"
         ))
         .current_dir(&path)
@@ -69,7 +69,7 @@ impl DockerContainer {
         }
         // HACK: Wait 5 Sec
         tokio::time::sleep(Duration::from_millis(5000)).await;
-        let command_output = Command::new(format!("docker ps -q -f name={container_name}"))
+        let command_output = Script::new(format!("docker ps -q -f name={container_name}"))
             .current_dir(&path)
             .execute()
             .await;
@@ -91,11 +91,11 @@ impl DockerProcess {
     pub async fn teardown(self) {
         let Self { container_id } = self;
         let path = std::env::current_dir().unwrap();
-        Command::new(format!("docker stop {container_id}"))
+        Script::new(format!("docker stop {container_id}"))
             .current_dir(&path)
             .execute()
             .await;
-        Command::new(format!("docker rm {container_id}"))
+        Script::new(format!("docker rm {container_id}"))
             .current_dir(&path)
             .execute()
             .await;

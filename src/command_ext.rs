@@ -1,38 +1,46 @@
-use std::{
-    ffi::{OsStr, OsString},
-    path::Path,
-    process::Stdio,
-};
+use std::{ffi::OsStr, path::Path, process::Stdio};
 use tokio::{
     io::AsyncBufReadExt,
     process::{ChildStderr, ChildStdout},
 };
 use tracing::{debug, error, info, trace, warn};
 
-/// A wrapper around [`tokio::process::Command`] with some extended behavior.
+/// A wrapper around a [`tokio::process::Command`] that runs a Bash script.
+///
+/// On Windows, Powershell will be used, but there is no guarantee of
+/// cross-platform compatibility.
 ///
 /// Optionally, stdout and stderr can be logged asynchronously to the current process's stdout
-/// during command execution. This is useful in cases where the command might hang. If the command
+/// during script execution. This is useful in cases where the script might hang. If the script
 /// does hang, the partially complete output would never be visible without enabling this logging.
-pub struct Command {
+pub struct Script {
     inner: tokio::process::Command,
-    command: OsString,
     log_stdout: Option<tracing::Level>,
     log_stderr: Option<tracing::Level>,
 }
 
-impl Command {
-    pub fn new(command: impl AsRef<OsStr>) -> Self {
+impl Script {
+    pub fn new(script: impl AsRef<str>) -> Self {
+        // See https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
+        #[cfg(not(target_os = "windows"))]
+        let script = format!(
+            "set -o errexit
+            set -o nounset
+            set -o pipefail
+            set -o xtrace
+            {}",
+            script.as_ref()
+        );
+
         let shell = if cfg!(target_os = "windows") {
             "powershell.exe"
         } else {
             "bash"
         };
         let mut inner = tokio::process::Command::new(shell);
-        inner.arg("-c").arg(command.as_ref());
+        inner.arg("-c").arg(&script);
         Self {
             inner,
-            command: command.as_ref().into(),
             log_stdout: Default::default(),
             log_stderr: Default::default(),
         }
@@ -86,20 +94,17 @@ impl Command {
         }
     }
 
-    pub fn spawn(self) -> anyhow::Result<CommandTask> {
+    pub fn spawn(self) -> anyhow::Result<ScriptTask> {
         let collect_stdio = false;
         self._spawn(collect_stdio)
     }
 
-    fn _spawn(self, collect_stdio: bool) -> anyhow::Result<CommandTask> {
+    fn _spawn(self, collect_stdio: bool) -> anyhow::Result<ScriptTask> {
         let Self {
             mut inner,
-            command,
             log_stdout,
             log_stderr,
         } = self;
-
-        info!("Running: {command:?}");
 
         inner.stdout(Stdio::piped()).stderr(Stdio::piped());
         // Disable colors in log to get clean strings
@@ -118,7 +123,7 @@ impl Command {
             log_stderr,
         ));
 
-        Ok(CommandTask { child, pipe_task })
+        Ok(ScriptTask { child, pipe_task })
     }
 }
 
@@ -158,12 +163,12 @@ impl From<std::io::Error> for CommandOutput {
     }
 }
 
-pub struct CommandTask {
+pub struct ScriptTask {
     child: tokio::process::Child,
     pipe_task: tokio::task::JoinHandle<(Option<String>, Option<String>)>,
 }
 
-impl CommandTask {
+impl ScriptTask {
     pub async fn kill(mut self) -> anyhow::Result<()> {
         // TODO: We should check the target_os and send SIGTERM on Unix.
         self.child.kill().await?;

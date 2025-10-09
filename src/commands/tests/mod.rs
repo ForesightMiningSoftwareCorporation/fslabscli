@@ -23,14 +23,13 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
-    command_ext::{Command, CommandOutput},
+    command_ext::{CommandOutput, Script},
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
         tests::docker_service::{DockerContainer, postgres_url},
     },
     init_metrics,
-    script::Script,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -497,7 +496,7 @@ async fn do_test_on_package(
         if let Some(db_url) = database_url.clone() {
             envs.insert("DATABASE_URL".to_string(), db_url.clone());
         }
-        let command_output = Command::new(cache_miss_command)
+        let command_output = Script::new(cache_miss_command)
             .current_dir(&repo_root)
             .envs(&envs)
             .execute()
@@ -524,7 +523,7 @@ async fn do_test_on_package(
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
-        let mut script = Script::new("pre_test_script", pre_test_script).current_dir(&package_path);
+        let mut script = Script::new(pre_test_script);
         if let Some(url) = &database_url {
             script = script.env("DATABASE_URL", url);
         }
@@ -532,7 +531,7 @@ async fn do_test_on_package(
             stdout,
             stderr,
             success,
-        } = script.run().await;
+        } = script.execute().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
         let mut pre_test_script_tx = match success {
@@ -718,7 +717,7 @@ async fn do_test_on_package(
             }
 
             if let Some(pre_command) = fslabs_test.pre_command {
-                Command::new(&pre_command)
+                Script::new(&pre_command)
                     .current_dir(&package_path)
                     .envs(&fslabs_test.envs)
                     .execute()
@@ -735,7 +734,7 @@ async fn do_test_on_package(
                 .unwrap_or_else(|e| e.into()),
 
                 false => {
-                    Command::new(&fslabs_test.command)
+                    Script::new(&fslabs_test.command)
                         .current_dir(&package_path)
                         .envs(&fslabs_test.envs)
                         .log_stdout(tracing::Level::DEBUG)
@@ -745,7 +744,7 @@ async fn do_test_on_package(
                 }
             };
             if let Some(post_command) = fslabs_test.post_command {
-                Command::new(&post_command)
+                Script::new(&post_command)
                     .current_dir(&package_path)
                     .envs(&fslabs_test.envs)
                     .execute()
