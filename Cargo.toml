@@ -24,6 +24,8 @@ sign = false
 targets = ["x86_64-unknown-linux-gnu"]
 [package.metadata.fslabs.publish.nix_binary]
 publish = true
+[package.metadata.fslabs.publish.cargo]
+publish = true
 
 
 [features]
