@@ -20,8 +20,8 @@ use rust_toolchain_file::toml::Parser as ToolchainParser;
 use serde::ser::{Serialize as SerSerialize, SerializeStruct, Serializer as SerSerializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::from_value;
-use serde_yml::Value;
 use strum_macros::EnumString;
+use toml::Value;
 
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::commands::check_workspace::docker::Docker;

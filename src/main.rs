@@ -13,7 +13,6 @@ use crate::commands::download_artifacts::{
 };
 use crate::commands::fix_lock_files::{Options as FixLockFilesOptions, fix_lock_files};
 use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix};
-use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
 use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
 use crate::commands::publish::{Options as PublishOptions, publish};
 use crate::commands::summaries::{Options as SummariesOptions, summaries};
@@ -114,7 +113,6 @@ enum CargoSubcommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
     /// Summarize a github action run
     Summaries(Box<SummariesOptions>),
@@ -378,9 +376,6 @@ async fn run() {
     let working_directory = dunce::canonicalize(cli.working_directory)
         .expect("Could not get full path from working_directory");
     let result = match cli.command {
-        Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
-            .await
-            .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::GenerateWix(options) => generate_wix(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),

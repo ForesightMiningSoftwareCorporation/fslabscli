@@ -10,19 +10,20 @@ use opentelemetry::{
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
-use serde_yml::Value;
 use std::{
     collections::{HashMap, HashSet},
     env,
     fmt::{Display, Formatter},
     fs::{File, create_dir_all, remove_dir_all},
-    io::Write,
-    path::PathBuf,
+    io::{Cursor, Write},
+    path::{Path, PathBuf},
     sync::Arc,
     thread::sleep,
     time::Duration,
 };
+use tempfile::tempdir;
 use tokio::sync::Semaphore;
+use toml::Value;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
@@ -154,6 +155,26 @@ async fn has_cargo_nextest() -> bool {
         output.status.success()
     } else {
         false
+    }
+}
+
+/// Checks if a cargo deny config file exists; if not, downloads default to a temporary location
+/// Returns the path to the config
+async fn get_or_download_deny_config(
+    repo_root: &Path,
+    default_location: &str,
+    temp_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let file_path = repo_root.join("deny.toml");
+    if file_path.exists() {
+        Ok(file_path.to_path_buf())
+    } else {
+        let temp_file_path = temp_dir.join("deny.toml");
+        let mut file = File::create(&temp_file_path)?;
+        let response = reqwest::get(default_location).await?;
+        let mut content = Cursor::new(response.bytes().await?);
+        std::io::copy(&mut content, &mut file)?;
+        Ok(temp_file_path)
     }
 }
 
@@ -343,6 +364,10 @@ pub async fn tests(
 
     let mut global_junit_report = ReportBuilder::new().build();
 
+    let temp_dir = tempdir()?;
+    let deny_config_location =
+        get_or_download_deny_config(&repo_root, &options.default_deny_location, temp_dir.path())
+            .await?;
     // Global fail tracker
     let mut global_failed = false;
 
@@ -368,6 +393,7 @@ pub async fn tests(
             member,
             metrics.clone(),
             semaphore.clone(),
+            deny_config_location.clone(),
         ));
         handles.push(task_handle);
     }
@@ -440,6 +466,7 @@ async fn do_test_on_package(
     member: super::check_workspace::Result,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
+    deny_location: PathBuf,
 ) -> (bool, Report) {
     let permit = semaphore.acquire().await;
 
@@ -701,6 +728,30 @@ async fn do_test_on_package(
                 }
             ),
             envs: HashMap::from([("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]),
+            ..Default::default()
+        },
+        FslabsTest {
+            id: "cargo_deny_licenses".to_string(),
+            command: format!(
+                "cargo deny check -c {} licenses", deny_location.to_string_lossy()),
+            ..Default::default()
+        },
+        FslabsTest {
+            id: "cargo_deny_bans".to_string(),
+            command: format!(
+                "cargo deny check -c {} bans --allow unmatched-skip --allow unnecessary-skip", deny_location.to_string_lossy()),
+            ..Default::default()
+        },
+        FslabsTest {
+            id: "cargo_deny_advisories".to_string(),
+            command: format!(
+                "cargo deny check -c {} advisories", deny_location.to_string_lossy()),
+            ..Default::default()
+        },
+        FslabsTest {
+            id: "cargo_deny_sources".to_string(),
+            command: format!(
+                "cargo deny check -c {} sources", deny_location.to_string_lossy()),
             ..Default::default()
         },
         FslabsTest {
