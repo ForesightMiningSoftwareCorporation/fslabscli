@@ -24,7 +24,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::PackageRelatedOptions;
-use crate::command_ext::{Command, CommandOutput};
+use crate::command_ext::{Script, CommandOutput};
 use crate::utils::get_registry_env;
 use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 use crate::{
@@ -588,7 +588,7 @@ async fn do_publish_package(
             }
             // First we build
             let build_command = package.publish_detail.s3.build_command;
-            let command_output = Command::new(&build_command)
+            let command_output = Script::new(&build_command)
                 .current_dir(&package_path)
                 .envs(&envs)
                 .env_removals(&blacklist_envs)
@@ -702,7 +702,7 @@ async fn do_publish_package(
             ) {
                 info!("Login to atticd");
                 let command_output =
-                    Command::new(format!("attic login central {atticd_url}/ {atticd_token}"))
+                    Script::new(format!("attic login central {atticd_url}/ {atticd_token}"))
                         .current_dir(&repo_root)
                         .log_stdout(tracing::Level::DEBUG)
                         .log_stderr(tracing::Level::DEBUG)
@@ -711,7 +711,7 @@ async fn do_publish_package(
                 result.nix_binary.update_from_command(command_output);
                 is_failed = !result.nix_binary.success;
                 if !is_failed {
-                    let command_output = Command::new(format!("attic use central:{atticd_cache}"))
+                    let command_output = Script::new(format!("attic use central:{atticd_cache}"))
                         .current_dir(&package_path)
                         .log_stdout(tracing::Level::DEBUG)
                         .log_stderr(tracing::Level::DEBUG)
@@ -722,7 +722,7 @@ async fn do_publish_package(
                 }
             }
             if !is_failed {
-                let mut command_output = Command::new("nix build .#release")
+                let mut command_output = Script::new("nix build .#release")
                     .current_dir(&package_path)
                     .log_stdout(tracing::Level::INFO)
                     .log_stderr(tracing::Level::INFO)
@@ -739,7 +739,7 @@ async fn do_publish_package(
             if !is_failed && let Ok(atticd_cache) = env::var("ATTICD_CACHE") {
                 // Let's push the store to cachix by rebuilding and pushing
                 info!("Pushing to atticd");
-                let command_output = Command::new(format!(
+                let command_output = Script::new(format!(
                     "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
                 ))
                     .current_dir(&package_path)
@@ -815,7 +815,7 @@ async fn do_publish_package(
                                 args.push("--dry-run".to_string())
                             }
                             let command_output =
-                                Command::new(format!("cargo publish {}", args.join(" ")))
+                                Script::new(format!("cargo publish {}", args.join(" ")))
                                     .current_dir(&package_path)
                                     .envs(&envs)
                                     .env_removals(&blacklist_envs)
@@ -943,7 +943,7 @@ async fn do_publish_package(
             }
             args.push(context.clone());
             // First we build
-            let command_output = Command::new(format!(
+            let command_output = Script::new(format!(
                 "docker buildx build --progress plain {}",
                 args.join(" ")
             ))
@@ -959,7 +959,7 @@ async fn do_publish_package(
             if !is_failed {
                 // Tag as latest
                 let command_output =
-                    Command::new(format!("docker tag {image_name} {image_latest}"))
+                    Script::new(format!("docker tag {image_name} {image_latest}"))
                         .current_dir(&repo_root)
                         .log_stdout(tracing::Level::INFO)
                         .log_stderr(tracing::Level::INFO)
@@ -969,7 +969,7 @@ async fn do_publish_package(
                 is_failed = !result.docker.success;
                 if !is_failed {
                     // Push image
-                    let command_output = Command::new(format!("docker push {image_name}"))
+                    let command_output = Script::new(format!("docker push {image_name}"))
                         .current_dir(&repo_root)
                         .log_stdout(tracing::Level::INFO)
                         .log_stderr(tracing::Level::INFO)
@@ -979,7 +979,7 @@ async fn do_publish_package(
                     is_failed = !result.docker.success;
                     if !is_failed {
                         // Push latest
-                        let command_output = Command::new(format!("docker push {image_latest}"))
+                        let command_output = Script::new(format!("docker push {image_latest}"))
                             .current_dir(&repo_root)
                             .log_stdout(tracing::Level::INFO)
                             .log_stderr(tracing::Level::INFO)
@@ -1056,7 +1056,7 @@ async fn do_publish_package(
 pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()> {
     // We might need to log to some docker registries
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
-        let command_output = Command::new(
+        let command_output = Script::new(
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
         )
             .current_dir(repo_root)
@@ -1071,7 +1071,7 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
         && options.ghcr_oci_username.is_some()
         && options.ghcr_oci_password.is_some()
     {
-        let command_output = Command::new(
+        let command_output = Script::new(
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
         )
             .current_dir(repo_root)
