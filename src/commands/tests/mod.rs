@@ -423,6 +423,8 @@ async fn do_test_on_package(
             success,
         } = Script::new(pre_service_script)
             .current_dir(&package_path)
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO)
             .execute()
             .await;
         let end_time = OffsetDateTime::now_utc();
@@ -525,7 +527,12 @@ async fn do_test_on_package(
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
-        match Script::new(command).current_dir(&package_path).spawn() {
+        match Script::new(command)
+            .current_dir(&package_path)
+            .log_stdout(tracing::Level::DEBUG)
+            .log_stderr(tracing::Level::DEBUG)
+            .spawn()
+        {
             Ok(daemon) => daemon_children.push((name, daemon)),
             Err(err) => {
                 failed = true;
@@ -575,7 +582,9 @@ async fn do_test_on_package(
             package_name
         );
         let start_time = OffsetDateTime::now_utc();
-        let mut script = Script::new(pre_test_script);
+        let mut script = Script::new(pre_test_script)
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO);
         if let Some(url) = &database_url {
             script = script.env("DATABASE_URL", url);
         }
