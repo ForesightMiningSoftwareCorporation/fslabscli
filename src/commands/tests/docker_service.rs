@@ -1,7 +1,7 @@
 use rand::distr::{Alphanumeric, SampleString};
 use std::time::Duration;
 
-use crate::command_ext::Script;
+use crate::script::Script;
 
 pub struct DockerContainer {
     pub prefix: String,
