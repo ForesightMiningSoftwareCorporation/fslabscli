@@ -192,8 +192,8 @@ fn merge_nextest_junit(
 
                     // Format with package name and step count like high-level steps
                     let test_name = format!(
-                        "{:30.30} {}/{} │ {}",
-                        package_name, subtest_num, total_steps, test_case.name
+                        "{package_name:30.30} {subtest_num}/{total_steps} │ {}",
+                        test_case.name
                     );
 
                     let tc = if let Some(failure) = test_case.failure {
@@ -412,10 +412,7 @@ async fn do_test_on_package(
 
     // Handle Pre-Service Script
     if !failed && let Some(pre_service_script) = test_args.pre_service_script.clone() {
-        tracing::info!(
-            "│ {:30.30}     │ Running pre-service script command",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Running pre-service script command");
         let start_time = OffsetDateTime::now_utc();
         let CommandOutput {
             stdout,
@@ -443,7 +440,7 @@ async fn do_test_on_package(
 
     // Handle service database
     if !failed && test_args.services.postgres {
-        tracing::info!("│ {:30.30}     │ Setting up service database", package_name);
+        tracing::info!("│ {package_name:30.30}     │ Setting up service database");
         let start_time = OffsetDateTime::now_utc();
         let pg_port = free_local_port().unwrap();
         let docker_process = DockerContainer::postgres(pg_port).create().await;
@@ -469,7 +466,7 @@ async fn do_test_on_package(
     }
     // Handle service azurite
     if !failed && test_args.services.azurite {
-        tracing::info!("│ {:30.30}     │ Setting up service azurite", package_name);
+        tracing::info!("│ {package_name:30.30}     │ Setting up service azurite");
         let start_time = OffsetDateTime::now_utc();
         let docker_process = DockerContainer::azurite().create().await;
         let end_time = OffsetDateTime::now_utc();
@@ -494,7 +491,7 @@ async fn do_test_on_package(
 
     // Handle service minio
     if !failed && test_args.services.minio {
-        tracing::info!("│ {:30.30}     │ Setting up service minio", package_name);
+        tracing::info!("│ {package_name:30.30}     │ Setting up service minio");
         let start_time = OffsetDateTime::now_utc();
         let minio_port = free_local_port().unwrap();
         let docker_process = DockerContainer::minio(minio_port).create().await;
@@ -522,10 +519,7 @@ async fn do_test_on_package(
     // Handle custom services.
     let mut daemon_children = Vec::new();
     for (name, command) in &test_args.custom_services {
-        tracing::info!(
-            "│ {:30.30}     │ Starting custom service '{name}'",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Starting custom service '{name}'");
         let start_time = OffsetDateTime::now_utc();
         match Script::new(command)
             .current_dir(&package_path)
@@ -549,7 +543,7 @@ async fn do_test_on_package(
 
     // Handle cache miss (this should be dropped and only use pre_test_script)
     if !failed && let Some(cache_miss_command) = &test_args.additional_cache_miss {
-        tracing::info!("│ {:30.30}     │ Running cache miss command", package_name);
+        tracing::info!("│ {package_name:30.30}     │ Running cache miss command");
         let start_time = OffsetDateTime::now_utc();
         let mut envs: HashMap<String, String> = HashMap::new();
         if let Some(db_url) = database_url.clone() {
@@ -577,10 +571,7 @@ async fn do_test_on_package(
 
     // Handle Pre-Test Script
     if !failed && let Some(pre_test_script) = test_args.pre_test_script.clone() {
-        tracing::info!(
-            "│ {:30.30}     │ Running pre-test script command",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Running pre-test script command");
         let start_time = OffsetDateTime::now_utc();
         let mut script = Script::new(pre_test_script)
             .log_stdout(tracing::Level::INFO)
@@ -730,8 +721,8 @@ async fn do_test_on_package(
             continue;
         }
         let tc_prefix = format!(
-            "{:30.30} {i}/{test_steps} │ {:50.50}",
-            package_name, fslabs_test.command
+            "{package_name:30.30} {i}/{test_steps} │ {:50.50}",
+            fslabs_test.command
         );
         if failed {
             tracing::info!("│ {} │ ⏭ SKIPPED", tc_prefix,);
@@ -906,29 +897,20 @@ async fn do_test_on_package(
 
     // Tear down docker containers
     if let Some(process) = postgres_process {
-        tracing::info!(
-            "│ {:30.30}     │ Tearing down service database",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Tearing down service database");
         process.teardown().await;
     }
     if let Some(process) = azurite_process {
-        tracing::info!(
-            "│ {:30.30}     │ Tearing down service azurite",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Tearing down service azurite");
         process.teardown().await;
     }
     if let Some(process) = minio_process {
-        tracing::info!("│ {:30.30}     │ Tearing down service minio", package_name);
+        tracing::info!("│ {package_name:30.30}     │ Tearing down service minio");
         process.teardown().await;
     }
     // Tear down custom services.
     for (name, daemon) in daemon_children {
-        tracing::info!(
-            "│ {:30.30}     │ Tearing down custom service {name}",
-            package_name
-        );
+        tracing::info!("│ {package_name:30.30}     │ Tearing down custom service {name}");
         if let Err(err) = daemon.kill().await {
             tracing::error!("Failed to kill custom service {name} failed: {err}");
         }
