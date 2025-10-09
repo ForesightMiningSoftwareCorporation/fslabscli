@@ -419,6 +419,7 @@ async fn do_test_on_package(
             stderr,
             success,
         } = Script::new(pre_service_script)
+            .name("pre_service_script")
             .current_dir(&package_path)
             .log_stdout(tracing::Level::INFO)
             .log_stderr(tracing::Level::INFO)
@@ -522,6 +523,7 @@ async fn do_test_on_package(
         tracing::info!("│ {package_name:30.30}     │ Starting custom service '{name}'");
         let start_time = OffsetDateTime::now_utc();
         match Script::new(command)
+            .name(name)
             .current_dir(&package_path)
             .log_stdout(tracing::Level::DEBUG)
             .log_stderr(tracing::Level::DEBUG)
@@ -574,6 +576,7 @@ async fn do_test_on_package(
         tracing::info!("│ {package_name:30.30}     │ Running pre-test script command");
         let start_time = OffsetDateTime::now_utc();
         let mut script = Script::new(pre_test_script)
+            .name("pre_test_script")
             .log_stdout(tracing::Level::INFO)
             .log_stderr(tracing::Level::INFO);
         if let Some(url) = &database_url {
