@@ -10,7 +10,6 @@ use opentelemetry::{
 use port_check::free_local_port;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
-use serde_yml::Value;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -23,6 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Semaphore;
+use toml::Value;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
