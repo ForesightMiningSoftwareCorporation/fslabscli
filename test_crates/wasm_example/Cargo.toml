@@ -1,0 +1,37 @@
+[package]
+name = "wasm_example"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+reqwest = "0.12.23"
+wasm-bindgen-test = "0.3.54"
+
+[[test]]
+name = "tests"
+path = "tests.rs"
+
+[package.metadata.fslabs.test.args]
+pre_service_script = """
+  cargo install simple-http-server
+"""
+# Enable a custom service that the test will talk to
+custom_services.http = """
+  simple-http-server --ip 127.0.0.1 --port 44444 content
+"""
+pre_test_script = """
+  # Wait for custom service to be up
+  URL="http://127.0.0.1:44444"
+  while true; do
+      if curl -s -o /dev/null -w "%{http_code}" "$URL" | grep -q "200"; then
+          break
+      else
+          sleep 1
+      fi
+  done
+
+  # Install test command dependency
+  cargo install wasm-pack
+"""
+# Custom test runner is required for wasm-bindgen-test
+test_command = "wasm-pack test --node"
