@@ -15,6 +15,9 @@ version = "2.29.4"
 [package.metadata.fslabs.test.args]
 service_azurite = true
 service_minio = true
+additional_script = """
+printenv
+"""
 [package.metadata.fslabs.publish]
 
 [package.metadata.fslabs.publish.binary]
