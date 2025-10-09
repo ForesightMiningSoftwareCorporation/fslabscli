@@ -161,6 +161,15 @@ pub struct Cargo {
     client: Option<HyperClient<HttpsConnector<HttpConnector>, Empty<Bytes>>>,
 }
 
+pub trait CrateChecker {
+    async fn check_crate_exists(
+        &self,
+        registry_name: String,
+        name: String,
+        version: String,
+    ) -> anyhow::Result<bool>;
+}
+
 impl Cargo {
     pub fn new(registries: &HashSet<String>) -> anyhow::Result<Self> {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -187,7 +196,13 @@ impl Cargo {
         })
     }
 
-    pub async fn check_crate_exists(
+    pub fn get_registry(&self, name: &str) -> Option<&CargoRegistry> {
+        self.registries.get(name)
+    }
+}
+
+impl CrateChecker for Cargo {
+    async fn check_crate_exists(
         &self,
         registry_name: String,
         name: String,
@@ -286,10 +301,6 @@ impl Cargo {
             ));
         }
         Ok(false)
-    }
-
-    pub fn get_registry(&self, name: &str) -> Option<&CargoRegistry> {
-        self.registries.get(name)
     }
 }
 

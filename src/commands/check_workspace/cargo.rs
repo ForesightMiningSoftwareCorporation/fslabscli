@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::utils::cargo::Cargo;
+use crate::utils::cargo::CrateChecker;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -10,7 +10,7 @@ pub struct PackageMetadataFslabsCiPublishCargo {
     #[serde(skip)]
     pub publish: bool,
     #[serde(default, rename = "publish")]
-    pub actual_publish: Option<bool>,
+    actual_publish: Option<bool>,
     #[serde(alias = "alternate_registries")]
     pub registries: Option<HashSet<String>>,
     #[serde(default)]
@@ -21,11 +21,11 @@ pub struct PackageMetadataFslabsCiPublishCargo {
 }
 
 impl PackageMetadataFslabsCiPublishCargo {
-    pub async fn check(
+    pub async fn check<C: CrateChecker>(
         &mut self,
         name: String,
         version: String,
-        cargo: &Cargo,
+        cargo: &C,
         force: bool,
     ) -> anyhow::Result<()> {
         tracing::debug!("Got following registries: {:?}", self.registries);
@@ -64,5 +64,106 @@ impl PackageMetadataFslabsCiPublishCargo {
         }
         self.publish = overall_publish;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::cargo::CrateChecker;
+
+    struct TestCargo {}
+    impl CrateChecker for TestCargo {
+        async fn check_crate_exists(
+            &self,
+            _registry_name: String,
+            _name: String,
+            _version: String,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_standard_publish_is_respected_when_publish() {
+        let toml = r#"
+        publish = true
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo {};
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, false)
+            .await
+            .unwrap();
+
+        assert!(cargo_publish.publish);
+    }
+
+    #[tokio::test]
+    async fn test_standard_publish_is_respected_when_not_publish() {
+        let toml = r#"
+        publish = false
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo {};
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, false)
+            .await
+            .unwrap();
+
+        assert!(!cargo_publish.publish);
+    }
+
+    #[tokio::test]
+    async fn test_publish_default_to_not() {
+        let toml = r#"
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo {};
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, false)
+            .await
+            .unwrap();
+
+        assert!(!cargo_publish.publish);
+    }
+
+    #[tokio::test]
+    async fn test_publish_default_to_not_except_if_force() {
+        let toml = r#"
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo {};
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, true)
+            .await
+            .unwrap();
+
+        assert!(cargo_publish.publish);
+    }
+
+    #[tokio::test]
+    async fn test_publish_default_to_not_except_if_force_but_respect_package_settings() {
+        let toml = r#"
+        publish = false
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo {};
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, true)
+            .await
+            .unwrap();
+
+        assert!(!cargo_publish.publish);
     }
 }
