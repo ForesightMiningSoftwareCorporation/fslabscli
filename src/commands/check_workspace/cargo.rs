@@ -7,8 +7,10 @@ use crate::utils::cargo::Cargo;
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct PackageMetadataFslabsCiPublishCargo {
-    #[serde(default)]
+    #[serde(skip)]
     pub publish: bool,
+    #[serde(default, rename = "publish")]
+    pub actual_publish: Option<bool>,
     #[serde(alias = "alternate_registries")]
     pub registries: Option<HashSet<String>>,
     #[serde(default)]
@@ -27,7 +29,8 @@ impl PackageMetadataFslabsCiPublishCargo {
         force: bool,
     ) -> anyhow::Result<()> {
         tracing::debug!("Got following registries: {:?}", self.registries);
-        if !(self.publish || force) {
+        self.publish = self.actual_publish.unwrap_or(force);
+        if !self.publish {
             // This package does not want to be published
             return Ok(());
         }
