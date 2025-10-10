@@ -577,6 +577,7 @@ async fn do_test_on_package(
         let start_time = OffsetDateTime::now_utc();
         let mut script = Script::new(pre_test_script)
             .name("pre_test_script")
+            .current_dir(&package_path)
             .log_stdout(tracing::Level::INFO)
             .log_stderr(tracing::Level::INFO);
         if let Some(url) = &database_url {
