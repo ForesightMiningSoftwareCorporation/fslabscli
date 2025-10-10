@@ -31,6 +31,8 @@ impl Script {
             {}",
             script.as_ref()
         );
+        #[cfg(target_os = "windows")]
+        let script = script.as_ref().to_string();
 
         let shell = if cfg!(target_os = "windows") {
             "powershell.exe"
@@ -38,7 +40,7 @@ impl Script {
             "bash"
         };
         let mut inner = tokio::process::Command::new(shell);
-        inner.arg("-c").arg(&script);
+        inner.arg("-c").arg(script);
         Self {
             name: None,
             inner,
