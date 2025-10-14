@@ -38,8 +38,11 @@ pub struct TestArgs {
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct KnownServices {
+    #[serde(default)]
     pub azurite: bool,
+    #[serde(default)]
     pub minio: bool,
+    #[serde(default)]
     pub postgres: bool,
 }
 
