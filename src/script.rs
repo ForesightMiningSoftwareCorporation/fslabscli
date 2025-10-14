@@ -232,7 +232,7 @@ async fn pipe_stdio(
             Ok(Some(line)) = stdout_stream.next_line() =>  {
                 if collect_stdout {
                     stdout_string.push_str(&line);
-                    stdout_string.push('n');
+                    stdout_string.push('\n');
                 }
                 if let Some(level) = log_stdout {
                     if let Some(name) = &script_name {
@@ -245,7 +245,7 @@ async fn pipe_stdio(
             Ok(Some(line)) = stderr_stream.next_line() =>  {
                 if collect_stderr {
                     stderr_string.push_str(&line);
-                    stderr_string.push('n');
+                    stderr_string.push('\n');
                 }
                 if let Some(level) = log_stderr {
                     if let Some(name) = &script_name {
