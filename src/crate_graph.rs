@@ -510,7 +510,7 @@ impl DependencyGraph {
 }
 
 /// The path to `package`, relative to `repo_root`.
-pub fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path> {
+fn package_path<'a>(repo_root: &Path, package: &'a Package) -> Cow<'a, Path> {
     relative_path(
         repo_root,
         package.manifest_path.as_std_path().parent().unwrap(),
@@ -526,6 +526,25 @@ fn relative_path<'a>(root: &Path, path: &'a Path) -> Result<Cow<'a, Path>, Strip
     match canonical_path.strip_prefix(&canonical_root)? {
         p if p == Path::new("") => Ok(Cow::Owned(PathBuf::from("."))),
         stripped => Ok(Cow::Owned(stripped.to_path_buf())), // Ensure we return an owned path
+    }
+}
+
+/// Finds the root directory of a Git repository given any path inside it.
+/// Returns `None` if no `.git` directory is found.
+pub fn find_git_root(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let mut current = std::fs::canonicalize(start).ok()?;
+    loop {
+        // Check for `.git` directory or file (could be a file in worktrees or submodules)
+        let git_dir = current.join(".git");
+        if git_dir.exists() {
+            return Some(current);
+        }
+
+        // Move up one directory level
+        if !current.pop() {
+            // Reached filesystem root
+            return None;
+        }
     }
 }
 
