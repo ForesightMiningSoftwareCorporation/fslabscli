@@ -815,18 +815,14 @@ impl PrettyPrintable for Results {
 pub async fn check_workspace(
     common_options: &PackageRelatedOptions,
     options: &Options,
-    working_directory: PathBuf,
+    repo_root: PathBuf,
 ) -> anyhow::Result<Results> {
     tracing::info!("Check directory for crates that need publishing");
     let started = Instant::now();
-    let path = match working_directory.is_absolute() {
-        true => working_directory.clone(),
-        false => dunce::canonicalize(&working_directory)
-            .with_context(|| format!("Failed to get absolute path from {working_directory:?}"))?,
-    };
+    let repo_root = dunce::canonicalize(&repo_root)
+        .with_context(|| format!("Failed to get absolute path from {repo_root:?}"))?;
 
-    let toolchain =
-        get_toolchain(&working_directory).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
+    let toolchain = get_toolchain(&repo_root).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
     let now = Utc::now().date_naive();
     let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
     let timestamp = format!("{}", (now - epoch).num_days());
@@ -836,7 +832,7 @@ pub async fn check_workspace(
         options.binary_store_container_name.clone(),
         options.binary_store_access_key.clone(),
     )?;
-    tracing::debug!("Base directory: {:?}", path);
+    tracing::debug!("Git root: {repo_root:?}");
     // 1. Find all workspaces to investigate
     if common_options.progress {
         println!(
@@ -850,7 +846,7 @@ pub async fn check_workspace(
         false => None,
     };
     let crates = CrateGraph::new(
-        &path,
+        &repo_root,
         common_options.cargo_main_registry.clone(),
         limit_dependency_kind,
     )?;
@@ -896,7 +892,7 @@ pub async fn check_workspace(
             match Result::new(
                 workspace.path.to_string_lossy().into(),
                 package.clone(),
-                working_directory.clone(),
+                repo_root.clone(),
                 options.hide_dependencies,
                 &dep_to_id,
             ) {

@@ -18,6 +18,7 @@ use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github
 use crate::commands::publish::{Options as PublishOptions, publish};
 use crate::commands::summaries::{Options as SummariesOptions, summaries};
 use crate::commands::tests::{Options as TestsOptions, tests};
+use crate::crate_graph::find_git_root;
 
 use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
@@ -377,8 +378,11 @@ async fn run() {
         }
         _ => {} // nothing to do, will be handled later
     };
-    let working_directory = dunce::canonicalize(cli.working_directory)
+    let working_directory = dunce::canonicalize(&cli.working_directory)
         .expect("Could not get full path from working_directory");
+    let repo_root = find_git_root(&cli.working_directory)
+        .unwrap_or_else(|| panic!("Could not find git root from {working_directory:?}"));
+
     let result = match cli.command {
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
             .await
@@ -401,7 +405,7 @@ async fn run() {
         Commands::FixLockFiles {
             common_options,
             options,
-        } => fix_lock_files(&common_options, &options, &working_directory)
+        } => fix_lock_files(&common_options, &options, &repo_root)
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::CheckWorkspace {
             common_options,
@@ -412,7 +416,7 @@ async fn run() {
         Commands::Tests {
             common_options,
             options,
-        } => tests(&common_options, &options, working_directory)
+        } => tests(&common_options, &options, repo_root)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Publish {
