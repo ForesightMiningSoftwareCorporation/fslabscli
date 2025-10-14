@@ -590,8 +590,8 @@ async fn do_publish_package(
             let build_command = package.publish_detail.s3.build_command;
             let command_output = Script::new(&build_command)
                 .current_dir(&package_path)
-                .envs(&envs)
                 .env_removals(&blacklist_envs)
+                .envs(&envs)
                 .log_stdout(tracing::Level::INFO)
                 .log_stderr(tracing::Level::INFO)
                 .execute()
@@ -804,7 +804,6 @@ async fn do_publish_package(
                                     blacklist_envs.insert(key);
                                 }
                             }
-
                             let mut args = vec![
                                 additional_args.clone(),
                                 "--registry".to_string(),
@@ -814,15 +813,17 @@ async fn do_publish_package(
                             if options.dry_run {
                                 args.push("--dry-run".to_string())
                             }
-                            let command_output =
-                                Script::new(format!("cargo publish {}", args.join(" ")))
-                                    .current_dir(&package_path)
-                                    .envs(&envs)
-                                    .env_removals(&blacklist_envs)
-                                    .log_stdout(tracing::Level::INFO)
-                                    .log_stderr(tracing::Level::INFO)
-                                    .execute()
-                                    .await;
+                            let command_output = Script::new(format!(
+                                "printenv | grep CARGO && cargo publish {}",
+                                args.join(" ")
+                            ))
+                            .current_dir(&package_path)
+                            .env_removals(&blacklist_envs)
+                            .envs(&envs)
+                            .log_stdout(tracing::Level::INFO)
+                            .log_stderr(tracing::Level::INFO)
+                            .execute()
+                            .await;
                             r.update_from_command(command_output);
                         } else {
                             r.success = false;
@@ -948,8 +949,8 @@ async fn do_publish_package(
                 args.join(" ")
             ))
             .current_dir(&repo_root)
-            .envs(&envs)
             .env_removals(&blacklist_envs)
+            .envs(&envs)
             .log_stdout(tracing::Level::INFO)
             .log_stderr(tracing::Level::INFO)
             .execute()
