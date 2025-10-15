@@ -466,15 +466,18 @@ async fn do_test_on_package(
         ts_mandatory.add_testcase(service_db_tc);
     }
     // Handle service azurite
+    let mut azurite_blob_port = None;
     if !failed && test_args.services.azurite {
         tracing::info!("│ {package_name:30.30}     │ Setting up service azurite");
         let start_time = OffsetDateTime::now_utc();
-        let docker_process = DockerContainer::azurite().create().await;
+        let blob_port = free_local_port().unwrap();
+        let docker_process = DockerContainer::azurite(blob_port).create().await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
         let service_azurite_tc = match docker_process {
             Ok(process) => {
                 azurite_process = Some(process);
+                azurite_blob_port = Some(blob_port);
                 TestCase::success("service_azurite", duration)
             }
             Err(e) => {
@@ -672,10 +675,12 @@ async fn do_test_on_package(
             pre_command: {
                 let mut env_lines = Vec::new();
 
-                if let Some(db_url) = database_url.clone() {
-                    env_lines.push(format!("DATABASE_URL={}", db_url));
+                if let Some(blob_port) = azurite_blob_port {
+                    env_lines.push(format!("AZURITE_BLOB_PORT={blob_port}"));
                 }
-
+                if let Some(db_url) = &database_url {
+                    env_lines.push(format!("DATABASE_URL={db_url}"));
+                }
                 if let Some(endpoint) = minio_endpoint.clone() {
                     env_lines.push(format!("S3_ENDPOINT={}", endpoint));
                     env_lines.push("S3_REGION=us-east-1".to_string());
