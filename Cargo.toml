@@ -18,6 +18,11 @@ publish = true
 [package.metadata.fslabs.publish.cargo]
 publish = true
 
+[workspace]
+resolver = "2"
+members = [
+    "crates/fsl_test_api",
+]
 
 [features]
 alpha = []
