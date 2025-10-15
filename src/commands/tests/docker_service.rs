@@ -13,11 +13,11 @@ pub struct DockerContainer {
 }
 
 impl DockerContainer {
-    pub fn azurite() -> Self {
+    pub fn azurite(blob_port: u16) -> Self {
         Self {
             prefix: "azurite".into(),
             env: "".into(),
-            port: "-p 10000:10000 -p 10001:10001 -p 10002:10002".into(),
+            port: format!("-p {blob_port}:10000"),
             options: "".into(),
             image: "mcr.microsoft.com/azure-storage/azurite".into(),
             command: Default::default(),
