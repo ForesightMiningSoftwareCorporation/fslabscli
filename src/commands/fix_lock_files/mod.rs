@@ -12,7 +12,7 @@ use tracing::{debug, info};
 pub struct Options {
     /// Run the fix in check mode, if set, an updated lockfile would yield an error
     #[arg(long)]
-    check: bool,
+    pub check: bool,
 }
 
 /// Fix mistakes in all workspace `Cargo.lock` files.

@@ -6,6 +6,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use clap_mangen::Man;
 
+use crate::commands::autofix::{Options as AutofixOptions, autofix};
 use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
 use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
 use crate::commands::download_artifacts::{
@@ -127,6 +128,13 @@ enum Commands {
     /// Build and push docker image
     DockerBuildPush(Box<DockerBuildPushOptions>),
     // Packages Related Commands
+    /// Run all autofixable commands: update, fmt, and fix lock files
+    Autofix {
+        #[command(flatten)]
+        common_options: Box<PackageRelatedOptions>,
+        #[command(flatten)]
+        options: Box<AutofixOptions>,
+    },
     /// Fix inconsistencies in all Cargo.lock files.
     FixLockFiles {
         #[command(flatten)]
@@ -397,6 +405,11 @@ async fn run() {
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DockerBuildPush(options) => docker_build_push(options, working_directory)
             .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Autofix {
+            common_options,
+            options,
+        } => autofix(&common_options, &options, &working_directory)
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::FixLockFiles {
             common_options,

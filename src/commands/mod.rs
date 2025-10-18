@@ -1,3 +1,4 @@
+pub mod autofix;
 pub mod check_workspace;
 pub mod docker_build_push;
 pub mod download_artifacts;
