@@ -885,6 +885,8 @@ async fn do_publish_package(
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),
+                "-t".to_string(),
+                image_latest.to_string(),
                 "--cache-from".to_string(),
                 format!("type=registry,ref={}", cache_ref),
                 "--cache-to".to_string(),
@@ -945,7 +947,7 @@ async fn do_publish_package(
             args.push(context.clone());
             // First we build
             let command_output = Script::new(format!(
-                "docker buildx build --progress plain {}",
+                "docker buildx build --push --progress plain {}",
                 args.join(" ")
             ))
             .current_dir(&repo_root)
@@ -957,39 +959,6 @@ async fn do_publish_package(
             .await;
             result.docker.update_from_command(command_output);
             is_failed = !result.docker.success;
-            if !is_failed {
-                // Tag as latest
-                let command_output = Script::new(format!("docker tag {image_name} {image_latest}"))
-                    .current_dir(&repo_root)
-                    .log_stdout(tracing::Level::INFO)
-                    .log_stderr(tracing::Level::INFO)
-                    .execute()
-                    .await;
-                result.docker.update_from_command(command_output);
-                is_failed = !result.docker.success;
-                if !is_failed {
-                    // Push image
-                    let command_output = Script::new(format!("docker push {image_name}"))
-                        .current_dir(&repo_root)
-                        .log_stdout(tracing::Level::INFO)
-                        .log_stderr(tracing::Level::INFO)
-                        .execute()
-                        .await;
-                    result.docker.update_from_command(command_output);
-                    is_failed = !result.docker.success;
-                    if !is_failed {
-                        // Push latest
-                        let command_output = Script::new(format!("docker push {image_latest}"))
-                            .current_dir(&repo_root)
-                            .log_stdout(tracing::Level::INFO)
-                            .log_stderr(tracing::Level::INFO)
-                            .execute()
-                            .await;
-                        result.docker.update_from_command(command_output);
-                        is_failed = !result.docker.success;
-                    }
-                }
-            }
         }
         result.docker.end_time = Some(SystemTime::now());
     }
