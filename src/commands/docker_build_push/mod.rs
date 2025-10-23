@@ -143,6 +143,14 @@ pub async fn docker_build_push(
         build_command.arg("--secret").arg(arg);
     });
 
+    for additional_tag in options.additional_tags {
+        build_command.arg("-t").arg(&additional_tag);
+    }
+
+    if options.push {
+        build_command.arg("--push");
+    }
+
     build_command.arg("--file").arg(context.join(&options.file));
     build_command
         .arg("--platform")
@@ -154,35 +162,6 @@ pub async fn docker_build_push(
     let status = build_command.status()?;
     if !status.success() {
         anyhow::bail!("Could not build docker image {}", options.image,);
-    }
-
-    if options.push {
-        let status = Command::new("docker")
-            .arg("push")
-            .arg(&options.image)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("Could not push docker image",);
-        }
-    }
-    for additional_tag in options.additional_tags {
-        let status = Command::new("docker")
-            .arg("tag")
-            .arg(&options.image)
-            .arg(&additional_tag)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("Could not tag docker image");
-        }
-        if options.push {
-            let status = Command::new("docker")
-                .arg("push")
-                .arg(&additional_tag)
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("Could not push docker image");
-            }
-        }
     }
 
     Ok(DockerBuildPushResult {
