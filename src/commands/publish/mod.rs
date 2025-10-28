@@ -1268,6 +1268,7 @@ pub async fn publish(
         .await
         .with_context(|| "Issue reporting to GitHub")?;
 
+    let mut global_success = true;
     let mut published_members = HashMap::new();
     let lock = publish_status.read().expect("RwLock Poisoned");
     for (k, v) in lock.iter() {
@@ -1275,6 +1276,7 @@ pub async fn publish(
             && v.should_publish
         {
             published_members.insert(k.clone(), v.clone());
+            global_success &= v.success;
         }
     }
     let r = PublishResults {
@@ -1285,7 +1287,10 @@ pub async fn publish(
     r.store_logs(&options.artifacts)?;
     // Craft Junit Results
     r.craft_junit(&options.artifacts)?;
-    Ok(r)
+    match global_success {
+        true => Ok(r),
+        false => Err(anyhow::anyhow!("publishing failed")),
+    }
 }
 
 #[cfg(test)]
