@@ -10,7 +10,6 @@
   };
   outputs =
     inputs@{
-      self,
       nixpkgs,
       flake-utils,
       fenix,
@@ -27,7 +26,7 @@
           inherit system overlays;
           stdenv = nixpkgs.clangStdenv;
         };
-        inherit (pkgs.stdenv) isDarwin isLinux;
+        inherit (pkgs.stdenv) isDarwin;
         inherit (gitignore.lib) gitignoreSource;
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
@@ -37,7 +36,7 @@
         };
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-        rustSrc = craneLib.cleanCargoSource ./.;
+        rustSrc = craneLib.cleanCargoSource gitignoreSource ./.;
         arch2targets =
           let
             generateCross =
@@ -238,7 +237,6 @@
                     fenixPkgs.rust-analyzer
                   ];
                 languages = {
-                  nix.enable = true;
                   rust = {
                     enable = true;
                     toolchainPackage = toolchain;
