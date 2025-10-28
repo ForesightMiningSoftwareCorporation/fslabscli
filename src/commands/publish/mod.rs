@@ -1093,7 +1093,6 @@ fn resolve_commit_to_tag(
         .format(Some(&format_options))
         .with_context(|| "Failed to format describe result")?;
 
-    tracing::debug!("Resolved {} to tag: {}", commit_ref, tag);
     Ok(tag)
 }
 
@@ -1129,29 +1128,29 @@ pub async fn report_publish_to_github(
 
         let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
         let repo_releases = repo.releases();
-        if let Ok(release) = repo_releases.get_by_tag(&release_tag).await {
-            let paths = fs::read_dir(artifact_dir)?;
-            for artifact in paths.flatten() {
-                let artifact_path = artifact.path();
-                if let Some(artifact_name) = artifact_path.file_name()
-                    && let Some(artifact_name) = artifact_name.to_str()
+        let release = repo_releases
+            .get_by_tag(&release_tag)
+            .await
+            .with_context(|| "Could not find a release".to_string())?;
+        let paths = fs::read_dir(artifact_dir)?;
+        for artifact in paths.flatten() {
+            let artifact_path = artifact.path();
+            if let Some(artifact_name) = artifact_path.file_name()
+                && let Some(artifact_name) = artifact_name.to_str()
+            {
+                tracing::debug!("Uploading github artifact {:?}", artifact_name);
+                if let Ok(mut file) = File::open(&artifact_path)
+                    && let Ok(metadata) = fs::metadata(&artifact_path)
                 {
-                    tracing::debug!("Uploading github artifact {:?}", artifact_name);
-                    if let Ok(mut file) = File::open(&artifact_path)
-                        && let Ok(metadata) = fs::metadata(&artifact_path)
-                    {
-                        let mut data: Vec<u8> = vec![0; metadata.len() as usize];
-                        if file.read(&mut data).is_ok() {
-                            let _ = repo_releases
-                                .upload_asset(release.id.into_inner(), artifact_name, data.into())
-                                .send()
-                                .await;
-                        }
+                    let mut data: Vec<u8> = vec![0; metadata.len() as usize];
+                    if file.read(&mut data).is_ok() {
+                        let _ = repo_releases
+                            .upload_asset(release.id.into_inner(), artifact_name, data.into())
+                            .send()
+                            .await;
                     }
                 }
             }
-        } else {
-            tracing::debug!("Could not find a github release to update, not doing anything");
         }
     } else {
         tracing::debug!("Github credentials not set, not doing anything");
@@ -1172,9 +1171,11 @@ pub async fn publish(
     // For publishing we have a special case for the whitelist.
     // If the push regex is set, then we need to consider only the package that
     // match the first capturing group
-    println!(
+    tracing::info!(
         "Got whitelist, regex, baseref: {:?} -- {:?} -- {:?}",
-        common_options.whitelist, options.base_rev_regex, common_options.base_rev
+        common_options.whitelist,
+        options.base_rev_regex,
+        common_options.base_rev
     );
     let mut whitelist = common_options.whitelist.clone();
 
@@ -1264,9 +1265,11 @@ pub async fn publish(
     futures::future::join_all(handles).await;
 
     // Report publish result to github
-    report_publish_to_github(common_options, options, &artifact_dir, &repo_root)
-        .await
-        .with_context(|| "Issue reporting to GitHub")?;
+    if let Err(e) =
+        report_publish_to_github(common_options, options, &artifact_dir, &repo_root).await
+    {
+        tracing::error!("Issue reporting to Github {:?}", e);
+    }
 
     let mut global_success = true;
     let mut published_members = HashMap::new();
