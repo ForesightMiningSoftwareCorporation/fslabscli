@@ -881,7 +881,7 @@ async fn do_publish_package(
                 .to_string();
             let image_name = format!("{registry}/{package_name}:{package_version}");
             let image_latest = format!("{registry}/{package_name}:latest");
-            let cache_ref = format!("{registry}/{package_name}:buildcache");
+            let cache_ref = format!("{registry}/{package_name}-buildcache");
             let mut args = vec![
                 "-t".to_string(),
                 image_name.to_string(),

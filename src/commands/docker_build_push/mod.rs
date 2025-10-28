@@ -69,9 +69,9 @@ impl PrettyPrintable for DockerBuildPushResult {
 
 /// Extracts the cache reference from an image name by removing the tag or digest.
 /// Examples:
-/// - "ghcr.io/org/image:1.0.0" -> "ghcr.io/org/image:buildcache"
-/// - "ghcr.io/org/image@sha256:abc..." -> "ghcr.io/org/image:buildcache"
-/// - "ghcr.io/org/image" -> "ghcr.io/org/image:buildcache"
+/// - "ghcr.io/org/image:1.0.0" -> "ghcr.io/org/image-buildcache"
+/// - "ghcr.io/org/image@sha256:abc..." -> "ghcr.io/org/image-buildcache"
+/// - "ghcr.io/org/image" -> "ghcr.io/org/image-buildcache"
 fn extract_cache_reference(image: &str) -> String {
     // First check for digest (@ takes precedence over :)
     let base_image = if let Some(pos) = image.find('@') {
@@ -95,7 +95,7 @@ fn extract_cache_reference(image: &str) -> String {
         image
     };
 
-    format!("{}:buildcache", base_image)
+    format!("{}-buildcache", base_image)
 }
 
 pub async fn docker_build_push(
@@ -178,7 +178,7 @@ mod tests {
     fn test_extract_cache_reference_with_tag() {
         assert_eq!(
             extract_cache_reference("ghcr.io/org/image:1.0.0"),
-            "ghcr.io/org/image:buildcache"
+            "ghcr.io/org/image-buildcache"
         );
     }
 
@@ -186,7 +186,7 @@ mod tests {
     fn test_extract_cache_reference_with_digest() {
         assert_eq!(
             extract_cache_reference("ghcr.io/org/image@sha256:abcdef123456"),
-            "ghcr.io/org/image:buildcache"
+            "ghcr.io/org/image-buildcache"
         );
     }
 
@@ -194,7 +194,7 @@ mod tests {
     fn test_extract_cache_reference_without_tag() {
         assert_eq!(
             extract_cache_reference("ghcr.io/org/image"),
-            "ghcr.io/org/image:buildcache"
+            "ghcr.io/org/image-buildcache"
         );
     }
 
@@ -202,20 +202,20 @@ mod tests {
     fn test_extract_cache_reference_with_port() {
         assert_eq!(
             extract_cache_reference("localhost:5000/image:1.0.0"),
-            "localhost:5000/image:buildcache"
+            "localhost:5000/image-buildcache"
         );
     }
 
     #[test]
     fn test_extract_cache_reference_simple_name() {
-        assert_eq!(extract_cache_reference("nginx:latest"), "nginx:buildcache");
+        assert_eq!(extract_cache_reference("nginx:latest"), "nginx-buildcache");
     }
 
     #[test]
     fn test_extract_cache_reference_nested_path() {
         assert_eq!(
             extract_cache_reference("registry.example.com/team/project/service:v2.3.4"),
-            "registry.example.com/team/project/service:buildcache"
+            "registry.example.com/team/project/service-buildcache"
         );
     }
 }
