@@ -5,7 +5,6 @@
     crane.url = "github:ipetkov/crane";
     fenix.url = "github:nix-community/fenix";
     flake-utils.url = "github:numtide/flake-utils";
-    gitignore.url = "github:hercules-ci/gitignore.nix";
     devenv.url = "github:cachix/devenv";
   };
   outputs =
@@ -14,7 +13,6 @@
       flake-utils,
       fenix,
       crane,
-      gitignore,
       devenv,
       ...
     }:
@@ -27,7 +25,6 @@
           stdenv = nixpkgs.clangStdenv;
         };
         inherit (pkgs.stdenv) isDarwin;
-        inherit (gitignore.lib) gitignoreSource;
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
         toolchain = fenixPkgs.fromToolchainFile {
@@ -36,7 +33,7 @@
         };
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-        rustSrc = craneLib.cleanCargoSource gitignoreSource ./.;
+        rustSrc = craneLib.cleanCargoSource ./.;
         arch2targets =
           let
             generateCross =
