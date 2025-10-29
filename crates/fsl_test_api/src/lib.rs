@@ -26,10 +26,7 @@ pub struct FslTestEnv {
 
 impl FslTestEnv {
     /// Load from environment variables.
-    ///
-    /// Also handles `.env` files.
-    pub fn get() -> anyhow::Result<FslTestEnv> {
-        dotenvy::dotenv()?;
-        Ok(FslTestEnv::init_from_env()?)
+    pub fn get() -> Result<FslTestEnv, envconfig::Error> {
+        FslTestEnv::init_from_env()
     }
 }
