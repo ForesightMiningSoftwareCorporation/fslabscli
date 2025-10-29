@@ -1166,8 +1166,6 @@ dependencies = [
 name = "fsl_test_api"
 version = "2.30.0"
 dependencies = [
- "anyhow",
- "dotenvy",
  "envconfig",
  "url",
 ]
