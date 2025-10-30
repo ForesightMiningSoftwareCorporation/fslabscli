@@ -7,7 +7,6 @@ pub struct DockerContainer {
     pub prefix: String,
     pub env: String,
     pub port: String,
-    pub options: String,
     pub image: String,
     pub command: String,
 }
@@ -18,7 +17,6 @@ impl DockerContainer {
             prefix: "azurite".into(),
             env: "".into(),
             port: format!("-p {blob_port}:10000"),
-            options: "".into(),
             image: "mcr.microsoft.com/azure-storage/azurite".into(),
             command: Default::default(),
         }
@@ -29,9 +27,8 @@ impl DockerContainer {
             prefix: "minio".into(),
             env: "-e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin".into(),
             port: format!("-p {service_port}:9000"),
-            options: "server /data --console-address :9001".into(),
             image: "minio/minio:latest".into(),
-            command: "server /data --address=0.0.0.0:9000".into(),
+            command: "server /data".into(),
         }
     }
 
@@ -40,7 +37,6 @@ impl DockerContainer {
             prefix: "postgres".into(),
             env: format!("-e POSTGRES_PASSWORD={DB_PASSWORD} -e POSTGRES_DB={DB_NAME}"),
             port: format!("-p {port}:5432"),
-            options: "".into(),
             image: "postgres:alpine".into(),
             command: Default::default(),
         }
@@ -51,7 +47,6 @@ impl DockerContainer {
             prefix,
             env,
             port,
-            options,
             image,
             command,
         } = self;
@@ -59,7 +54,7 @@ impl DockerContainer {
         let container_name = format!("{prefix}_{suffix}");
         let path = std::env::current_dir().unwrap();
         let command_output = Script::new(format!(
-            "docker run --name={container_name} -d {env} {port} {options} {image} {command}"
+            "docker run --name={container_name} -d {env} {port} {image} {command}"
         ))
         .current_dir(&path)
         .execute()
