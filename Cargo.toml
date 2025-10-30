@@ -97,7 +97,7 @@ version = "4.5.47"
 [dependencies.git2]
 default-features = false
 version = "0.20.2"
-features = ["vendored-openssl", "https"]
+features = ["vendored-openssl", "https", "ssh"]
 
 [dependencies.humanize-duration]
 features = ["chrono"]

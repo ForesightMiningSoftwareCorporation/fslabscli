@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use git2::Repository;
+use git2::{Repository, Signature};
 
 pub fn commit_all_changes(repo_path: &PathBuf, message: &str) {
     stage_all(repo_path);
@@ -40,7 +40,7 @@ pub fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
     let mut index = repo.index().unwrap();
 
     let oid = index.write_tree().unwrap();
-    let signature = repo.signature().unwrap();
+    let signature = Signature::now("Test User", "test@example.com").unwrap();
     let tree = repo.find_tree(oid).unwrap();
     let parent_commit = repo
         .head()

@@ -3,7 +3,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 use anyhow::Context;
-use git2::Repository;
+use git2::build::RepoBuilder;
+use git2::{Cred, FetchOptions, RemoteCallbacks};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use hyper::body::Bytes;
@@ -27,6 +28,7 @@ use walkdir::WalkDir;
 pub struct CargoRegistry {
     pub name: String,
     pub index: Option<String>,
+    pub private_key: Option<PathBuf>,
     pub crate_url: Option<String>,
     pub token: Option<String>,
     pub user_agent: Option<String>,
@@ -40,6 +42,11 @@ impl CargoRegistry {
             && let Some(index) = &other.index
         {
             self.index = Some(index.clone());
+        }
+        if self.private_key.is_none()
+            && let Some(private_key) = &other.private_key
+        {
+            self.private_key = Some(private_key.clone());
         }
         if self.crate_url.is_none()
             && let Some(crate_url) = &other.crate_url
@@ -60,6 +67,7 @@ impl CargoRegistry {
     pub fn new(
         name: String,
         index: Option<String>,
+        private_key: Option<PathBuf>,
         crate_url: Option<String>,
         token: Option<String>,
         user_agent: Option<String>,
@@ -68,6 +76,7 @@ impl CargoRegistry {
         let mut config = Self {
             name: name.clone(),
             index,
+            private_key,
             crate_url,
             token,
             user_agent,
@@ -84,6 +93,9 @@ impl CargoRegistry {
     pub fn new_from_env(name: String) -> Self {
         let env_name = name.to_uppercase().replace("-", "_").replace(".", "_");
         let index = env::var(format!("CARGO_REGISTRIES_{env_name}_INDEX")).ok();
+        let private_key = env::var(format!("CARGO_REGISTRIES_{env_name}_PRIVATE_KEY"))
+            .ok()
+            .map(PathBuf::from);
         let crate_url = env::var(format!("CARGO_REGISTRIES_{env_name}_CRATE_URL")).ok();
         let token = env::var(format!("CARGO_REGISTRIES_{env_name}_TOKEN")).ok();
         let user_agent = match name.as_str() {
@@ -94,6 +106,7 @@ impl CargoRegistry {
         Self {
             name,
             index,
+            private_key,
             crate_url,
             token,
             user_agent,
@@ -105,6 +118,7 @@ impl CargoRegistry {
         let mut config = Self {
             name: name.to_string(),
             index: None,
+            private_key: None,
             crate_url: None,
             token: None,
             user_agent: None,
@@ -151,7 +165,23 @@ impl CargoRegistry {
             .context("Cannot fetch inexistent index")?;
         let tmp = TempDir::new()?.dont_delete_on_drop();
         let path = tmp.path();
-        Repository::clone(&index, path)?;
+
+        let mut builder = RepoBuilder::new();
+        let mut callbacks = RemoteCallbacks::new();
+        let mut fetch_options = FetchOptions::new();
+
+        let private_key = self.private_key.clone();
+
+        callbacks.credentials(move |_, u, _| match private_key.as_ref() {
+            Some(key) => Cred::ssh_key(u.unwrap_or("git"), None, key.as_path(), None),
+            None => Cred::ssh_key_from_agent(u.unwrap_or("git")),
+        });
+        fetch_options.remote_callbacks(callbacks);
+        builder.fetch_options(fetch_options);
+        builder.clone(&index, path).map_err(|e| {
+            println!("COuln not fetch reg: {}", e);
+            e
+        })?;
         self.local_index_path = Some(path.to_path_buf());
         Ok(())
     }
@@ -268,7 +298,7 @@ impl Cargo {
             registries: registries
                 .iter()
                 .filter_map(|k| {
-                    CargoRegistry::new(k.clone(), None, None, None, None, fetch_indexes)
+                    CargoRegistry::new(k.clone(), None, None, None, None, None, fetch_indexes)
                         .ok()
                         .map(|r| (k.clone(), r))
                 })
@@ -597,10 +627,26 @@ mod tests {
     use std::fs;
     #[test]
     fn test_publish_key_replaced_if_present() {
-        let original_registry =
-            CargoRegistry::new("main_registry".to_string(), None, None, None, None, false).unwrap();
-        let target_registry =
-            CargoRegistry::new("my_registry".to_string(), None, None, None, None, false).unwrap();
+        let original_registry = CargoRegistry::new(
+            "main_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let target_registry = CargoRegistry::new(
+            "my_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -633,10 +679,26 @@ publish = ["main_registry"]"#;
 
     #[test]
     fn test_find_and_replace_registry_in_dependencies() {
-        let original_registry =
-            CargoRegistry::new("main_registry".to_string(), None, None, None, None, false).unwrap();
-        let target_registry =
-            CargoRegistry::new("my_registry".to_string(), None, None, None, None, false).unwrap();
+        let original_registry = CargoRegistry::new(
+            "main_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let target_registry = CargoRegistry::new(
+            "my_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         let tmp = assert_fs::TempDir::new()
             .unwrap()
@@ -663,10 +725,26 @@ dependencies = { some_crate = { registry = "main_registry" } }"#;
 
     #[test]
     fn test_publish_key_added_if_missing() {
-        let original_registry =
-            CargoRegistry::new("main_registry".to_string(), None, None, None, None, false).unwrap();
-        let target_registry =
-            CargoRegistry::new("my_registry".to_string(), None, None, None, None, false).unwrap();
+        let original_registry = CargoRegistry::new(
+            "main_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let target_registry = CargoRegistry::new(
+            "my_registry".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -703,12 +781,14 @@ version = "0.1.0""#;
             None,
             None,
             None,
+            None,
             true,
         )
         .unwrap();
         let target_registry = CargoRegistry::new(
             "my_registry".to_string(),
             Some(target_index.to_string_lossy().to_string()),
+            None,
             None,
             None,
             None,
@@ -803,6 +883,7 @@ dependencies = [
         let crates_io = CargoRegistry::new(
             "crates.io".to_string(),
             None,
+            None,
             Some("https://crates.io/api/v1/crates/".to_string()),
             Some("some".to_string()),
             Some("fslabscli".to_string()),
@@ -829,6 +910,7 @@ dependencies = [
         let crates_io = CargoRegistry::new(
             "crates.io".to_string(),
             None,
+            None,
             Some("https://crates.io/api/v1/crates/".to_string()),
             Some("some".to_string()),
             Some("fslabscli".to_string()),
@@ -854,6 +936,7 @@ dependencies = [
         let mut cargo = Cargo::new(&HashSet::new(), false).unwrap();
         let crates_io = CargoRegistry::new(
             "crates.io".to_string(),
+            None,
             None,
             Some("https://crates.io/api/v1/crates/".to_string()),
             Some("some".to_string()),
@@ -885,6 +968,7 @@ dependencies = [
             None,
             None,
             None,
+            None,
             false,
         )
         .unwrap();
@@ -904,6 +988,7 @@ dependencies = [
         let reg = CargoRegistry::new(
             "my_registry".to_string(),
             Some(reg_index_path.to_string_lossy().to_string()),
+            None,
             None,
             None,
             None,
@@ -929,6 +1014,7 @@ dependencies = [
             None,
             None,
             None,
+            None,
             true,
         )
         .unwrap();
@@ -947,6 +1033,7 @@ dependencies = [
         let reg = CargoRegistry::new(
             "my_registry".to_string(),
             Some(reg_index_path.to_string_lossy().to_string()),
+            None,
             None,
             None,
             None,
@@ -973,6 +1060,7 @@ dependencies = [
             None,
             None,
             None,
+            None,
             true,
         )
         .unwrap();
@@ -993,6 +1081,7 @@ dependencies = [
         let reg = CargoRegistry::new(
             "my_registry".to_string(),
             Some(reg_index_path.to_string_lossy().to_string()),
+            None,
             None,
             None,
             None,
