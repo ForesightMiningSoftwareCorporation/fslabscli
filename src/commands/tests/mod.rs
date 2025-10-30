@@ -528,6 +528,14 @@ async fn do_test_on_package(
         match Script::new(command)
             .name(name)
             .current_dir(&package_path)
+            .maybe_env("DATABASE_URL", database_url.clone())
+            .maybe_env(
+                "AZURITE_BLOB_PORT",
+                azurite_blob_port.map(|p| p.to_string()),
+            )
+            .maybe_env("S3_ENDPOINT", minio_endpoint.clone())
+            .env("S3_ACCESS_KEY", "minioadmin")
+            .env("S3_SECRET_ACCESS_KEY", "minioadmin")
             .log_stdout(tracing::Level::DEBUG)
             .log_stderr(tracing::Level::DEBUG)
             .spawn()
@@ -550,13 +558,9 @@ async fn do_test_on_package(
     if !failed && let Some(cache_miss_command) = &test_args.additional_cache_miss {
         tracing::info!("│ {package_name:30.30}     │ Running cache miss command");
         let start_time = OffsetDateTime::now_utc();
-        let mut envs: HashMap<String, String> = HashMap::new();
-        if let Some(db_url) = database_url.clone() {
-            envs.insert("DATABASE_URL".to_string(), db_url.clone());
-        }
         let command_output = Script::new(cache_miss_command)
             .current_dir(&repo_root)
-            .envs(&envs)
+            .maybe_env("DATABASE_URL", database_url.clone())
             .execute()
             .await;
         let end_time = OffsetDateTime::now_utc();
@@ -578,19 +582,25 @@ async fn do_test_on_package(
     if !failed && let Some(pre_test_script) = test_args.pre_test_script.clone() {
         tracing::info!("│ {package_name:30.30}     │ Running pre-test script command");
         let start_time = OffsetDateTime::now_utc();
-        let mut script = Script::new(pre_test_script)
-            .name("pre_test_script")
-            .current_dir(&package_path)
-            .log_stdout(tracing::Level::INFO)
-            .log_stderr(tracing::Level::INFO);
-        if let Some(url) = &database_url {
-            script = script.env("DATABASE_URL", url);
-        }
         let CommandOutput {
             stdout,
             stderr,
             success,
-        } = script.execute().await;
+        } = Script::new(pre_test_script)
+            .name("pre_test_script")
+            .current_dir(&package_path)
+            .maybe_env("DATABASE_URL", database_url.clone())
+            .maybe_env(
+                "AZURITE_BLOB_PORT",
+                azurite_blob_port.map(|p| p.to_string()),
+            )
+            .maybe_env("S3_ENDPOINT", minio_endpoint.clone())
+            .env("S3_ACCESS_KEY", "minioadmin")
+            .env("S3_SECRET_ACCESS_KEY", "minioadmin")
+            .log_stdout(tracing::Level::INFO)
+            .log_stderr(tracing::Level::INFO)
+            .execute()
+            .await;
         let end_time = OffsetDateTime::now_utc();
         let duration = end_time - start_time;
         let mut pre_test_script_tx = match success {

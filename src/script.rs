@@ -67,6 +67,13 @@ impl Script {
         self
     }
 
+    pub fn maybe_env(mut self, key: impl AsRef<OsStr>, value: Option<impl AsRef<OsStr>>) -> Self {
+        if let Some(value) = value {
+            self.inner.env(key, value);
+        }
+        self
+    }
+
     pub fn envs<I, K, V>(mut self, vars: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
