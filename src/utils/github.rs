@@ -2,7 +2,7 @@ use clap::Parser;
 use octocrab::Octocrab;
 use octocrab::models::{InstallationId, InstallationToken};
 use octocrab::params::apps::CreateInstallationAccessToken;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs::{self};
 use std::path::PathBuf;
 use url::Url;
@@ -27,9 +27,6 @@ pub enum InstallationRetrievalMode {
     Organization,
     Repository,
 }
-
-#[derive(Serialize, Deserialize)]
-pub struct CreateAccessToken {}
 
 pub async fn generate_github_app_token(
     github_app_id: u64,
