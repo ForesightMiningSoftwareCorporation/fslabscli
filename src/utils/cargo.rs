@@ -21,6 +21,7 @@ use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CargoRegistry {
+    pub name: String,
     pub index: Option<String>,
     pub crate_url: Option<String>,
     pub token: Option<String>,
@@ -59,6 +60,7 @@ impl CargoRegistry {
         user_agent: Option<String>,
     ) -> Self {
         let mut config = Self {
+            name: name.clone(),
             index,
             crate_url,
             token,
@@ -80,6 +82,7 @@ impl CargoRegistry {
         };
 
         Self {
+            name,
             index,
             crate_url,
             token,
@@ -89,6 +92,7 @@ impl CargoRegistry {
 
     pub fn new_from_config(name: String) -> Self {
         let mut config = Self {
+            name: name.to_string(),
             index: None,
             crate_url: None,
             token: None,
@@ -304,17 +308,49 @@ impl CrateChecker for Cargo {
     }
 }
 
-fn replace_registry_in_cargo_toml(path: &Path, target_registry_name: String) -> anyhow::Result<()> {
-    // Read the content of the Cargo.toml file
+fn replace_registry_in_cargo_toml(
+    path: &Path,
+    original_registry: &CargoRegistry,
+    target_registry: &CargoRegistry,
+) -> anyhow::Result<()> {
     let content = fs::read_to_string(path)?;
 
-    // Define your regex to find what you want to replace
-    let re = Regex::new(r##"registry += +"(.*?)""##)?;
+    let pattern = format!(
+        r#"registry += +"{}""#,
+        regex::escape(&original_registry.name)
+    );
+    let re = Regex::new(&pattern)?;
     let modified_content = re
-        .replace_all(&content, format!("registry = \"{target_registry_name}\""))
+        .replace_all(&content, format!("registry = \"{}\"", target_registry.name))
         .to_string();
 
-    // Write the modified content back to the file
+    fs::write(path, modified_content)?;
+
+    Ok(())
+}
+
+fn replace_registry_in_cargo_lock(
+    path: &Path,
+    original_registry: &CargoRegistry,
+    target_registry: &CargoRegistry,
+) -> anyhow::Result<()> {
+    let Some(original_index) = original_registry.index.clone() else {
+        // Cannot do anything
+        return Ok(());
+    };
+    let Some(target_index) = target_registry.index.clone() else {
+        // Cannot do anything
+        return Ok(());
+    };
+
+    let content = fs::read_to_string(path)?;
+
+    let pattern = format!(r#"source = "registry\+{}""#, regex::escape(&original_index));
+    let re = Regex::new(&pattern)?;
+    let modified_content = re
+        .replace_all(&content, format!("source = \"registry+{}\"", target_index))
+        .to_string();
+
     fs::write(path, modified_content)?;
 
     Ok(())
@@ -323,15 +359,15 @@ fn replace_registry_in_cargo_toml(path: &Path, target_registry_name: String) -> 
 pub fn patch_crate_for_registry(
     root_directory: &Path,
     working_directory: &Path,
-    target_registry_name: String,
+    original_registry: &CargoRegistry,
+    target_registry: &CargoRegistry,
 ) -> anyhow::Result<()> {
     let cargo_toml_path = working_directory.join("Cargo.toml");
-    let cargo_lock_path = working_directory.join("Cargo.lock");
     // Read the Cargo.toml file
     let toml_str = fs::read_to_string(&cargo_toml_path)?;
     let mut doc: DocumentMut = toml_str.parse()?;
     let mut publish_registries = toml_edit::Array::new();
-    publish_registries.push(target_registry_name.clone());
+    publish_registries.push(target_registry.name.clone());
     let mut empty_table = table();
     let package_table: &mut Table = doc
         .get_mut("package")
@@ -347,13 +383,12 @@ pub fn patch_crate_for_registry(
         let entry = entry?;
         if entry.path().ends_with("Cargo.toml") {
             // Perform replacement for each Cargo.toml file found
-            replace_registry_in_cargo_toml(entry.path(), target_registry_name.clone())?;
+            replace_registry_in_cargo_toml(entry.path(), original_registry, target_registry)?;
         }
-    }
-
-    // 3. If Cargo.lock exists, delete it
-    if Path::new(&cargo_lock_path).exists() {
-        fs::remove_file(cargo_lock_path)?;
+        if entry.path().ends_with("Cargo.lock") {
+            // Perform replacement for each Cargo.lock file found
+            replace_registry_in_cargo_lock(entry.path(), original_registry, target_registry)?;
+        }
     }
 
     Ok(())
@@ -365,6 +400,9 @@ mod tests {
     use std::fs;
     #[test]
     fn test_publish_key_replaced_if_present() {
+        let original_registry =
+            CargoRegistry::new("main_registry".to_string(), None, None, None, None);
+        let target_registry = CargoRegistry::new("my_registry".to_string(), None, None, None, None);
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -382,7 +420,7 @@ publish = ["main_registry"]"#;
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
         assert!(
-            patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string())
+            patch_crate_for_registry(&tmp, &tmp, &original_registry, &target_registry)
                 .map_err(|e| {
                     println!("Error: {e:#?}");
                     e
@@ -397,6 +435,9 @@ publish = ["main_registry"]"#;
 
     #[test]
     fn test_find_and_replace_registry_in_dependencies() {
+        let original_registry =
+            CargoRegistry::new("main_registry".to_string(), None, None, None, None);
+        let target_registry = CargoRegistry::new("my_registry".to_string(), None, None, None, None);
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -413,7 +454,7 @@ dependencies = { some_crate = { registry = "main_registry" } }"#;
         fs::write(&cargo_toml_path, toml_content).unwrap();
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
-        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, &original_registry, &target_registry).is_ok(),);
 
         // Read the updated Cargo.toml and check if `main_registry` was replaced
         let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
@@ -422,6 +463,9 @@ dependencies = { some_crate = { registry = "main_registry" } }"#;
 
     #[test]
     fn test_publish_key_added_if_missing() {
+        let original_registry =
+            CargoRegistry::new("main_registry".to_string(), None, None, None, None);
+        let target_registry = CargoRegistry::new("my_registry".to_string(), None, None, None, None);
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -437,7 +481,7 @@ version = "0.1.0""#;
         fs::write(&cargo_toml_path, toml_content).unwrap();
 
         // Run the patch_crate_for_registry function with a registry name and main_registry
-        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, &original_registry, &target_registry).is_ok());
 
         // Read the updated Cargo.toml and check if `publish` was correctly updated
         let updated_toml = fs::read_to_string(cargo_toml_path).unwrap();
@@ -445,7 +489,21 @@ version = "0.1.0""#;
     }
 
     #[test]
-    fn test_existing_cargo_lock() {
+    fn test_patching_cargo_lock() {
+        let original_registry = CargoRegistry::new(
+            "main_registry".to_string(),
+            Some("ssh://git@ssh.example.com/main_registry/crate-index.git".to_string()),
+            None,
+            None,
+            None,
+        );
+        let target_registry = CargoRegistry::new(
+            "my_registry".to_string(),
+            Some("ssh://git@ssh.example.org/my_registry/crate-index.git".to_string()),
+            None,
+            None,
+            None,
+        );
         let tmp = assert_fs::TempDir::new()
             .unwrap()
             .into_persistent()
@@ -458,149 +516,63 @@ version = "0.1.0""#;
         // Create mock Cargo.toml
         let toml_content = r#"[package]
 name = "my-package"
-version = "0.1.0""#;
-        fs::write(&cargo_toml_path, toml_content).unwrap();
+version = "0.1.0"
+publish = ["main_registry"]
 
-        // Create a mock Cargo.lock file
-        fs::write(&cargo_lock_path, "lock data").unwrap();
+[dependencies]
+dep = { version = "24.0.0", registry = "main_registry" }"#;
+        let lock_content = r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "dep"
+version = "24.0.0"
+source = "registry+ssh://git@ssh.example.com/main_registry/crate-index.git"
+checksum = "70c43100e9892333afde82c4883a487d82e094e41860490b1ce7eac359183611"
+dependencies = []
+
+[[package]]
+name = "my-package"
+version = "0.1.0"
+dependencies = [
+ "dep",
+]"#;
+
+        fs::write(&cargo_toml_path, toml_content).unwrap();
+        fs::write(&cargo_lock_path, lock_content).unwrap();
 
         // Run the patch_crate_for_registry function and check for success
-        assert!(patch_crate_for_registry(&tmp, &tmp, "my_registry".to_string()).is_ok());
+        assert!(patch_crate_for_registry(&tmp, &tmp, &original_registry, &target_registry).is_ok());
+        let wanted_replaced_toml_content = r#"[package]
+name = "my-package"
+version = "0.1.0"
+publish = ["my_registry"]
 
-        // Ensure Cargo.lock is deleted
-        assert!(!cargo_lock_path.exists());
+[dependencies]
+dep = { version = "24.0.0", registry = "my_registry" }
+"#;
+        let wanted_replaced_lock_content = r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "dep"
+version = "24.0.0"
+source = "registry+ssh://git@ssh.example.org/my_registry/crate-index.git"
+checksum = "70c43100e9892333afde82c4883a487d82e094e41860490b1ce7eac359183611"
+dependencies = []
+
+[[package]]
+name = "my-package"
+version = "0.1.0"
+dependencies = [
+ "dep",
+]"#;
+
+        let replaced_toml_content = fs::read_to_string(cargo_toml_path).unwrap();
+        let replaced_lock_content = fs::read_to_string(cargo_lock_path).unwrap();
+        assert_eq!(replaced_toml_content, wanted_replaced_toml_content);
+        assert_eq!(replaced_lock_content, wanted_replaced_lock_content);
     }
 }
-//     use wiremock::matchers::{header, method, path};
-//     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-//     use crate::crate_graph;
-
-//     use super::*;
-
-//     const EXISTING_PACKAGE_DATA: &str = "{\"org\":{\"id\":\"0184cce5-d7f7-d027-dc92-03ecd4bdfd44\",\"name\":\"Foresight Mining Software Corporation\",\"slug\":\"foresight-mining-software-corporation\"},\"n_crates\":1,\"n_crate_versions\":6,\"total_downloads\":25,\"crates\":[{\"id\":\"018c8382-17f4-11e6-dba9-fadb50dd1f74\",\"name\":\"hub_app\",\"total_downloads\":25,\"versions\":[{\"id\":\"018d8de9-8e73-c788-03f7-02926da47171\",\"vers\":\"0.2.0\",\"user_id\":\"0184cce5-d802-0d87-da96-33779594d8cc\",\"published\":\"2024-02-09T12:48:30.322924Z\",\"published_unix\":1707482910,\"meta\":{\"description\":null,\"categories\":[],\"keywords\":[],\"repository\":null,\"deps\":[],\"readme\":\"# `hub_app`\\n\\nShared library for applications that are launched by the Hub Launcher. Provides input data for these\\napplications so they know where to store/access data, as well as what project file should be opened\\nwhen the application starts.\"},\"raw_publish_meta\":{\"deps\":[],\"name\":\"hub_app\",\"vers\":\"0.4.1\",\"links\":null,\"badges\":{},\"readme\":\"# `hub_app`\\n\\nShared library for applications that are launched by the Hub Launcher. Provides input data for these\\napplications so they know where to store/access data, as well as what project file should be opened\\nwhen the application starts.\",\"authors\":[],\"license\":null,\"features\":{\"beta\":[],\"prod\":[],\"alpha\":[\"beta\"],\"default\":[\"embedded_assets\"],\"nightly\":[\"alpha\",\"beta\"],\"devtools\":[],\"run_init_logic\":[],\"embedded_assets\":[\"bevy_embedded_assets\"]},\"homepage\":null,\"keywords\":[],\"categories\":[],\"repository\":null,\"description\":null,\"readme_file\":\"README.md\",\"license_file\":null,\"rust_version\":null,\"documentation\":null},\"docs_url\":\"/foresight-mining-software-corporation/hub_app/0.4.1/docs\",\"n_downloads\":1,\"yanked\":null,\"is_yanked\":false}],\"latest_version\":\"0.2.0\"}]}\n";
-
-//     #[allow(clippy::too_many_arguments)]
-//     async fn cargo_test(
-//         package_name: String,
-//         package_version: String,
-//         registry_user_agent: Option<String>,
-//         expected_result: bool,
-//         expected_error: bool,
-//         mock_user_agent: Option<String>,
-//         mock_status: Option<u16>,
-//         mock_body: Option<String>,
-//     ) {
-//         let crate_graph = CrateGraph::new(".", None).unwrap();
-//         let mut cargo = Cargo::new(&crate_graph).expect("Could not create cargo instance");
-
-//         let mut registry = "default".to_string();
-
-//         if let (Some(user_agent), Some(mock_status), Some(mock_body)) =
-//             (mock_user_agent, mock_status, mock_body)
-//         {
-//             let mock_server = MockServer::start().await;
-//             let prefix = "krates/by-name/".to_string();
-//             Mock::given(method("GET"))
-//                 .and(path(format!("{}{}", prefix, package_name)))
-//                 .and(header("User-Agent", user_agent.clone()))
-//                 .respond_with(
-//                     ResponseTemplate::new(mock_status).set_body_raw(mock_body, "application/json"),
-//                 )
-//                 .mount(&mock_server)
-//                 .await;
-//             let mock_server_uri = mock_server.uri();
-//             registry = "private".to_string();
-//             cargo
-//                 .add_registry(
-//                     registry.clone(),
-//                     format!("{}/{}", mock_server_uri, prefix),
-//                     registry_user_agent,
-//                 )
-//                 .expect("could not add private registry");
-//         }
-
-//         let result = cargo
-//             .check_crate_exists(registry, package_name, package_version)
-//             .await;
-//         match result {
-//             Ok(exists) => {
-//                 assert!(!expected_error);
-//                 assert_eq!(expected_result, exists);
-//             }
-//             Err(_) => {
-//                 assert!(expected_error);
-//             }
-//         }
-//     }
-
-//     #[tokio::test]
-//     async fn cargo_existing_crate_and_version() {
-//         cargo_test(
-//             "rand".to_string(),
-//             "0.8.4".to_string(),
-//             None,
-//             true,
-//             false,
-//             None,
-//             None,
-//             None,
-//         )
-//         .await;
-//     }
-
-//     #[tokio::test]
-//     async fn cargo_existing_crate_and_not_version() {
-//         cargo_test(
-//             "rand".to_string(),
-//             "99.99.99".to_string(),
-//             None,
-//             false,
-//             false,
-//             None,
-//             None,
-//             None,
-//         )
-//         .await;
-//     }
-
-//     #[tokio::test]
-//     async fn cargo_existing_crate_and_version_private_reg() {
-//         cargo_test(
-//             "hub_app".to_string(),
-//             "0.2.0".to_string(),
-//             Some("my_registry my_token".to_string()),
-//             true,
-//             false,
-//             Some("my_registry my_token".to_string()),
-//             Some(200),
-//             Some(EXISTING_PACKAGE_DATA.to_string()),
-//         )
-//         .await;
-//     }
-
-//     #[tokio::test]
-//     async fn cargo_existing_crate_and_not_version_private_reg() {
-//         cargo_test(
-//             "hub_app".to_string(),
-//             "99.99.99".to_string(),
-//             Some("my_registry my_token".to_string()),
-//             false,
-//             false,
-//             Some("my_registry my_token".to_string()),
-//             Some(200),
-//             Some(EXISTING_PACKAGE_DATA.to_string()),
-//         )
-//         .await;
-//     }
-//     //
-//     // #[tokio::test]
-//     // async fn npm_package_existing_package_custom_registry_npmrc() {
-//     //     npm_test("@TestScope/test".to_string(), "0.2.0".to_string(), None, true, true, false, Some(NPM_EXISTING_SCOPE_PACKAGE_DATA.to_string()), Some("my_token".to_string()), Some(200)).await;
-//     // }
-//     //
-//     // #[tokio::test]
-//     // async fn npm_package_non_existing_package_custom_registry_npmrc() {
-//     //     npm_test("@TestScope/test".to_string(), "99.99.99".to_string(), None, true, false, false, Some(NPM_EXISTING_SCOPE_PACKAGE_DATA.to_string()), Some("my_token".to_string()), Some(200)).await;
-//     // }
-// }
