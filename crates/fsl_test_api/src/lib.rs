@@ -2,7 +2,7 @@ use envconfig::Envconfig;
 use url::Url;
 
 /// Environment variables created by the test runner for use in tests.
-#[derive(Envconfig)]
+#[derive(Clone, Debug, Envconfig, Eq, PartialEq)]
 pub struct FslTestEnv {
     /// The URL used for connecting to the Postgres service.
     ///
