@@ -271,7 +271,7 @@ impl<O: OciClient, H: HttpClient> Docker<O, H> {
         tracing::debug!("Parsed image reference: {:?}", image);
 
         // Resolve authentication
-        let auth = self.resolve_auth(&image.registry(), &name).await?;
+        let auth = self.resolve_auth(image.registry(), &name).await?;
         tracing::debug!("Resolved auth type: {}", auth_type_name(&auth));
 
         // Fetch manifest

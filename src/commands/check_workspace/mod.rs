@@ -1,5 +1,6 @@
 use chrono::{Duration, prelude::*};
 use core::result::Result as CoreResult;
+use git2::Repository;
 use std::cmp;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,7 @@ use serde_json::from_value;
 use serde_yml::Value;
 use strum_macros::EnumString;
 
+use crate::cli_args::{DiffOptions, DiffStrategy};
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::crate_graph::CrateGraph;
 use crate::test_args::TestArgs;
@@ -126,16 +128,13 @@ pub struct Options {
     hide_dependencies: bool,
     #[arg(long, default_value_t = false)]
     ignore_dev_dependencies: bool,
+    #[clap(flatten)]
+    diff: DiffOptions,
 }
 
 impl Options {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn with_check_changed(mut self, check_changed: bool) -> Self {
-        self.check_changed = check_changed;
-        self
     }
 
     pub fn with_check_publish(mut self, check_publish: bool) -> Self {
@@ -148,8 +147,18 @@ impl Options {
         self
     }
 
+    pub fn with_check_changed(mut self, check_changed: bool) -> Self {
+        self.check_changed = check_changed;
+        self
+    }
+
     pub fn with_ignore_dev_dependencies(mut self, ignore_dev_dependencies: bool) -> Self {
         self.ignore_dev_dependencies = ignore_dev_dependencies;
+        self
+    }
+
+    pub fn with_diff_strategy(mut self, strategy: DiffStrategy) -> Self {
+        self.diff.strategy = Some(strategy);
         self
     }
 }
@@ -1020,7 +1029,6 @@ pub async fn check_workspace(
             PAPER
         );
     }
-    // TODO: switch to an ASYNC_ONCE or something
     let npm = Npm::new(
         options.npm_registry_url.clone(),
         options.npm_registry_token.clone(),
@@ -1175,11 +1183,13 @@ pub async fn check_workspace(
             ));
         }
 
+        let diff_strategy = options.diff.strategy();
+
+        let repo = Repository::open(repo_root)?;
+        let (base_commit, head_commit) = diff_strategy.git_commits(&repo)?;
         // Check changed from a git pov
-        let changed_package_paths = crates.changed_packages(
-            common_options.base_rev.as_deref().unwrap_or("HEAD~"),
-            &common_options.head_rev,
-        )?;
+        let changed_package_paths =
+            crates.changed_packages(&repo, base_commit, head_commit, &diff_strategy)?;
         tracing::info!("Changed packages: {changed_package_paths:#?}");
         // Any packages that transitively depend on changed packages are also considered "changed".
         let changed_closure = crates
@@ -1235,6 +1245,7 @@ pub async fn check_workspace(
 mod tests {
     use crate::{
         PackageRelatedOptions,
+        cli_args::{DiffOptions, DiffStrategy},
         commands::check_workspace::{Options, Result as Package, check_workspace},
         utils::test::{commit_repo, create_complex_workspace, modify_file, stage_file},
     };
@@ -1296,12 +1307,16 @@ mod tests {
         );
         stage_file(&ws, "rust-toolchain.toml");
         commit_repo(&ws, "updated toolchain");
-        let common_options = PackageRelatedOptions {
-            base_rev: Some("HEAD~".to_string()),
-            head_rev: "HEAD".to_string(),
+        let common_options = PackageRelatedOptions::default();
+        let diff = DiffOptions {
+            strategy: Some(DiffStrategy::LocalChanges),
             ..Default::default()
         };
-        let check_workspace_options = Options::new().with_check_changed(true);
+        let check_workspace_options = Options {
+            diff,
+            check_changed: true,
+            ..Default::default()
+        };
         let results = check_workspace(&common_options, &check_workspace_options, ws.clone())
             .await
             .unwrap();

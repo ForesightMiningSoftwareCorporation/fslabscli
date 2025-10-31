@@ -23,6 +23,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
+    cli_args::{DiffOptions, DiffStrategy},
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
@@ -43,6 +44,9 @@ pub struct Options {
         default_value = "https://raw.githubusercontent.com/ForesightMiningSoftwareCorporation/github/main/deny.toml"
     )]
     default_deny_location: String,
+    #[clap(flatten)]
+    diff: DiffOptions,
+    /// Run tests on all packages, ignoring change detection
     #[arg(long)]
     run_all: bool,
 }
@@ -248,19 +252,19 @@ pub async fn tests(
         .build();
     let common_member_counter = common_meter.u64_counter("rust_tests_common_member").build();
     let overall_start_time = OffsetDateTime::now_utc();
-    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
+    let diff_strategy = options.diff.strategy();
     // Get Directory information
     tracing::info!("Running the tests with the following arguments:");
     tracing::info!("* `check_changed`: true");
     tracing::info!("* `check_publish`: false");
-    tracing::info!("* `changed_head_rev`: {}", common_options.head_rev);
-    tracing::info!("* `changed_base_rev`: {:?}", base_rev);
+    tracing::info!("* `diff_strategy`: {}", diff_strategy);
     tracing::info!("* `whitelist`: {}", common_options.whitelist.join(","));
     tracing::info!("* `blacklist`: {}", common_options.blacklist.join(","));
 
     let check_workspace_options = CheckWorkspaceOptions::new()
-        .with_check_changed(!options.run_all)
-        .with_check_publish(false);
+        .with_diff_strategy(diff_strategy.clone())
+        .with_check_publish(false)
+        .with_check_changed(!options.run_all);
 
     let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
         .await
@@ -294,6 +298,7 @@ pub async fn tests(
         let task_handle = tokio::spawn(do_test_on_package(
             common_opts,
             repo_root.clone(),
+            diff_strategy.clone(),
             member,
             metrics.clone(),
             semaphore.clone(),
@@ -366,6 +371,7 @@ struct Metrics {
 async fn do_test_on_package(
     common_options: Arc<PackageRelatedOptions>,
     repo_root: PathBuf,
+    diff_strategy: DiffStrategy,
     member: super::check_workspace::Result,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
@@ -381,7 +387,6 @@ async fn do_test_on_package(
     let package_version = member.version;
     let package_path = repo_root.join(member.path);
     let test_args = member.test_detail.args.unwrap_or_default();
-    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
     let use_nextest = has_cargo_nextest().await;
     let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
     let mut postgres_process = None;
@@ -798,14 +803,8 @@ async fn do_test_on_package(
                     .await;
             }
             let test_output = match fslabs_test.id == "cargo_lock" {
-                true => fix_workspace_lockfile(
-                    &repo_root,
-                    &package_path,
-                    base_rev.to_string(),
-                    None,
-                    true,
-                )
-                .unwrap_or_else(|e| e.into()),
+                true => fix_workspace_lockfile(&repo_root, &package_path, &diff_strategy, true)
+                    .unwrap_or_else(|e| e.into()),
 
                 false => {
                     Script::new(&fslabs_test.command)

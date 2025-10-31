@@ -1,7 +1,7 @@
 #[cfg(test)]
 use cargo_metadata::semver::Version;
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package, PackageId};
-use git2::{DiffDelta, Repository};
+use git2::{DiffDelta, Object, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
     borrow::Cow,
@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf, StripPrefixError},
 };
 
-use crate::utils::get_registry_env;
+use crate::{cli_args::DiffStrategy, utils::get_registry_env};
 
 /// The (directed acyclic) graph of crates in a multi-workspace repo.
 #[derive(Clone, Debug)]
@@ -157,11 +157,14 @@ impl CrateGraph {
     }
 
     /// Determines which packages have changed between `old_rev` and `new_rev`. (Un)Staged changes are considered
-    pub fn changed_packages(&self, old_rev: &str, new_rev: &str) -> anyhow::Result<Vec<PathBuf>> {
+    pub fn changed_packages<'r>(
+        &self,
+        repository: &'r Repository,
+        old_commit: Object<'r>,
+        new_commit: Object<'r>,
+        diff_strategy: &DiffStrategy,
+    ) -> anyhow::Result<Vec<PathBuf>> {
         // Create git diff between revisions.
-        let repository = Repository::open(&self.repo_root)?;
-        let old_commit = repository.revparse_single(old_rev)?;
-        let new_commit = repository.revparse_single(new_rev)?;
         let old_tree = old_commit.peel_to_tree()?;
         let new_tree = new_commit.peel_to_tree()?;
 
@@ -220,10 +223,14 @@ impl CrateGraph {
         // Returning early from a callback will propagate an error for some
         // reason. Ignore it.
         let _ = diff_old_new.foreach(&mut file_cb, None, None, None);
-        if new_rev == "HEAD" {
-            // Only check changes on staged and unstaged when not specifying a commit
-            let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
-            let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
+
+        // Only check changes on staged and unstaged when not using the explicit strategy
+        match diff_strategy {
+            DiffStrategy::Explicit { .. } => {}
+            _ => {
+                let _ = diff_new_staged.foreach(&mut file_cb, None, None, None);
+                let _ = diff_new_unstaged.foreach(&mut file_cb, None, None, None);
+            }
         }
 
         changed.sort();
@@ -656,44 +663,68 @@ mod tests {
 
     #[test]
     fn test_detect_changed_packages() {
-        let repo = initialize_repo();
-        let graph = CrateGraph::new(&repo, "", None).unwrap();
+        let repo_root = initialize_repo();
+        let graph = CrateGraph::new(&repo_root, "", None).unwrap();
+        let repo = Repository::open(repo_root).unwrap();
+        // Use LocalChanges strategy to compare HEAD~ vs HEAD
+        let diff_strategy = DiffStrategy::LocalChanges;
+        let (base_commit, head_commit) = diff_strategy.git_commits(&repo).unwrap();
 
         // These revision strings rely on an understanding of the test repo's git log.
         // We know that the most recent revision makes changes to files in foo and bar.
-        let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
+        let changed = graph
+            .changed_packages(&repo, base_commit, head_commit, &diff_strategy)
+            .unwrap();
         assert_eq!(changed, [Path::new("bar"), Path::new("foo")]);
     }
 
     #[test]
     fn test_detect_changed_package_single_rust_crate() {
-        let repo = create_simple_rust_crate();
-        let graph = CrateGraph::new(&repo, "", None).unwrap();
+        let repo_root = create_simple_rust_crate();
+        let graph = CrateGraph::new(&repo_root, "", None).unwrap();
+        let repo = Repository::open(repo_root).unwrap();
+        // Use LocalChanges strategy to compare HEAD~ vs HEAD
+        let diff_strategy = DiffStrategy::LocalChanges;
+        let (base_commit, head_commit) = diff_strategy.git_commits(&repo).unwrap();
+        let changed = graph
+            .changed_packages(&repo, base_commit, head_commit, &diff_strategy)
+            .unwrap();
 
-        let changed = graph.changed_packages("HEAD~", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
     }
 
     #[test]
     fn test_detect_changed_package_unstaged_file() {
-        let repo = create_simple_rust_crate();
+        let repo_root = create_simple_rust_crate();
+        let graph = CrateGraph::new(&repo_root, "", None).unwrap();
+        modify_file(&repo_root, "src/lib.rs", "pub fn new_function_again() {}");
+        let repo = Repository::open(repo_root).unwrap();
+        let diff_strategy = DiffStrategy::WorktreeVsBranch {
+            branch: "HEAD".to_string(),
+        };
+        let (base_commit, head_commit) = diff_strategy.git_commits(&repo).unwrap();
+        let changed = graph
+            .changed_packages(&repo, base_commit, head_commit, &diff_strategy)
+            .unwrap();
 
-        let graph = CrateGraph::new(&repo, "", None).unwrap();
-        modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
-
-        let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
         assert_eq!(changed, [Path::new(".")]);
     }
 
     #[test]
     fn test_detect_changed_package_staged_file() {
-        let repo = create_simple_rust_crate();
+        let repo_root = create_simple_rust_crate();
+        let graph = CrateGraph::new(&repo_root, "", None).unwrap();
+        modify_file(&repo_root, "src/lib.rs", "pub fn new_function_again() {}");
+        stage_file(&repo_root, "src/lib.rs");
 
-        let graph = CrateGraph::new(&repo, "", None).unwrap();
-        modify_file(&repo, "src/lib.rs", "pub fn new_function_again() {}");
-        stage_file(&repo, "src/lib.rs");
-
-        let changed = graph.changed_packages("HEAD", "HEAD").unwrap();
+        let repo = Repository::open(repo_root).unwrap();
+        let diff_strategy = DiffStrategy::WorktreeVsBranch {
+            branch: "HEAD".to_string(),
+        };
+        let (base_commit, head_commit) = diff_strategy.git_commits(&repo).unwrap();
+        let changed = graph
+            .changed_packages(&repo, base_commit, head_commit, &diff_strategy)
+            .unwrap();
         assert_eq!(changed, [Path::new(".")]);
     }
 
