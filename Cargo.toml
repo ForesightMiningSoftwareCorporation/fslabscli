@@ -88,7 +88,7 @@ temp-dir = "0.1.16"
 
 [dependencies.anyhow]
 features = []
-version = "1.0.99"
+version = "1.0.100"
 
 [dependencies.clap]
 features = ["derive", "env"]
