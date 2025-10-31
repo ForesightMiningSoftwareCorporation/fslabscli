@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["foresight_mining_software_corporation"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.32.0"
+version = "2.32.1"
 
 [package.metadata.fslabs.publish.binary]
 name = "FSLABS Cli tool"
@@ -155,6 +155,6 @@ assert_fs = "1.1.3"
 dotenvy = "0.15"
 indoc = "2.0.6"
 mockall = "0.13.1"
-reqwest = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 testcontainers = {  version = "0.25.0", features = ["blocking"]}
 wiremock = "0.6.5"

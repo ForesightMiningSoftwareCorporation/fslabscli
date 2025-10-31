@@ -46,8 +46,8 @@
           {
             "x86_64-linux" = rec {
               rustTarget = "x86_64-unknown-linux-musl";
-              pkgsCross = generateCross rustTarget;
-              depsBuildBuild = [ ];
+              pkgsCross = pkgs.pkgsCross.musl64;
+              depsBuildBuild = with pkgsCross.buildPackages; [ stdenv.cc ];
             };
             "aarch64-darwin" = rec {
               rustTarget = "aarch64-apple-darwin";
@@ -134,7 +134,11 @@
             craneLibCross = craneLib.overrideToolchain toolchain;
             TARGET_CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
             commonArgs = (generateCommonArgs craneLibCross) // {
-              inherit depsBuildBuild TARGET_CC;
+              depsBuildBuild = depsBuildBuild ++ [
+                pkgsCross.buildPackages.perl
+                pkgsCross.buildPackages.openssl
+              ];
+              inherit TARGET_CC;
 
               CARGO_BUILD_TARGET = rustTarget;
               CARGO_BUILD_RUSTFLAGS = [
@@ -142,10 +146,16 @@
                 "linker=${TARGET_CC}"
                 "-C"
                 "target-feature=+crt-static"
+                "-C"
+                "link-arg=-static-pie"
               ];
 
               CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
               LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+
+              OPENSSL_STATIC = "1";
+              OPENSSL_NO_VENDOR = "0";
+              PKG_CONFIG_ALL_STATIC = "1";
             };
             cargoArtifacts = craneLibCross.buildDepsOnly (commonArgs // { });
 
@@ -182,20 +192,13 @@
             ) arch2targets;
           in
           lib.attrsets.mapAttrs' (
-            arch: _:
-            let
-              shouldCross = arch != system;
-            in
-            lib.nameValuePair (packageName + "-" + arch) (
-              if shouldCross then (mkCrossRustPackage arch packageName) else (mkRustPackage packageName)
-            )
+            arch: _: lib.nameValuePair (packageName + "-" + arch) (mkCrossRustPackage arch packageName)
           ) filteredTargets;
       in
       {
         packages = individualPackages // {
           default = mkRustPackage "cargo-fslabscli";
           release = pkgs.runCommand "release-binaries" { } ''
-            mkdir -p "$out/bin"
             for pkg in ${
               builtins.concatStringsSep " " (
                 map (p: "${p}/bin") (builtins.attrValues (builtins.removeAttrs individualPackages [ "release" ]))
@@ -224,7 +227,7 @@
                     # self.packages.${system}.default
                     # updatecli
                     cargo-deny
-                    cargo-nextest
+                    # cargo-nextest
                     xunit-viewer
                     protobuf
                     trunk

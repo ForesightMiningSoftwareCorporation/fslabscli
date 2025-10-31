@@ -1113,23 +1113,38 @@ pub async fn report_publish_to_github(
         .await?;
         let octocrab = Octocrab::builder().personal_token(github_token).build()?;
 
-        // Resolve the base_rev (commit SHA) to a git tag using the configured pattern
-        let base_rev = options.base_rev.as_deref().unwrap_or("HEAD~");
-        let release_tag = resolve_commit_to_tag(repo_root, base_rev, &options.tag_pattern)?;
+        // Determine the release tag to upload artifacts to
+        // If base_rev is not set, use HEAD to find the most recent tag
+        let base_rev = options.base_rev.as_deref().unwrap_or("HEAD");
 
-        tracing::info!(
-            "Resolved commit {} to tag: {} (pattern: {})",
-            base_rev,
-            release_tag,
-            options.tag_pattern
-        );
+        // Check if base_rev is already a tag name by trying to verify it exists as a tag
+        let repo = Repository::open(repo_root)
+            .with_context(|| format!("Failed to open git repository at {:?}", repo_root))?;
+
+        let release_tag = if let Ok(_tag_ref) =
+            repo.find_reference(&format!("refs/tags/{}", base_rev))
+        {
+            // base_rev is already a valid tag name, use it directly
+            tracing::info!("Using {} as release tag (already a valid tag)", base_rev);
+            base_rev.to_string()
+        } else {
+            // base_rev is a commit reference, resolve it to a tag
+            let resolved_tag = resolve_commit_to_tag(repo_root, base_rev, &options.tag_pattern)?;
+            tracing::info!(
+                "Resolved commit {} to tag: {} (pattern: {})",
+                base_rev,
+                resolved_tag,
+                options.tag_pattern
+            );
+            resolved_tag
+        };
 
         let repo = octocrab.repos(&options.repo_owner, &options.repo_name);
         let repo_releases = repo.releases();
         let release = repo_releases
             .get_by_tag(&release_tag)
             .await
-            .with_context(|| "Could not find a release".to_string())?;
+            .with_context(|| format!("Could not find a release with tag: {}", release_tag))?;
         let paths = fs::read_dir(artifact_dir)?;
         for artifact in paths.flatten() {
             let artifact_path = artifact.path();
