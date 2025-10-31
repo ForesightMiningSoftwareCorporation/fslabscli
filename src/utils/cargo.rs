@@ -179,7 +179,7 @@ impl CargoRegistry {
         fetch_options.remote_callbacks(callbacks);
         builder.fetch_options(fetch_options);
         builder.clone(&index, path).map_err(|e| {
-            println!("COuln not fetch reg: {}", e);
+            println!("Couldn't not fetch reg: {}", e);
             e
         })?;
         self.local_index_path = Some(path.to_path_buf());
@@ -188,7 +188,7 @@ impl CargoRegistry {
 
     fn get_crate_checksum(&self, package_name: &str, version: &str) -> anyhow::Result<String> {
         let Some(local_index_path) = self.local_index_path.clone() else {
-            return Err(anyhow::anyhow!("Cannot get checksum of unfetched registry"));
+            anyhow::bail!("Cannot get checksum of unfetched registry");
         };
 
         let package_dir = get_package_file_dir(package_name)?;
@@ -217,12 +217,12 @@ impl CargoRegistry {
 
             if pkg_version.version == version {
                 if pkg_version.yanked {
-                    return Err(anyhow::anyhow!(
+                    anyhow::bail!(
                         "Version {} yanked for crate {} in registry {}",
                         version,
                         package_name,
                         self.name
-                    ));
+                    );
                 }
                 return pkg_version.checksum.ok_or_else(|| {
                     anyhow::anyhow!("No checksum for {}@{}", package_name, version)
@@ -230,12 +230,12 @@ impl CargoRegistry {
             }
         }
 
-        Err(anyhow::anyhow!(
+        anyhow::bail!(
             "Version {} not found for crate {} in registry {}",
             version,
             package_name,
             self.name
-        ))
+        )
     }
 }
 
@@ -482,20 +482,18 @@ fn replace_registry_in_cargo_lock(
     let original_index = original_registry
         .index
         .as_ref()
-        .context("Original registry has no index")?;
+        .context(format!("Registry {} has no index", original_registry.name))?;
     let target_index = target_registry
         .index
         .as_ref()
-        .context("Target registry has no index")?;
+        .context(format!("Registry {} has no index", target_registry.name))?;
 
-    original_registry
-        .local_index_path
-        .as_ref()
-        .context("Original registry index not fetched")?;
-    target_registry
-        .local_index_path
-        .as_ref()
-        .context("Target registry index not fetched")?;
+    if original_registry.local_index_path.is_none() {
+        anyhow::bail!("Registry {} index not fetched", original_registry.name);
+    }
+    if original_registry.local_index_path.is_none() {
+        anyhow::bail!("Registry {} index not fetched", target_registry.name);
+    }
 
     // Loop over each line, because serializing /deserializing would mess comment and stuff
     let file = File::open(path)?;
