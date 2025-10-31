@@ -33,7 +33,7 @@ prod = []
 [dependencies]
 base64 = "0.22.1"
 bytes = "1.10.1"
-cargo_metadata = "0.22.0"
+cargo_metadata = "0.23.0"
 chrono = "0.4.42"
 console = "0.16.1"
 convert_case = "0.8.0"
