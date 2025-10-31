@@ -13,6 +13,7 @@ use void::Void;
 
 pub mod auto_update;
 pub mod cargo;
+pub mod docker;
 pub mod github;
 #[cfg(test)]
 pub mod test;
