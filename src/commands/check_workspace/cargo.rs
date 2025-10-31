@@ -72,7 +72,10 @@ mod tests {
     use super::*;
     use crate::utils::cargo::CrateChecker;
 
-    struct TestCargo {}
+    #[derive(Default)]
+    struct TestCargo {
+        pub exists: bool,
+    }
     impl CrateChecker for TestCargo {
         async fn check_crate_exists(
             &self,
@@ -80,17 +83,17 @@ mod tests {
             _name: String,
             _version: String,
         ) -> anyhow::Result<bool> {
-            Ok(false)
+            Ok(self.exists)
         }
     }
 
     #[tokio::test]
-    async fn test_standard_publish_is_respected_when_publish() {
+    async fn test_standard_publish_is_respected_when_publish_inexisting_crate() {
         let toml = r#"
         publish = true
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo {};
+        let cargo = TestCargo::default();
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -102,12 +105,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_standard_publish_is_respected_when_not_publish() {
+    async fn test_standard_publish_is_respected_when_not_publish_inexisting_crate() {
         let toml = r#"
         publish = false
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo {};
+        let cargo = TestCargo::default();
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -119,11 +122,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_default_to_not() {
+    async fn test_publish_default_to_not_inexisting_crate() {
         let toml = r#"
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo {};
+        let cargo = TestCargo::default();
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -135,11 +138,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_default_to_not_except_if_force() {
+    async fn test_publish_default_to_not_except_if_force_inexisting_crate() {
         let toml = r#"
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo {};
+        let cargo = TestCargo::default();
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -151,12 +154,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_default_to_not_except_if_force_but_respect_package_settings() {
+    async fn test_publish_default_to_not_except_if_force_but_respect_package_settings_inexisting_crate()
+     {
         let toml = r#"
         publish = false
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo {};
+        let cargo = TestCargo::default();
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, true)
+            .await
+            .unwrap();
+
+        assert!(!cargo_publish.publish);
+    }
+    #[tokio::test]
+    async fn test_not_publish_if_standard_publish_but_existing_crate() {
+        let toml = r#"
+        publish = true
+        "#;
+        let cargo = TestCargo { exists: true };
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        cargo_publish
+            .check("test".to_string(), "1.0.0".to_string(), &cargo, false)
+            .await
+            .unwrap();
+
+        assert!(!cargo_publish.publish);
+    }
+
+    #[tokio::test]
+    async fn test_not_publish_if_force_publish_but_existing_crate() {
+        let toml = r#"
+        publish = true
+        alternate_registries = ["test_registry"]
+        "#;
+        let cargo = TestCargo { exists: true };
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish

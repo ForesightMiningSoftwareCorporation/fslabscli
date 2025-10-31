@@ -2,13 +2,6 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::path::PathBuf;
 
 use clap::Parser;
-use http_body_util::BodyExt;
-use http_body_util::Empty;
-use hyper::body::Bytes;
-use hyper::{Method, Request};
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::Client as HyperClient;
-use hyper_util::client::legacy::connect::HttpConnector;
 use run_types::{JobType, RunTypeOutput};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -154,53 +147,6 @@ fn get_outcome_color(outcome: CheckOutcome, required: bool) -> String {
 
 // TODO: This is copyied from mining-bot, it should probably be shared between the two
 //
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct Step {
-    pub name: String,
-    pub number: usize,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[non_exhaustive]
-pub struct WorkflowJobInstanceRaw {
-    pub id: usize,
-    pub html_url: String,
-    pub steps: Vec<Step>,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[non_exhaustive]
-pub struct WorkflowJobInstance {
-    pub run_id: String,
-    pub run_attempt: String,
-    pub raw: WorkflowJobInstanceRaw,
-}
-
-async fn _get_workflow_info(
-    client: &HyperClient<HttpsConnector<HttpConnector>, Empty<Bytes>>,
-    url: String,
-) -> anyhow::Result<WorkflowJobInstance> {
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(url.clone())
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .body(Empty::default())?;
-
-    let res = client.request(req).await?;
-    if res.status().as_u16() >= 400 {
-        anyhow::bail!("Something went wrong while getting npm api data");
-    }
-
-    let body = res.into_body().collect().await?.to_bytes();
-
-    let body_str = String::from_utf8_lossy(&body);
-
-    Ok(serde_json::from_str::<WorkflowJobInstance>(
-        body_str.as_ref(),
-    )?)
-}
 
 // pub async fn checks_summaries(
 //     options: Box<Options>,

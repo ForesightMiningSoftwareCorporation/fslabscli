@@ -1206,7 +1206,7 @@ pub async fn publish(
             registries.extend(r);
         }
     }
-    let cargo = Arc::new(Cargo::new(&registries)?);
+    let cargo = Arc::new(Cargo::new(&registries, true)?);
     let semaphore = Arc::new(Semaphore::new(common_options.job_limit));
 
     let mut handles = vec![];

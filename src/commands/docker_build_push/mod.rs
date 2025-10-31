@@ -52,9 +52,6 @@ pub struct DockerBuildPushResult {
     digest: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct CreateAccessToken {}
-
 impl Display for DockerBuildPushResult {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.image_id)

@@ -1025,7 +1025,7 @@ pub async fn check_workspace(
         options.npm_registry_npmrc_path.clone(),
         true,
     )?;
-    let cargo = Cargo::new(&all_packages_registries)?;
+    let cargo = Cargo::new(&all_packages_registries, false)?;
     let mut docker = Docker::new(None)?;
     if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
         options.docker_registry.clone(),

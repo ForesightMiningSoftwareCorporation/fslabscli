@@ -1,11 +1,11 @@
 use std::{
-    fs::{File, OpenOptions, create_dir_all},
+    fs::{self, File, OpenOptions, create_dir_all},
     io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use git2::Repository;
+use git2::{Repository, Signature};
 
 pub fn commit_all_changes(repo_path: &PathBuf, message: &str) {
     stage_all(repo_path);
@@ -40,7 +40,7 @@ pub fn commit_repo(repo_path: &PathBuf, commit_message: &str) {
     let mut index = repo.index().unwrap();
 
     let oid = index.write_tree().unwrap();
-    let signature = repo.signature().unwrap();
+    let signature = Signature::now("Test User", "test@example.com").unwrap();
     let tree = repo.find_tree(oid).unwrap();
     let parent_commit = repo
         .head()
@@ -212,6 +212,54 @@ pub fn create_complex_workspace() -> PathBuf {
         "[toolchain]\nprofile = \"default\"\n channel = \"1.88\"",
     );
     // Stage and commit initial crate
+    commit_all_changes(&tmp, "Initial commit");
+    dunce::canonicalize(tmp).unwrap()
+}
+
+pub fn create_rust_index(checksum: &str) -> PathBuf {
+    let tmp = assert_fs::TempDir::new()
+        .unwrap()
+        .into_persistent()
+        .to_path_buf();
+
+    let _repo = Repository::init(&tmp).expect("Failed to init repo");
+
+    // Create config.json
+    let config_path = tmp.join("config.json");
+    let mut config = File::create(config_path).unwrap();
+    write!(config, r#"{{"dl":"https://example.com"}}"#).unwrap();
+
+    // Create crate directory structure
+    let crate_dir = tmp.join("cr/at");
+    fs::create_dir_all(&crate_dir).unwrap();
+
+    // Create crate index file with version entries
+    let crate_file_path = crate_dir.join("crate-test");
+    let mut crate_file = File::create(crate_file_path).unwrap();
+
+    let entries = [
+        format!(
+            r#"{{"name":"crate-test","vers":"0.1.0","deps":[],"features":{{}},"cksum":"{}","yanked":false,"links":null}}"#,
+            checksum
+        ),
+        format!(
+            r#"{{"name":"crate-test","vers":"0.2.0","deps":[],"features":{{}},"cksum":"{}","yanked":false,"links":null}}"#,
+            checksum
+        ),
+        format!(
+            r#"{{"name":"crate-test","vers":"0.2.2","deps":[],"features":{{}},"cksum":"{}","yanked":false,"links":null}}"#,
+            checksum
+        ),
+        format!(
+            r#"{{"name":"crate-test","vers":"0.2.3","deps":[],"features":{{}},"cksum":"{}","yanked":true,"links":null}}"#,
+            checksum
+        ),
+    ];
+
+    for entry in entries {
+        writeln!(crate_file, "{}", entry).unwrap();
+    }
+
     commit_all_changes(&tmp, "Initial commit");
     dunce::canonicalize(tmp).unwrap()
 }
