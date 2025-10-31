@@ -188,7 +188,6 @@ mod tests {
         assert_eq!(head.id(), commit_oid);
     }
 
-
     #[test]
     fn test_diff_strategy_explicit() {
         let (temp_dir, first_oid, second_oid) = setup_test_repo();
@@ -262,7 +261,6 @@ mod tests {
         let result = strategy.git_commits(&repo);
         assert!(result.is_err());
     }
-
 
     #[test]
     fn test_display_local_changes() {
