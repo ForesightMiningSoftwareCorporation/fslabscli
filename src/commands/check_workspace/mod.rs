@@ -24,10 +24,10 @@ use serde_yml::Value;
 use strum_macros::EnumString;
 
 use crate::commands::check_workspace::binary::BinaryStore;
-use crate::commands::check_workspace::docker::Docker;
 use crate::crate_graph::CrateGraph;
 use crate::test_args::TestArgs;
 use crate::utils::cargo::Cargo;
+use crate::utils::docker::{Docker, RealHttpClient, RealOciClient};
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::PackageMetadataFslabsCiPublishCargo;
 use docker::PackageMetadataFslabsCiPublishDocker;
@@ -84,11 +84,11 @@ where
 pub struct Options {
     #[arg(long, default_value_t = false)]
     skip_docker: bool,
-    #[arg(long)]
+    #[arg(long, env)]
     docker_registry: Option<String>,
-    #[arg(long)]
+    #[arg(long, env)]
     docker_registry_username: Option<String>,
-    #[arg(long)]
+    #[arg(long, env)]
     docker_registry_password: Option<String>,
     #[arg(long, default_value_t = false)]
     skip_npm: bool,
@@ -290,6 +290,8 @@ fn get_blob_name(
             .to_lowercase(),
     )
 }
+
+type Type = RealOciClient;
 
 impl Result {
     pub fn new(
@@ -651,7 +653,7 @@ impl Result {
         cargo: &Cargo,
         force_cargo: bool,
         skip_docker: bool,
-        docker: &mut Docker,
+        docker: &mut Docker<Type, RealHttpClient>,
         skip_binary: bool,
         skip_s3: bool,
         binary_store: &Option<BinaryStore>,
