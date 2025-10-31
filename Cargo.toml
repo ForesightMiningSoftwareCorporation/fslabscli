@@ -80,7 +80,7 @@ self_update = { version = "0.42.0", default-features = false, features = [
    "rustls",
 ] }
 tempfile = "3.22.0"
-cargo-util = "0.2.22"
+cargo-util = "0.2.24"
 diffy = "0.4.2"
 strum = "0.27.2"
 mime_guess = "2.0.5"
