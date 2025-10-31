@@ -79,7 +79,7 @@ walkdir = "2.5.0"
 self_update = { version = "0.42.0", default-features = false, features = [
    "rustls",
 ] }
-tempfile = "3.22.0"
+tempfile = "3.23.0"
 cargo-util = "0.2.24"
 diffy = "0.4.2"
 strum = "0.27.2"
