@@ -39,7 +39,7 @@ use crate::{
 #[derive(Debug, Parser, Default, Clone)]
 #[command(about = "Run rust tests")]
 pub struct Options {
-    #[clap(long, env = "PULL_BASE_REV", alias = "pull-base-ref")]
+    #[clap(long, env = "PULL_BASE_REF", alias = "pull-base-ref")]
     base_rev: Option<String>,
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
@@ -1175,15 +1175,38 @@ pub async fn publish(
         options.base_rev_regex,
         options.base_rev
     );
-    let mut whitelist = common_options.whitelist.clone();
 
     let base_rev = options.base_rev.as_deref().unwrap_or("HEAD~");
+    let mut whitelist = if options.base_rev_regex.is_some() {
+        // When using regex, start with empty whitelist
+        // Only packages matching the regex will be added
+        Vec::new()
+    } else {
+        common_options.whitelist.clone()
+    };
+
     if let Some(regex) = &options.base_rev_regex {
         let re = Regex::new(regex)?;
         if let Some(captures) = re.captures(base_rev)
             && let Some(package_name_match) = captures.get(1)
         {
             whitelist.push(package_name_match.as_str().to_string());
+            tracing::info!(
+                "Regex '{}' matched base_rev '{}'. Adding '{}' to whitelist",
+                regex,
+                base_rev,
+                package_name_match.as_str()
+            );
+        } else {
+            tracing::warn!(
+                "base_rev_regex '{}' did not match base_rev '{}'. No packages will be published.",
+                regex,
+                base_rev
+            );
+            return Ok(PublishResults {
+                published_members: HashMap::new(),
+                all_members: HashMap::new(),
+            });
         }
     }
     common_options.whitelist = whitelist;
