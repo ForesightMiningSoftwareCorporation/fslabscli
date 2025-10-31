@@ -1,5 +1,8 @@
 use crate::{
-    PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph, script::CommandOutput,
+    PackageRelatedOptions, PrettyPrintable,
+    cli_args::{DiffOptions, DiffStrategy},
+    crate_graph::CrateGraph,
+    script::CommandOutput,
 };
 use clap::Parser;
 use diffy::create_patch;
@@ -13,6 +16,8 @@ pub struct Options {
     /// Run the fix in check mode, if set, an updated lockfile would yield an error
     #[arg(long)]
     check: bool,
+    #[clap(flatten)]
+    diff: DiffOptions,
 }
 
 /// Fix mistakes in all workspace `Cargo.lock` files.
@@ -33,8 +38,7 @@ pub struct Options {
 pub fn fix_workspace_lockfile(
     repo_root: &Path,
     workspace_path: &Path,
-    head_rev: String,
-    base_rev: Option<String>,
+    diff_strategy: &DiffStrategy,
     check: bool,
 ) -> anyhow::Result<CommandOutput> {
     let lock_path = workspace_path.join("Cargo.lock");
@@ -46,14 +50,9 @@ pub fn fix_workspace_lockfile(
         }
     };
 
-    if let Some(base_rev) = base_rev {
-        let repo = Repository::open(repo_root)?;
-
-        // Do this resolution before making any changes to the repo, so e.g.
-        // "HEAD" is correct.
-        let head_commit = repo.revparse_single(&head_rev)?;
-        let base_commit = repo.revparse_single(&base_rev)?;
-
+    let repo = Repository::open(repo_root)?;
+    let (base_commit, head_commit) = diff_strategy.git_commits(&repo)?;
+    if let DiffStrategy::Explicit { .. } = diff_strategy {
         // Restore `Cargo.lock` file to its state at `base_rev`.
         debug!("checking out {}", base_commit.id());
         let mut builder = CheckoutBuilder::new();
@@ -102,9 +101,9 @@ pub fn fix_workspace_lockfile(
             let mut diff_output = String::new();
 
             diff_output.push_str(&format!(
-                "Diff in {} at {}:\n",
+                "Diff in {} at {:?}:\n",
                 lock_path.display(),
-                head_rev
+                head_commit
             ));
             let orig = orig_lockfile.as_deref().unwrap_or("");
             let updated = updated_lockfile.as_deref().unwrap_or("");
@@ -143,11 +142,9 @@ pub fn fix_lock_files(
 ) -> anyhow::Result<LockResult> {
     let PackageRelatedOptions {
         cargo_main_registry,
-        head_rev,
-        base_rev,
         ..
     } = common_options;
-    let Options { check } = options;
+    let Options { check, diff } = options;
 
     let graph = CrateGraph::new(repo_root, cargo_main_registry.clone(), None)?;
     let check_workspaces: Vec<_> = graph
@@ -157,14 +154,10 @@ pub fn fix_lock_files(
         .map(|w| repo_root.join(&w.path))
         .collect();
 
+    let diff_strategy = diff.strategy();
+
     for workspace_path in check_workspaces {
-        fix_workspace_lockfile(
-            repo_root,
-            &workspace_path,
-            head_rev.clone(),
-            base_rev.clone(),
-            *check,
-        )?;
+        fix_workspace_lockfile(repo_root, &workspace_path, &diff_strategy, *check)?;
     }
 
     Ok("".into())

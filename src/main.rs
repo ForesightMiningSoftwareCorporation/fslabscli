@@ -33,6 +33,7 @@ use tracing_core::Level;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod cli_args;
 mod commands;
 mod crate_graph;
 mod script;
@@ -65,18 +66,9 @@ struct Cli {
     fslabscli_auto_update: bool,
 }
 
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Parser, Clone, Default)]
 #[command()]
 pub struct PackageRelatedOptions {
-    #[clap(
-        long,
-        env = "PULL_PULL_SHA",
-        default_value = "HEAD",
-        alias = "pull-pull-ref"
-    )]
-    head_rev: String,
-    #[clap(long, env = "PULL_BASE_SHA", alias = "pull-base-ref")]
-    base_rev: Option<String>,
     #[arg(long, env, default_value = "1")]
     job_limit: usize,
     #[arg(long, env, default_value = "0")]
@@ -92,21 +84,6 @@ pub struct PackageRelatedOptions {
     /// Display progress
     #[arg(long, default_value_t = false)]
     progress: bool,
-}
-
-impl Default for PackageRelatedOptions {
-    fn default() -> Self {
-        Self {
-            head_rev: "HEAD".to_string(),
-            base_rev: None,
-            job_limit: Default::default(),
-            inner_job_limit: Default::default(),
-            cargo_main_registry: Default::default(),
-            whitelist: Default::default(),
-            blacklist: Default::default(),
-            progress: Default::default(),
-        }
-    }
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize)]

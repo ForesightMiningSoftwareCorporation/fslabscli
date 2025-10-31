@@ -39,6 +39,8 @@ use crate::{
 #[derive(Debug, Parser, Default, Clone)]
 #[command(about = "Run rust tests")]
 pub struct Options {
+    #[clap(long, env = "PULL_BASE_REV", alias = "pull-base-ref")]
+    base_rev: Option<String>,
     #[clap(long, env, default_value = ".")]
     artifacts: PathBuf,
     #[clap(long, env)]
@@ -1093,7 +1095,7 @@ fn resolve_commit_to_tag(
 }
 
 pub async fn report_publish_to_github(
-    common_options: &PackageRelatedOptions,
+    _common_options: &PackageRelatedOptions,
     options: &Options,
     artifact_dir: &PathBuf,
     repo_root: &PathBuf,
@@ -1112,7 +1114,7 @@ pub async fn report_publish_to_github(
         let octocrab = Octocrab::builder().personal_token(github_token).build()?;
 
         // Resolve the base_rev (commit SHA) to a git tag using the configured pattern
-        let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
+        let base_rev = options.base_rev.as_deref().unwrap_or("HEAD~");
         let release_tag = resolve_commit_to_tag(repo_root, base_rev, &options.tag_pattern)?;
 
         tracing::info!(
@@ -1171,11 +1173,11 @@ pub async fn publish(
         "Got whitelist, regex, baseref: {:?} -- {:?} -- {:?}",
         common_options.whitelist,
         options.base_rev_regex,
-        common_options.base_rev
+        options.base_rev
     );
     let mut whitelist = common_options.whitelist.clone();
 
-    let base_rev = common_options.base_rev.as_deref().unwrap_or("HEAD~");
+    let base_rev = options.base_rev.as_deref().unwrap_or("HEAD~");
     if let Some(regex) = &options.base_rev_regex {
         let re = Regex::new(regex)?;
         if let Some(captures) = re.captures(base_rev)
