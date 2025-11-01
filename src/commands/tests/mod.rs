@@ -128,12 +128,52 @@ async fn count_nextest_tests(package_path: &PathBuf) -> usize {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct JUnitTestSuites {
+    #[serde(rename = "testsuite", default)]
+    testsuite: Vec<JUnitTestSuite>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JUnitTestSuite {
+    #[serde(rename = "testcase", default)]
+    testcase: Vec<JUnitTestCase>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JUnitTestCase {
+    #[serde(rename = "@name")]
+    name: String,
+    #[serde(rename = "@time")]
+    time: f64,
+    #[serde(default)]
+    failure: Option<JUnitFailure>,
+    #[serde(default)]
+    skipped: Option<JUnitSkipped>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JUnitFailure {
+    #[serde(rename = "@message", default)]
+    message: String,
+    #[serde(rename = "$text", default)]
+    text: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JUnitSkipped {
+    #[serde(rename = "@message", default)]
+    #[allow(dead_code)]
+    message: String,
+}
+
 fn merge_nextest_junit(
     testsuite: &mut junit_report::TestSuite,
     junit_path: &PathBuf,
-    package_name: &str,
+    member: &super::check_workspace::Result,
     current_step: usize,
     total_steps: usize,
+    metrics: &Metrics,
 ) -> anyhow::Result<()> {
     use quick_xml::de::from_str;
 
@@ -145,44 +185,9 @@ fn merge_nextest_junit(
     let xml_content = std::fs::read_to_string(junit_path)?;
 
     // Nextest generates: <testsuites><testsuite><testcase/></testsuite></testsuites>
-    #[derive(Debug, serde::Deserialize)]
-    struct JUnitTestSuites {
-        #[serde(rename = "testsuite", default)]
-        testsuite: Vec<JUnitTestSuite>,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    struct JUnitTestSuite {
-        #[serde(rename = "testcase", default)]
-        testcase: Vec<JUnitTestCase>,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    struct JUnitTestCase {
-        #[serde(rename = "@name")]
-        name: String,
-        #[serde(rename = "@time")]
-        time: f64,
-        #[serde(default)]
-        failure: Option<JUnitFailure>,
-        #[serde(default)]
-        skipped: Option<JUnitSkipped>,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    struct JUnitFailure {
-        #[serde(rename = "@message", default)]
-        message: String,
-        #[serde(rename = "$text", default)]
-        text: String,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    struct JUnitSkipped {
-        #[serde(rename = "@message", default)]
-        #[allow(dead_code)]
-        message: String,
-    }
+    let workspace_name = member.workspace.clone();
+    let package_name = member.package.clone();
+    let package_version = member.version.clone();
 
     match from_str::<JUnitTestSuites>(&xml_content) {
         Ok(junit_data) => {
@@ -200,18 +205,44 @@ fn merge_nextest_junit(
                         test_case.name
                     );
 
-                    let tc = if let Some(failure) = test_case.failure {
-                        TestCase::failure(
-                            &test_name,
-                            duration,
-                            "test",
-                            &format!("{}\n{}", failure.message, failure.text),
+                    let test_command = format!("nextest {}", test_case.name);
+
+                    let (tc, status) = if let Some(failure) = test_case.failure {
+                        (
+                            TestCase::failure(
+                                &test_name,
+                                duration,
+                                "test",
+                                &format!("{}\n{}", failure.message, failure.text),
+                            ),
+                            "FAIL",
                         )
                     } else if test_case.skipped.is_some() {
-                        TestCase::skipped(&test_name)
+                        (TestCase::skipped(&test_name), "SKIPPED")
                     } else {
-                        TestCase::success(&test_name, duration)
+                        (TestCase::success(&test_name, duration), "PASS")
                     };
+                    // Register metrics and tc for the all test
+                    metrics.test_duration_h.record(
+                        duration.as_seconds_f64(),
+                        &[
+                            KeyValue::new("workspace_name", workspace_name.clone()),
+                            KeyValue::new("package_name", package_name.clone()),
+                            KeyValue::new("package_version", package_version.clone()),
+                            KeyValue::new("test_command", test_command.clone()),
+                            KeyValue::new("status", status),
+                        ],
+                    );
+                    metrics.test_counter.add(
+                        1,
+                        &[
+                            KeyValue::new("workspace_name", workspace_name.clone()),
+                            KeyValue::new("package_name", package_name.clone()),
+                            KeyValue::new("package_version", package_version.clone()),
+                            KeyValue::new("test_command", test_command.clone()),
+                            KeyValue::new("status", status),
+                        ],
+                    );
 
                     testsuite.add_testcase(tc);
                     merged_count += 1;
@@ -382,11 +413,11 @@ async fn do_test_on_package(
     let mut failed = false;
 
     let member_start_time = OffsetDateTime::now_utc();
-    let workspace_name = member.workspace;
-    let package_name = member.package;
-    let package_version = member.version;
-    let package_path = repo_root.join(member.path);
-    let test_args = member.test_detail.args.unwrap_or_default();
+    let workspace_name = &member.workspace;
+    let package_name = &member.package;
+    let package_version = &member.version;
+    let package_path = repo_root.join(&member.path);
+    let test_args = member.test_detail.args.clone().unwrap_or_default();
     let use_nextest = has_cargo_nextest().await;
     let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
     let mut postgres_process = None;
@@ -866,49 +897,50 @@ async fn do_test_on_package(
                 }
             };
 
-            metrics.test_duration_h.record(
-                duration.as_seconds_f64(),
-                &[
-                    KeyValue::new("workspace_name", workspace_name.clone()),
-                    KeyValue::new("package_name", package_name.clone()),
-                    KeyValue::new("package_version", package_version.clone()),
-                    KeyValue::new("test_command", fslabs_test.command.clone()),
-                    KeyValue::new("status", status),
-                ],
-            );
-            metrics.test_counter.add(
-                1,
-                &[
-                    KeyValue::new("workspace_name", workspace_name.clone()),
-                    KeyValue::new("package_name", package_name.clone()),
-                    KeyValue::new("package_version", package_version.clone()),
-                    KeyValue::new("test_command", fslabs_test.command.clone()),
-                    KeyValue::new("status", status),
-                ],
-            );
-            tc.set_system_out(&test_output.stderr);
-            tc.set_system_err(&test_output.stdout);
-            match fslabs_test.optional {
-                true => ts_optional.add_testcase(tc),
-                false => ts_mandatory.add_testcase(tc),
-            };
-
-            // Parse and merge nextest JUnit XML if this is a cargo_test step with subtests
-            if fslabs_test.parse_subtests
-                && fslabs_test.id == "cargo_test"
-                && let Err(e) = merge_nextest_junit(
+            if fslabs_test.parse_subtests && fslabs_test.id == "cargo_test" {
+                // Parse and merge nextest JUnit XML if this is a cargo_test step with subtests
+                if let Err(e) = merge_nextest_junit(
                     if fslabs_test.optional {
                         &mut ts_optional
                     } else {
                         &mut ts_mandatory
                     },
                     &nextest_junit_path,
-                    &package_name,
+                    &member,
                     i, // current_step - this is the cargo_test step number
                     test_steps,
-                )
-            {
-                tracing::warn!("Failed to merge nextest JUnit results: {}", e);
+                    &metrics,
+                ) {
+                    tracing::warn!("Failed to merge nextest JUnit results: {}", e);
+                }
+            } else {
+                // Register metrics and tc for the all test
+                metrics.test_duration_h.record(
+                    duration.as_seconds_f64(),
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", status),
+                    ],
+                );
+                metrics.test_counter.add(
+                    1,
+                    &[
+                        KeyValue::new("workspace_name", workspace_name.clone()),
+                        KeyValue::new("package_name", package_name.clone()),
+                        KeyValue::new("package_version", package_version.clone()),
+                        KeyValue::new("test_command", fslabs_test.command.clone()),
+                        KeyValue::new("status", status),
+                    ],
+                );
+                tc.set_system_out(&test_output.stderr);
+                tc.set_system_err(&test_output.stdout);
+                match fslabs_test.optional {
+                    true => ts_optional.add_testcase(tc),
+                    false => ts_mandatory.add_testcase(tc),
+                };
             }
         }
     }
