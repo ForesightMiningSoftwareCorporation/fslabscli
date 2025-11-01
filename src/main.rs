@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::{env, io};
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
@@ -180,10 +181,14 @@ fn init_metrics(with_unique_attributes: bool) -> SdkMeterProvider {
         .build()
         .unwrap();
 
-    MeterProviderBuilder::default()
+    let provider = MeterProviderBuilder::default()
         .with_resource(get_resource(with_unique_attributes))
         .with_periodic_exporter(exporter)
-        .build()
+        .build();
+
+    global::set_meter_provider(provider.clone());
+
+    provider
 }
 
 fn init_traces() -> SdkTracerProvider {
@@ -192,10 +197,14 @@ fn init_traces() -> SdkTracerProvider {
         .build()
         .unwrap();
 
-    SdkTracerProvider::builder()
+    let provider = SdkTracerProvider::builder()
         .with_resource(get_resource(true))
         .with_batch_exporter(exporter)
-        .build()
+        .build();
+
+    global::set_tracer_provider(provider.clone());
+
+    provider
 }
 
 fn init_logs() -> SdkLoggerProvider {
@@ -242,9 +251,7 @@ pub fn setup_logging(verbosity: u8) -> OtelGuard {
         .init();
 
     let traces_provider = init_traces();
-    global::set_tracer_provider(traces_provider.clone());
     let metrics_provider = init_metrics(true);
-    global::set_meter_provider(metrics_provider.clone());
 
     OtelGuard {
         traces_provider,
@@ -259,7 +266,7 @@ pub struct OtelGuard {
     log_provider: SdkLoggerProvider,
 }
 
-impl OtelGuard {
+impl Drop for OtelGuard {
     fn drop(&mut self) {
         if let Err(err) = self.traces_provider.shutdown() {
             eprintln!("{err:?}");
@@ -292,7 +299,7 @@ fn display_results<T: Serialize + Display + PrettyPrintable>(
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Could not install crypto provider");
@@ -308,7 +315,7 @@ async fn main() {
         .and_then(|matches| matches.get_one::<u8>("verbose").cloned())
         .unwrap_or(2);
 
-    let mut guard = setup_logging(log_level);
+    let _guard = setup_logging(log_level);
 
     let fslabscli_auto_update = matches
         .and_then(|matches| matches.get_one::<bool>("fslabscli_auto_update").cloned())
@@ -318,12 +325,21 @@ async fn main() {
         println!("Error trying to update:{err:?}");
     }
 
-    run().await;
+    let r = run().await;
 
-    guard.drop();
+    match r {
+        Ok(r) => {
+            println!("{r}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            tracing::error!("Could not execute command: {}", e);
+            ExitCode::FAILURE
+        }
+    }
 }
 
-async fn run() {
+async fn run() -> anyhow::Result<String> {
     let cli = Cli::parse();
 
     // generate man pages and completions upon request and exit
@@ -334,7 +350,7 @@ async fn run() {
             let mut output_handle = output.lock();
             let bin_name = clap_command.get_name().to_owned();
             generate(shell, &mut clap_command, bin_name, &mut output_handle);
-            return;
+            return Ok(String::new());
         }
         Commands::ManPage => {
             let clap_command = Cli::command();
@@ -351,7 +367,7 @@ async fn run() {
                     .unwrap();
                 primary.render_options_section(&mut output_handle).unwrap();
             }
-            return;
+            return Ok(String::new());
         }
         _ => {} // nothing to do, will be handled later
     };
@@ -360,7 +376,7 @@ async fn run() {
     let repo_root = find_git_root(&cli.working_directory)
         .unwrap_or_else(|| panic!("Could not find git root from {working_directory:?}"));
 
-    let result = match cli.command {
+    match cli.command {
         Commands::GenerateReleaseWorkflow(options) => generate_workflow(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
@@ -407,16 +423,5 @@ async fn run() {
                 "Request for completions script or man pages should have been handled earlier and the program should have exited then."
             );
         }
-    };
-
-    match result {
-        Ok(r) => {
-            println!("{r}");
-            std::process::exit(exitcode::OK);
-        }
-        Err(e) => {
-            tracing::error!("Could not execute command: {}", e);
-            std::process::exit(exitcode::DATAERR);
-        }
-    };
+    }
 }
