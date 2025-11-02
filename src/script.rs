@@ -197,13 +197,51 @@ impl ScriptTask {
 
     pub async fn wait(mut self) -> anyhow::Result<CommandOutput> {
         let status = self.child.wait().await?;
+        tracing::debug!("Child exited with status {status}");
         let (stdout, stderr) = self.pipe_task.await?;
+        tracing::trace!("Child stdout/stderr pipe task exited");
         Ok(CommandOutput {
             stdout: stdout.unwrap_or_default(),
             stderr: stderr.unwrap_or_default(),
             success: status.success(),
         })
     }
+}
+
+// TODO: return Result
+async fn pipe_stdio(
+    script_name: Option<String>,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    collect_stdout: bool,
+    collect_stderr: bool,
+    log_stdout: Option<tracing::Level>,
+    log_stderr: Option<tracing::Level>,
+) -> (Option<String>, Option<String>) {
+    // WARNING: It is important that these pipes are polled concurrently.
+    // Otherwise it's possible to encounter a deadlock because process IO pipes
+    // have fixed-size buffers.
+    //
+    // For example, if the stdout pipe's buffer is full, the child will block
+    // before writing more; if we are not consuming that pipe, but instead
+    // waiting for a new line from stderr, that is a deadlock.
+    //
+    tokio::join!(
+        pipe_output(
+            "stdout",
+            collect_stdout,
+            log_stdout,
+            stdout,
+            script_name.as_deref()
+        ),
+        pipe_output(
+            "stderr",
+            collect_stderr,
+            log_stderr,
+            stderr,
+            script_name.as_deref(),
+        )
+    )
 }
 
 macro_rules! dyn_event {
@@ -218,56 +256,27 @@ macro_rules! dyn_event {
     };
 }
 
-// TODO: return Result
-async fn pipe_stdio(
-    script_name: Option<String>,
-    stdout: ChildStdout,
-    stderr: ChildStderr,
-    collect_stdout: bool,
-    collect_stderr: bool,
-    log_stdout: Option<tracing::Level>,
-    log_stderr: Option<tracing::Level>,
-) -> (Option<String>, Option<String>) {
-    let mut stdout_stream = tokio::io::BufReader::new(stdout).lines();
-    let mut stdout_string = String::new();
-
-    let mut stderr_stream = tokio::io::BufReader::new(stderr).lines();
-    let mut stderr_string = String::new();
-
-    loop {
-        tokio::select! {
-            Ok(Some(line)) = stdout_stream.next_line() =>  {
-                if collect_stdout {
-                    stdout_string.push_str(&line);
-                    stdout_string.push('\n');
-                }
-                if let Some(level) = log_stdout {
-                    if let Some(name) = &script_name {
-                        dyn_event!(level, name, io = "stdout", "{line}");
-                    } else {
-                        dyn_event!(level, io = "stdout", "{line}");
-                    }
-                }
-            },
-            Ok(Some(line)) = stderr_stream.next_line() =>  {
-                if collect_stderr {
-                    stderr_string.push_str(&line);
-                    stderr_string.push('\n');
-                }
-                if let Some(level) = log_stderr {
-                    if let Some(name) = &script_name {
-                        dyn_event!(level, name, io = "stderr", "{line}");
-                    } else {
-                        dyn_event!(level, io = "stderr", "{line}");
-                    }
-                }
-            },
-            else => break,
+async fn pipe_output<R: tokio::io::AsyncRead + Unpin>(
+    pipe_name: &str,
+    collect: bool,
+    log_level: Option<tracing::Level>,
+    stream: R,
+    script_name: Option<&str>,
+) -> Option<String> {
+    let mut stream = tokio::io::BufReader::new(stream).lines();
+    let mut out_string = String::new();
+    while let Ok(Some(line)) = stream.next_line().await {
+        if collect {
+            out_string.push_str(&line);
+            out_string.push('\n');
+        }
+        if let Some(level) = log_level {
+            if let Some(name) = &script_name {
+                dyn_event!(level, name, io = pipe_name, "{line}");
+            } else {
+                dyn_event!(level, io = pipe_name, "{line}");
+            }
         }
     }
-
-    (
-        collect_stdout.then_some(stdout_string),
-        collect_stderr.then_some(stderr_string),
-    )
+    collect.then_some(out_string)
 }
