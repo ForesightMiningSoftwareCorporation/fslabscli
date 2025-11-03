@@ -228,14 +228,14 @@ async fn pipe_stdio(
     //
     tokio::join!(
         pipe_output(
-            "stdout",
+            PipeChannel::Stdout,
             collect_stdout,
             log_stdout,
             stdout,
             script_name.as_deref()
         ),
         pipe_output(
-            "stderr",
+            PipeChannel::Stderr,
             collect_stderr,
             log_stderr,
             stderr,
@@ -245,19 +245,24 @@ async fn pipe_stdio(
 }
 
 macro_rules! dyn_event {
-    ($lvl:ident, $($arg:tt)+) => {
+    ($lvl:ident, target = $target:expr, $($arg:tt)+) => {
         match $lvl {
-            ::tracing::Level::TRACE => ::tracing::trace!($($arg)+),
-            ::tracing::Level::DEBUG => ::tracing::debug!($($arg)+),
-            ::tracing::Level::INFO => ::tracing::info!($($arg)+),
-            ::tracing::Level::WARN => ::tracing::warn!($($arg)+),
-            ::tracing::Level::ERROR => ::tracing::error!($($arg)+),
+            ::tracing::Level::TRACE => ::tracing::trace!(target: $target, $($arg)+),
+            ::tracing::Level::DEBUG => ::tracing::debug!(target: $target, $($arg)+),
+            ::tracing::Level::INFO => ::tracing::info!(target: $target, $($arg)+),
+            ::tracing::Level::WARN => ::tracing::warn!(target: $target, $($arg)+),
+            ::tracing::Level::ERROR => ::tracing::error!(target: $target, $($arg)+),
         }
     };
 }
 
+enum PipeChannel {
+    Stdout,
+    Stderr,
+}
+
 async fn pipe_output<R: tokio::io::AsyncRead + Unpin>(
-    pipe_name: &str,
+    channel: PipeChannel,
     collect: bool,
     log_level: Option<tracing::Level>,
     stream: R,
@@ -271,10 +276,20 @@ async fn pipe_output<R: tokio::io::AsyncRead + Unpin>(
             out_string.push('\n');
         }
         if let Some(level) = log_level {
-            if let Some(name) = &script_name {
-                dyn_event!(level, name, io = pipe_name, "{line}");
+            // Override the target (module path) because the process name + pipe
+            // name is more relevant.
+            let message = if let Some(name) = &script_name {
+                format!("[{name}] {line}")
             } else {
-                dyn_event!(level, io = pipe_name, "{line}");
+                line
+            };
+            match channel {
+                PipeChannel::Stdout => {
+                    dyn_event!(level, target = "stdout", "{message}");
+                }
+                PipeChannel::Stderr => {
+                    dyn_event!(level, target = "stderr", "{message}");
+                }
             }
         }
     }
