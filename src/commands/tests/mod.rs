@@ -457,8 +457,8 @@ async fn do_test_on_package(
         } = Script::new(pre_service_script)
             .name(format!("{package_name}::pre_service_script"))
             .current_dir(&package_path)
-            .log_stdout(tracing::Level::INFO)
-            .log_stderr(tracing::Level::INFO)
+            .log_stdout(tracing::Level::DEBUG)
+            .log_stderr(tracing::Level::DEBUG)
             .execute()
             .await;
         let end_time = OffsetDateTime::now_utc();
@@ -633,8 +633,8 @@ async fn do_test_on_package(
             .maybe_env("S3_ENDPOINT", minio_endpoint.clone())
             .env("S3_ACCESS_KEY", "minioadmin")
             .env("S3_SECRET_ACCESS_KEY", "minioadmin")
-            .log_stdout(tracing::Level::INFO)
-            .log_stderr(tracing::Level::INFO)
+            .log_stdout(tracing::Level::DEBUG)
+            .log_stderr(tracing::Level::DEBUG)
             .execute()
             .await;
         let end_time = OffsetDateTime::now_utc();
