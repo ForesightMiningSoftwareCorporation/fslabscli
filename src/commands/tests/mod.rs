@@ -455,7 +455,7 @@ async fn do_test_on_package(
             stderr,
             success,
         } = Script::new(pre_service_script)
-            .name("pre_service_script")
+            .name(format!("{package_name}::pre_service_script"))
             .current_dir(&package_path)
             .log_stdout(tracing::Level::INFO)
             .log_stderr(tracing::Level::INFO)
@@ -562,7 +562,7 @@ async fn do_test_on_package(
         tracing::info!("│ {package_name:30.30}     │ Starting custom service '{name}'");
         let start_time = OffsetDateTime::now_utc();
         match Script::new(command)
-            .name(name)
+            .name(format!("{package_name}::{name}"))
             .current_dir(&package_path)
             .maybe_env("DATABASE_URL", database_url.clone())
             .maybe_env(
@@ -623,7 +623,7 @@ async fn do_test_on_package(
             stderr,
             success,
         } = Script::new(pre_test_script)
-            .name("pre_test_script")
+            .name(format!("{package_name}::pre_test_script"))
             .current_dir(&package_path)
             .maybe_env("DATABASE_URL", database_url.clone())
             .maybe_env(
@@ -839,6 +839,7 @@ async fn do_test_on_package(
 
                 false => {
                     Script::new(&fslabs_test.command)
+                        .name(format!("{package_name}::test_command"))
                         .current_dir(&package_path)
                         .envs(&fslabs_test.envs)
                         .log_stdout(tracing::Level::DEBUG)
