@@ -972,42 +972,20 @@ async fn do_test_on_package(
 
     let member_end_time = OffsetDateTime::now_utc();
     let member_duration = member_end_time - member_start_time;
-    metrics.member_duration_h.record(
-        member_duration.as_seconds_f64(),
-        &[
-            KeyValue::new("workspace_name", workspace_name.clone()),
-            KeyValue::new("package_name", package_name.clone()),
-            KeyValue::new("package_version", package_version.clone()),
-            KeyValue::new("success", !failed),
-        ],
-    );
-    metrics.member_counter.add(
-        1,
-        &[
-            KeyValue::new("workspace_name", workspace_name.clone()),
-            KeyValue::new("package_name", package_name.clone()),
-            KeyValue::new("package_version", package_version.clone()),
-            KeyValue::new("success", !failed),
-        ],
-    );
-    metrics.common_member_duration_h.record(
-        member_duration.as_seconds_f64(),
-        &[
-            KeyValue::new("workspace_name", workspace_name.clone()),
-            KeyValue::new("package_name", package_name.clone()),
-            KeyValue::new("package_version", package_version.clone()),
-            KeyValue::new("success", !failed),
-        ],
-    );
-    metrics.common_member_counter.add(
-        1,
-        &[
-            KeyValue::new("workspace_name", workspace_name.clone()),
-            KeyValue::new("package_name", package_name.clone()),
-            KeyValue::new("package_version", package_version.clone()),
-            KeyValue::new("success", !failed),
-        ],
-    );
+    let attributes = [
+        KeyValue::new("workspace_name", workspace_name.clone()),
+        KeyValue::new("package_name", package_name.clone()),
+        KeyValue::new("package_version", package_version.clone()),
+        KeyValue::new("success", !failed),
+    ];
+    metrics
+        .member_duration_h
+        .record(member_duration.as_seconds_f64(), &attributes);
+    metrics.member_counter.add(1, &attributes);
+    metrics
+        .common_member_duration_h
+        .record(member_duration.as_seconds_f64(), &attributes);
+    metrics.common_member_counter.add(1, &attributes);
     drop(permit);
     // drop(package_span);
     (failed, junit_report)
