@@ -78,6 +78,7 @@ pub fn initialize_workspace(
     workspace_name: &str,
     sub_crates: Vec<&str>,
     alt_registries: Vec<&str>,
+    cargo_publish: bool,
 ) {
     // Create lib.rs and Cargo.toml
     let workspace_dir = base_path.join(workspace_name);
@@ -102,15 +103,22 @@ pub fn initialize_workspace(
     let mut file = File::create(config_toml).unwrap();
     writeln!(file, "{config_toml_content}").unwrap();
 
+    if cargo_publish {
+        // Set cargo publish
+        let cargo_toml = workspace_dir.join("Cargo.toml");
+        let toml_content = r#"
+[package.metadata.fslabs.publish.cargo]
+publish = true
+"#;
+        let mut file = OpenOptions::new().append(true).open(cargo_toml).unwrap();
+        writeln!(file, "{toml_content}").unwrap();
+    }
+
     if !alt_registries.is_empty() {
         // Set Alternate registry for crates_g
         let cargo_toml = workspace_dir.join("Cargo.toml");
         let toml_content = format!(
-            "{}\nalternate_registries=[\"{}\"]",
-            r#"
-[package.metadata.fslabs.publish.cargo]
-publish = true
-"#,
+            "alternate_registries=[\"{}\"]",
             alt_registries.join("\", \"")
         );
         let mut file = OpenOptions::new().append(true).open(cargo_toml).unwrap();
@@ -140,7 +148,7 @@ publish = true
     }
 }
 
-pub fn create_complex_workspace() -> PathBuf {
+pub fn create_complex_workspace(alt_registry: bool) -> PathBuf {
     let tmp = assert_fs::TempDir::new()
         .unwrap()
         .into_persistent()
@@ -164,9 +172,21 @@ pub fn create_complex_workspace() -> PathBuf {
         "workspace_a",
         vec!["crates_a", "crates_b", "crates_c"],
         vec![],
+        false,
     );
-    initialize_workspace(&tmp, "workspace_d", vec!["crates_e", "crates_f"], vec![]);
-    initialize_workspace(&tmp, "crates_g", vec![], vec!["some_other_registries"]);
+
+    initialize_workspace(
+        &tmp,
+        "workspace_d",
+        vec!["crates_e", "crates_f"],
+        vec![],
+        false,
+    );
+    let alternate_registries = match alt_registry {
+        true => vec!["some_other_registries"],
+        false => vec![],
+    };
+    initialize_workspace(&tmp, "crates_g", vec![], alternate_registries, true);
 
     // Setup Deps
     // workspace_d/crates_e -> workspace_a/crates_a

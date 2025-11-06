@@ -3,7 +3,7 @@ use git2::{Object, Repository};
 use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Default, Clone, ValueEnum, Serialize)]
+#[derive(Debug, Default, Clone, ValueEnum, Serialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiffStrategy {
     /// Explicit SHAs
@@ -16,6 +16,8 @@ pub enum DiffStrategy {
     /// Falls back to HEAD vs HEAD if no parent commit exists
     #[default]
     LocalChanges,
+    /// No comparing, run all
+    All,
 }
 
 impl DiffStrategy {
@@ -29,7 +31,7 @@ impl DiffStrategy {
                 let base_commit = repo.revparse_single(base)?;
                 Ok((base_commit, head_commit))
             }
-            DiffStrategy::LocalChanges => {
+            DiffStrategy::LocalChanges | DiffStrategy::All => {
                 // Compare HEAD~ vs HEAD (last commit changes)
                 // Falls back to HEAD vs HEAD if no parent exists (single commit repo)
                 let head_commit = repo.revparse_single("HEAD")?;
@@ -50,6 +52,7 @@ impl DiffStrategy {
 impl fmt::Display for DiffStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DiffStrategy::All => write!(f, "all"),
             DiffStrategy::LocalChanges => write!(f, "local-changes"),
             DiffStrategy::WorktreeVsBranch { branch } => write!(f, "branch:{}", branch),
             DiffStrategy::Explicit { base, head } => write!(f, "{}..{}", base, head),

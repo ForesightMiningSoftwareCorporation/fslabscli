@@ -844,7 +844,7 @@ mod tests {
 
     #[test]
     fn test_no_cycles_dont_fail() {
-        let repo = create_complex_workspace();
+        let repo = create_complex_workspace(true);
         let graph = CrateGraph::new(&repo, "", None);
         assert!(graph.is_ok());
     }
@@ -852,7 +852,7 @@ mod tests {
     #[test]
     /// Tests if cycle between direct dependencies are detected
     fn test_simple_cycles_are_detected() {
-        let repo = create_complex_workspace();
+        let repo = create_complex_workspace(true);
         // Let's create a cycle dependencies, we already have crates_g ->  workspace_a/crates_b,
         // Let's add workspace_a/crates_b -> crates_g
         Command::new("cargo")
@@ -876,7 +876,7 @@ mod tests {
     #[test]
     /// Tests if cycle between transitive dependencies are detected
     fn test_transitive_cycles_are_detected() {
-        let repo = create_complex_workspace();
+        let repo = create_complex_workspace(true);
         // Let's create a cycle dependencies,
         // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
         // So we can add workspace_a/crates_a -> crates_g
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     /// Path only Dev-dependencies should not create a cycle
     fn test_cycles_without_dev_dependencies() {
-        let repo = create_complex_workspace();
+        let repo = create_complex_workspace(true);
         // Let's create a cycle dependencies,
         // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
         // So we can add workspace_a/crates_a -> crates_g
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     /// Path only Dev-dependencies should not create a cycle except if they are version pinned
     fn test_cycles_without_dev_dependencies_but_pinned() {
-        let repo = create_complex_workspace();
+        let repo = create_complex_workspace(true);
         // Let's create a cycle dependencies,
         // we have crates_g -> workspace_d/crates_e -> workspace_a/crates_a
         // So we can add workspace_a/crates_a -> crates_g
