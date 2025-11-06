@@ -28,7 +28,7 @@ use crate::cli_args::{DiffOptions, DiffStrategy};
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::crate_graph::CrateGraph;
 use crate::test_args::TestArgs;
-use crate::utils::cargo::Cargo;
+use crate::utils::cargo::CrateChecker;
 use crate::utils::docker::{Docker, RealHttpClient, RealOciClient};
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::PackageMetadataFslabsCiPublishCargo;
@@ -654,12 +654,12 @@ impl Result {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn check_publishable(
+    pub async fn check_publishable<C: CrateChecker>(
         &mut self,
         skip_npm: bool,
         npm: &Npm,
         skip_cargo: bool,
-        cargo: &Cargo,
+        cargo: &C,
         force_cargo: bool,
         skip_docker: bool,
         docker: &mut Docker<Type, RealHttpClient>,
@@ -823,7 +823,7 @@ impl PrettyPrintable for Results {
     }
 }
 
-pub async fn check_workspace(
+pub async fn check_workspace<C: CrateChecker + Default>(
     common_options: &PackageRelatedOptions,
     options: &Options,
     repo_root: PathBuf,
@@ -1035,7 +1035,11 @@ pub async fn check_workspace(
         options.npm_registry_npmrc_path.clone(),
         true,
     )?;
-    let cargo = Cargo::new(&all_packages_registries, false)?;
+    let mut crate_checker = C::default();
+    for r in all_packages_registries {
+        crate_checker.add_registry(r.clone(), false)?;
+    }
+
     let mut docker = Docker::new(None)?;
     if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
         options.docker_registry.clone(),
@@ -1064,7 +1068,7 @@ pub async fn check_workspace(
                         options.skip_npm,
                         &npm,
                         options.skip_cargo,
-                        &cargo,
+                        &crate_checker,
                         options.autopublish_cargo,
                         options.skip_docker,
                         &mut docker,
@@ -1243,11 +1247,17 @@ pub async fn check_workspace(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::{
         PackageRelatedOptions,
         cli_args::{DiffOptions, DiffStrategy},
         commands::check_workspace::{Options, Result as Package, check_workspace},
-        utils::test::{commit_repo, create_complex_workspace, modify_file, stage_file},
+        utils::{
+            cargo::Cargo,
+            cargo::tests::TestCargo,
+            test::{commit_repo, create_complex_workspace, modify_file, stage_file},
+        },
     };
 
     #[tokio::test]
@@ -1260,9 +1270,10 @@ mod tests {
         // Check workspace information
         let common_options = PackageRelatedOptions::default();
         let check_workspace_options = Options::new();
-        let results = check_workspace(&common_options, &check_workspace_options, ws.clone())
-            .await
-            .unwrap();
+        let results =
+            check_workspace::<Cargo>(&common_options, &check_workspace_options, ws.clone())
+                .await
+                .unwrap();
 
         fn check_registry_condition(v: &Package, should_have_registry: bool) {
             let has_alt_reg = v
@@ -1317,11 +1328,45 @@ mod tests {
             check_changed: true,
             ..Default::default()
         };
-        let results = check_workspace(&common_options, &check_workspace_options, ws.clone())
-            .await
-            .unwrap();
+        let results =
+            check_workspace::<TestCargo>(&common_options, &check_workspace_options, ws.clone())
+                .await
+                .unwrap();
         for (_, member) in results.members {
             assert!(member.changed);
         }
+    }
+
+    #[tokio::test]
+    async fn test_whitelist_include_unpublished_required_package() {
+        // If package_a depends on package_b and the whitelist only cares
+        // about package_a. If to publish_a we need package_b published
+        // Then package_b should be marked as published.
+        let ws = create_complex_workspace();
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_d__crates_e".to_string()],
+            ..Default::default()
+        };
+        let check_workspace_options = Options {
+            check_publish: true,
+            autopublish_cargo: true,
+            ..Default::default()
+        };
+
+        let results =
+            check_workspace::<TestCargo>(&common_options, &check_workspace_options, ws.clone())
+                .await
+                .unwrap();
+
+        let expected_publish_status = HashMap::from([
+            ("workspace_d__crates_e".to_string(), true),
+            ("workspace_a__crates_a".to_string(), true),
+        ]);
+        let actual_publish_status: HashMap<String, bool> = results
+            .members
+            .values()
+            .map(|p| (p.package.clone(), p.publish))
+            .collect();
+        assert_eq!(expected_publish_status, actual_publish_status);
     }
 }

@@ -68,24 +68,9 @@ impl PackageMetadataFslabsCiPublishCargo {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::utils::cargo::CrateChecker;
-
-    #[derive(Default)]
-    struct TestCargo {
-        pub exists: bool,
-    }
-    impl CrateChecker for TestCargo {
-        async fn check_crate_exists(
-            &self,
-            _registry_name: String,
-            _name: String,
-            _version: String,
-        ) -> anyhow::Result<bool> {
-            Ok(self.exists)
-        }
-    }
+    use crate::utils::cargo::tests::TestCargo;
 
     #[tokio::test]
     async fn test_standard_publish_is_respected_when_publish_inexisting_crate() {

@@ -6,6 +6,7 @@ use std::{env, io};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use clap_mangen::Man;
+use utils::cargo::Cargo;
 
 use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
 use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
@@ -403,7 +404,7 @@ async fn run() -> anyhow::Result<String> {
         Commands::CheckWorkspace {
             common_options,
             options,
-        } => check_workspace(&common_options, &options, working_directory)
+        } => check_workspace::<Cargo>(&common_options, &options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::Tests {

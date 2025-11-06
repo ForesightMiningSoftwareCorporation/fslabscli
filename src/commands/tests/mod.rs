@@ -31,6 +31,7 @@ use crate::{
     },
     init_metrics,
     script::{CommandOutput, Script},
+    utils::cargo::Cargo,
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -297,13 +298,14 @@ pub async fn tests(
         .with_check_publish(false)
         .with_check_changed(!options.run_all);
 
-    let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
-        .await
-        .map_err(|e| {
-            tracing::error!("Check directory for crates that need publishing: {}", e);
-            e
-        })
-        .with_context(|| "Could not get directory information")?;
+    let results =
+        check_workspace::<Cargo>(common_options, &check_workspace_options, repo_root.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("Check directory for crates that need publishing: {}", e);
+                e
+            })
+            .with_context(|| "Could not get directory information")?;
 
     let mut global_junit_report = ReportBuilder::new().build();
 
