@@ -651,27 +651,24 @@ pub fn patch_crate_for_registry(
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::utils::test::create_rust_index;
+    use mockall::mock;
 
-    #[derive(Default)]
-    pub struct TestCargo {
-        pub exists: bool,
-    }
-    impl CrateChecker for TestCargo {
-        async fn check_crate_exists(
-            &self,
-            _registry_name: String,
-            _name: String,
-            _version: String,
-        ) -> anyhow::Result<bool> {
-            Ok(self.exists)
-        }
+    mock! {
+        #[derive(Default)]
+        pub Cargo {}
+        impl CrateChecker for Cargo {
+            async fn check_crate_exists(
+                &self,
+                _registry_name: String,
+                _name: String,
+                _version: String,
+            ) -> anyhow::Result<bool>;
 
-        fn add_registry(
-            &mut self,
-            _registry_name: String,
-            _fetch_indexes: bool,
-        ) -> anyhow::Result<()> {
-            Ok(())
+            fn add_registry(
+                &mut self,
+                _registry_name: String,
+                _fetch_indexes: bool,
+            ) -> anyhow::Result<()>;
         }
     }
 

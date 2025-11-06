@@ -198,6 +198,7 @@ pub struct Result {
     pub perform_test: bool,
     pub test_detail: PackageMetadataFslabsCiTest,
     pub toolchain: String,
+    ignored: bool,
 }
 
 impl SerSerialize for Result {
@@ -823,270 +824,122 @@ impl PrettyPrintable for Results {
     }
 }
 
-pub async fn check_workspace<C: CrateChecker + Default>(
-    common_options: &PackageRelatedOptions,
-    options: &Options,
+pub struct WorkspaceChecker<'a, C> {
+    common_options: &'a PackageRelatedOptions,
+    options: &'a Options,
     repo_root: PathBuf,
-) -> anyhow::Result<Results> {
-    tracing::info!("Check directory for crates that need publishing");
-    let started = Instant::now();
-    let repo_root = dunce::canonicalize(&repo_root)
-        .with_context(|| format!("Failed to get absolute path from {repo_root:?}"))?;
+    crate_checker: C,
+}
 
-    let toolchain = get_toolchain(&repo_root).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
-    let now = Utc::now().date_naive();
-    let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
-    let timestamp = format!("{}", (now - epoch).num_days());
-
-    let binary_store = BinaryStore::new(
-        options.binary_store_storage_account.clone(),
-        options.binary_store_container_name.clone(),
-        options.binary_store_access_key.clone(),
-    )?;
-    tracing::debug!("Git root: {repo_root:?}");
-    // 1. Find all workspaces to investigate
-    if common_options.progress {
-        println!(
-            "{} {}Resolving workspaces...",
-            style("[1/7]").bold().dim(),
-            LOOKING_GLASS
-        );
-    }
-    let limit_dependency_kind = match options.ignore_dev_dependencies {
-        true => Some(DependencyKind::Normal),
-        false => None,
-    };
-    let crates = CrateGraph::new(
-        &repo_root,
-        common_options.cargo_main_registry.clone(),
-        limit_dependency_kind,
-    )?;
-    let mut packages: HashMap<PackageId, Result> = HashMap::new();
-    let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
-
-    // 2. For each workspace, find if one of the subcrates needs publishing
-    if common_options.progress {
-        println!(
-            "{} {}Resolving packages...",
-            style("[2/7]").bold().dim(),
-            TRUCK
-        );
+impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
+    pub fn new(
+        common_options: &'a PackageRelatedOptions,
+        options: &'a Options,
+        repo_root: PathBuf,
+        crate_checker: C,
+    ) -> Self {
+        Self {
+            common_options,
+            options,
+            repo_root,
+            crate_checker,
+        }
     }
 
-    let whitelist: Vec<String> = common_options
-        .whitelist
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect();
-    let blacklist: Vec<String> = common_options
-        .blacklist
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect();
-    for workspace in crates.workspaces() {
-        let resolve = workspace.metadata.resolve.as_ref().unwrap();
-        // Let's add the node to the deps
-        for node in &resolve.nodes {
-            for node_dep in &node.deps {
-                dep_to_id.insert(node_dep.name.to_string(), node_dep.pkg.clone());
+    pub async fn check_workspace(mut self) -> anyhow::Result<Results> {
+        tracing::info!("Check directory for crates that need publishing");
+        let started = Instant::now();
+        let repo_root = dunce::canonicalize(&self.repo_root)
+            .with_context(|| format!("Failed to get absolute path from {:?}", self.repo_root))?;
+
+        let toolchain =
+            get_toolchain(&self.repo_root).unwrap_or_else(|_| DEFAULT_TOOLCHAIN.to_string());
+        let now = Utc::now().date_naive();
+        let epoch = NaiveDate::parse_from_str(CUSTOM_EPOCH, "%Y-%m-%d").unwrap(); // I'm confident about this
+        let timestamp = format!("{}", (now - epoch).num_days());
+
+        let binary_store = BinaryStore::new(
+            self.options.binary_store_storage_account.clone(),
+            self.options.binary_store_container_name.clone(),
+            self.options.binary_store_access_key.clone(),
+        )?;
+        tracing::debug!("Git root: {repo_root:?}");
+        // 1. Find all workspaces to investigate
+        if self.common_options.progress {
+            println!(
+                "{} {}Resolving workspaces...",
+                style("[1/7]").bold().dim(),
+                LOOKING_GLASS
+            );
+        }
+        let limit_dependency_kind = match self.options.ignore_dev_dependencies {
+            true => Some(DependencyKind::Normal),
+            false => None,
+        };
+        let crates = CrateGraph::new(
+            &self.repo_root,
+            self.common_options.cargo_main_registry.clone(),
+            limit_dependency_kind,
+        )?;
+
+        let mut packages: HashMap<PackageId, Result> = HashMap::new();
+        let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
+        // 2. For each workspace, find if one of the subcrates needs publishing
+        if self.common_options.progress {
+            println!(
+                "{} {}Resolving packages...",
+                style("[2/7]").bold().dim(),
+                TRUCK
+            );
+        }
+
+        let whitelist: Vec<String> = self
+            .common_options
+            .whitelist
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        let blacklist: Vec<String> = self
+            .common_options
+            .blacklist
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        for workspace in crates.workspaces() {
+            let resolve = workspace.metadata.resolve.as_ref().unwrap();
+            // Let's add the node to the deps
+            for node in &resolve.nodes {
+                for node_dep in &node.deps {
+                    dep_to_id.insert(node_dep.name.to_string(), node_dep.pkg.clone());
+                }
             }
-        }
-        // Let's add all package to the deps as well
-        let workspace_packages = workspace.metadata.workspace_packages();
-        for package in workspace_packages {
-            dep_to_id.insert(package.name.to_string(), package.id.clone());
-        }
+            // Let's add all package to the deps as well
+            let workspace_packages = workspace.metadata.workspace_packages();
+            for package in workspace_packages {
+                dep_to_id.insert(package.name.to_string(), package.id.clone());
+            }
 
-        for package in workspace.metadata.workspace_packages() {
-            match Result::new(
-                workspace.path.to_string_lossy().into(),
-                package.clone(),
-                repo_root.clone(),
-                options.hide_dependencies,
-                &dep_to_id,
-            ) {
-                Ok(package) => {
-                    let blacklisted = !blacklist.is_empty() && blacklist.contains(&package.package);
-                    let whitelisted = whitelist.is_empty() || whitelist.contains(&package.package);
-                    if !blacklisted && whitelisted {
+            for package in workspace.metadata.workspace_packages() {
+                match Result::new(
+                    workspace.path.to_string_lossy().into(),
+                    package.clone(),
+                    self.repo_root.clone(),
+                    self.options.hide_dependencies,
+                    &dep_to_id,
+                ) {
+                    Ok(mut package) => {
+                        let blacklisted =
+                            !blacklist.is_empty() && blacklist.contains(&package.package);
+                        let whitelisted =
+                            whitelist.is_empty() || whitelist.contains(&package.package);
+                        package.ignored = blacklisted || !whitelisted;
                         packages.insert(package.package_id.clone().unwrap().clone(), package);
                     }
-                }
-                Err(e) => {
-                    let error_msg = format!("Could not check package {}: {}", package.name, e);
-                    if options.fail_unit_error {
-                        anyhow::bail!(error_msg)
-                    } else {
-                        tracing::warn!("{}", error_msg);
-                        continue;
-                    }
-                }
-            }
-        }
-    }
-
-    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
-
-    // 5. Compute Runtime information
-    if common_options.progress {
-        println!(
-            "{} {}Compute runtime information...",
-            style("[3/7]").bold().dim(),
-            TRUCK
-        );
-    }
-
-    let mut pb: Option<ProgressBar> = None;
-    if common_options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let mut package_versions: HashMap<PackageId, String> = HashMap::new();
-    package_versions.extend(packages.iter().map(|(k, v)| (k.clone(), v.version.clone())));
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get_mut(&package_key) {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            package
-                .update_runtime_information(
-                    options.release_channel.as_deref(),
-                    &toolchain,
-                    &timestamp,
-                    &package_versions,
-                    &binary_store,
-                    &dep_to_id,
-                )
-                .await?;
-        }
-    }
-
-    // Check Alt Registries Settings
-    // If package A needs to be published to an alt registry, all of its dependencies should be as well
-    if common_options.progress {
-        println!(
-            "{} {}Back-feeding alt registry settings...",
-            style("[4/7]").bold().dim(),
-            PAPER
-        );
-    }
-    let mut pb: Option<ProgressBar> = None;
-    if common_options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-
-    let mut packages_registries: HashMap<PackageId, HashSet<String>> = HashMap::new();
-    let mut all_packages_registries: HashSet<String> = HashSet::new();
-    for package_key in package_keys.clone() {
-        if let Some(package) = packages.get(&package_key)
-            && let Some(registries) = &package.publish_detail.cargo.registries
-        {
-            packages_registries.insert(package_key.clone(), registries.clone());
-            all_packages_registries.extend(registries.clone());
-        }
-    }
-    for (package_key, registries) in packages_registries {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        if !registries.is_empty() {
-            let transitive_dependencies = crates
-                .dependency_graph()
-                .get_transitive_dependencies(package_key.clone());
-            // The package should be publish to some alt registries
-            // Let's set that in all it's dependent
-            // Let's update each transitive dep with the list of registries
-            for dep_id in transitive_dependencies {
-                if let Some(dep) = packages.get_mut(&dep_id) {
-                    let mut dep_registries = dep
-                        .publish_detail
-                        .cargo
-                        .registries
-                        .clone()
-                        .unwrap_or_default();
-                    for registry in &registries {
-                        dep_registries.insert(registry.clone());
-                    }
-                    dep.publish_detail.cargo.registries = Some(dep_registries);
-                }
-            }
-        }
-    }
-    // Check Release status
-    if common_options.progress {
-        println!(
-            "{} {}Checking published status...",
-            style("[5/7]").bold().dim(),
-            PAPER
-        );
-    }
-    let npm = Npm::new(
-        options.npm_registry_url.clone(),
-        options.npm_registry_token.clone(),
-        options.npm_registry_npmrc_path.clone(),
-        true,
-    )?;
-    let mut crate_checker = C::default();
-    for r in all_packages_registries {
-        crate_checker.add_registry(r.clone(), false)?;
-    }
-
-    let mut docker = Docker::new(None)?;
-    if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
-        options.docker_registry.clone(),
-        options.docker_registry_username.clone(),
-        options.docker_registry_password.clone(),
-    ) {
-        docker.add_registry_auth(docker_registry, docker_username, docker_password)
-    }
-    let mut pb: Option<ProgressBar> = None;
-    if common_options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-        if let Some(package) = packages.get_mut(&package_key) {
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
-            }
-            if options.check_publish {
-                match package
-                    .check_publishable(
-                        options.skip_npm,
-                        &npm,
-                        options.skip_cargo,
-                        &crate_checker,
-                        options.autopublish_cargo,
-                        options.skip_docker,
-                        &mut docker,
-                        options.skip_binary,
-                        options.skip_s3,
-                        &binary_store,
-                    )
-                    .await
-                {
-                    Ok(_) => {}
                     Err(e) => {
-                        let error_msg = format!(
-                            "Could not check package {} -- {}: {}",
-                            package.workspace.clone(),
-                            package.package.clone(),
-                            e
-                        );
-                        if options.fail_unit_error {
+                        let error_msg = format!("Could not check package {}: {}", package.name, e);
+                        if self.options.fail_unit_error {
                             anyhow::bail!(error_msg)
                         } else {
                             tracing::warn!("{}", error_msg);
@@ -1095,112 +948,143 @@ pub async fn check_workspace<C: CrateChecker + Default>(
                     }
                 }
             }
-
-            package.publish = vec![
-                package.publish_detail.docker.publish,
-                package.publish_detail.cargo.publish,
-                package.publish_detail.npm_napi.publish,
-                package.publish_detail.binary.publish,
-                package.publish_detail.nix_binary.publish,
-                package.publish_detail.s3.publish,
-            ]
-            .into_iter()
-            .any(|x| x);
-
-            // If we are in a tag, we are only looking for the packages that build a launcher or installer. Otherwise, we are looking at all the packages
-            let package_key = package.package.clone();
-            if package.publish
-                && let Ok(env_string) = std::env::var("GITHUB_REF")
-            {
-                // Regarding installer and launcher, we need to check the tag of their counterpart
-                if env_string.starts_with("refs/tags") {
-                    let mut check_key = package_key.clone();
-                    if package_key.ends_with("_launcher") {
-                        check_key = check_key.replace("_launcher", "");
-                    }
-                    if package_key.ends_with("_installer") {
-                        check_key = check_key.replace("_installer", "");
-                    }
-                    if !env_string.starts_with(&format!("refs/tags/{check_key}")) {
-                        package.publish = false;
-                    }
-                }
-            }
         }
-    }
 
-    if common_options.progress {
-        println!(
-            "{} {}Resolving packages dependencies...",
-            style("[6/7]").bold().dim(),
-            TRUCK
-        );
-    }
-    let mut pb: Option<ProgressBar> = None;
-    if common_options.progress {
-        pb = Some(ProgressBar::new(packages.len() as u64).with_style(
-            ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
-        ));
-    }
-    let publish_status: HashMap<PackageId, bool> = packages
-        .clone()
-        .into_iter()
-        .map(|(k, v)| (k, v.publish))
-        .collect();
-    for package_key in package_keys.clone() {
-        if let Some(ref pb) = pb {
-            pb.inc(1);
+        let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
+
+        // 5. Compute Runtime information
+        if self.common_options.progress {
+            println!(
+                "{} {}Compute runtime information...",
+                style("[3/7]").bold().dim(),
+                TRUCK
+            );
         }
-        // Loop through all the dependencies, if we don't know of it, skip it
-        if let Some(package) = packages.get_mut(&package_key) {
+
+        let mut pb: Option<ProgressBar> = None;
+        if self.common_options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
+        }
+        let mut package_versions: HashMap<PackageId, String> = HashMap::new();
+        package_versions.extend(packages.iter().map(|(k, v)| (k.clone(), v.version.clone())));
+        for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
-                pb.set_message(format!("{} : {}", package.workspace, package.package));
+                pb.inc(1);
             }
-            package.dependencies.retain(|d| {
-                d.package_id
-                    .as_ref()
-                    .is_some_and(|p| package_keys.contains(p))
-            });
-            for dep in &mut package.dependencies {
-                if let Some(package_name) = &dep.package_id
-                    && let Some(dep_p) = publish_status.get(package_name)
-                {
-                    dep.publishable = *dep_p;
+            // Loop through all the dependencies, if we don't know of it, skip it
+            if let Some(package) = packages.get_mut(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.set_message(format!("{} : {}", package.workspace, package.package));
                 }
+                package
+                    .update_runtime_information(
+                        self.options.release_channel.as_deref(),
+                        &toolchain,
+                        &timestamp,
+                        &package_versions,
+                        &binary_store,
+                        &dep_to_id,
+                    )
+                    .await?;
             }
         }
-    }
-    let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
-    tracing::debug!("Package list: {package_keys:#?}");
 
-    if common_options.progress {
-        println!(
-            "{} {}Checking if packages changed...",
-            style("[7/7]").bold().dim(),
-            TRUCK
-        );
-    }
-    if options.check_changed {
-        if common_options.progress {
+        // Backfeed publishing based on alt_registries and whitelisting
+        // If whitelisted package A needs to be published to a cargo registry, all of its dependencies should be as well
+        if self.common_options.progress {
+            println!(
+                "{} {} Back-feeding publishing and whitelisting ...",
+                style("[4/7]").bold().dim(),
+                PAPER
+            );
+        }
+        let mut pb: Option<ProgressBar> = None;
+        if self.common_options.progress {
             pb = Some(ProgressBar::new(packages.len() as u64).with_style(
                 ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
             ));
         }
 
-        let diff_strategy = options.diff.strategy();
+        let mut all_packages_registries: HashSet<String> = HashSet::new();
+        for package_key in package_keys.clone() {
+            if let Some(package) = packages.get(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.inc(1);
+                }
 
-        let repo = Repository::open(repo_root)?;
-        let (base_commit, head_commit) = diff_strategy.git_commits(&repo)?;
-        // Check changed from a git pov
-        let changed_package_paths =
-            crates.changed_packages(&repo, base_commit, head_commit, &diff_strategy)?;
-        tracing::info!("Changed packages: {changed_package_paths:#?}");
-        // Any packages that transitively depend on changed packages are also considered "changed".
-        let changed_closure = crates
-            .dependency_graph()
-            .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
-        tracing::info!("Changed closure: {changed_closure:#?}");
+                if package.ignored {
+                    continue;
+                }
 
+                let publish_requested =
+                    package.publish_detail.cargo.actual_publish.unwrap_or(false)
+                        || self.options.autopublish_cargo;
+
+                if !publish_requested {
+                    continue;
+                }
+
+                if let Some(registries) = &package.publish_detail.cargo.registries.clone() {
+                    all_packages_registries.extend(registries.clone());
+                    let transitive_dependencies = crates
+                        .dependency_graph()
+                        .get_transitive_dependencies(package_key.clone());
+                    // The package should be publish to some alt registries
+                    // Let's set that in all it's dependent
+                    // Let's update each transitive dep with the list of registries
+                    for dep_id in transitive_dependencies {
+                        if let Some(dep) = packages.get_mut(&dep_id) {
+                            let mut dep_registries = dep
+                                .publish_detail
+                                .cargo
+                                .registries
+                                .clone()
+                                .unwrap_or_default();
+                            for registry in registries {
+                                dep_registries.insert(registry.clone());
+                            }
+                            dep.publish_detail.cargo.registries = Some(dep_registries);
+                            dep.publish_detail.cargo.actual_publish = Some(true);
+                            dep.ignored = false;
+                        }
+                    }
+                }
+            }
+        }
+        // Check Publich status
+        if self.common_options.progress {
+            println!(
+                "{} {}Checking published status...",
+                style("[5/7]").bold().dim(),
+                PAPER
+            );
+        }
+        let npm = Npm::new(
+            self.options.npm_registry_url.clone(),
+            self.options.npm_registry_token.clone(),
+            self.options.npm_registry_npmrc_path.clone(),
+            true,
+        )?;
+        for r in all_packages_registries {
+            self.crate_checker.add_registry(r.clone(), false)?;
+        }
+
+        let mut docker = Docker::new(None)?;
+        if let (Some(docker_registry), Some(docker_username), Some(docker_password)) = (
+            self.options.docker_registry.clone(),
+            self.options.docker_registry_username.clone(),
+            self.options.docker_registry_password.clone(),
+        ) {
+            docker.add_registry_auth(docker_registry, docker_username, docker_password)
+        }
+        let mut pb: Option<ProgressBar> = None;
+        if self.common_options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
+        }
         for package_key in package_keys.clone() {
             if let Some(ref pb) = pb {
                 pb.inc(1);
@@ -1209,40 +1093,214 @@ pub async fn check_workspace<C: CrateChecker + Default>(
                 if let Some(ref pb) = pb {
                     pb.set_message(format!("{} : {}", package.workspace, package.package));
                 }
-                if options.check_publish && package.publish {
-                    // mark package as changed
-                    package.changed = true;
-                    tracing::info!("Marking package as changed for publish: {:?}", package.path);
+                if package.ignored {
                     continue;
                 }
-                if changed_package_paths.contains(&package.path) {
-                    tracing::info!("Detected change in {:?}", package.path);
-                    package.changed = true;
-                } else if changed_closure.contains(&package.path) {
-                    tracing::info!("A dependency changed for {:?}", package.path);
-                    package.dependencies_changed = true;
+                if self.options.check_publish {
+                    match package
+                        .check_publishable(
+                            self.options.skip_npm,
+                            &npm,
+                            self.options.skip_cargo,
+                            &self.crate_checker,
+                            self.options.autopublish_cargo,
+                            self.options.skip_docker,
+                            &mut docker,
+                            self.options.skip_binary,
+                            self.options.skip_s3,
+                            &binary_store,
+                        )
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let error_msg = format!(
+                                "Could not check package {} -- {}: {}",
+                                package.workspace.clone(),
+                                package.package.clone(),
+                                e
+                            );
+                            if self.options.fail_unit_error {
+                                anyhow::bail!(error_msg)
+                            } else {
+                                tracing::warn!("{}", error_msg);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                package.publish = vec![
+                    package.publish_detail.docker.publish,
+                    package.publish_detail.cargo.publish,
+                    package.publish_detail.npm_napi.publish,
+                    package.publish_detail.binary.publish,
+                    package.publish_detail.nix_binary.publish,
+                    package.publish_detail.s3.publish,
+                ]
+                .into_iter()
+                .any(|x| x);
+
+                // If we are in a tag, we are only looking for the packages that build a launcher or installer. Otherwise, we are looking at all the packages
+                let package_key = package.package.clone();
+                if package.publish
+                    && let Ok(env_string) = std::env::var("GITHUB_REF")
+                {
+                    // Regarding installer and launcher, we need to check the tag of their counterpart
+                    if env_string.starts_with("refs/tags") {
+                        let mut check_key = package_key.clone();
+                        if package_key.ends_with("_launcher") {
+                            check_key = check_key.replace("_launcher", "");
+                        }
+                        if package_key.ends_with("_installer") {
+                            check_key = check_key.replace("_installer", "");
+                        }
+                        if !env_string.starts_with(&format!("refs/tags/{check_key}")) {
+                            package.publish = false;
+                        }
+                    }
                 }
             }
         }
-    }
-    for package_key in package_keys.clone() {
-        if let Some(package) = packages.get_mut(&package_key) {
-            // We retest when dependencies change because not doing so has caused us to miss
-            // serious bugs, or even compilation errors until the package is changed. This
-            // results in longer test times, but removing the check is not a solution.
-            if package.changed || package.dependencies_changed {
-                package.perform_test = true;
+
+        if self.common_options.progress {
+            println!(
+                "{} {}Resolving packages dependencies...",
+                style("[6/7]").bold().dim(),
+                TRUCK
+            );
+        }
+        let mut pb: Option<ProgressBar> = None;
+        if self.common_options.progress {
+            pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+            ));
+        }
+        let publish_status: HashMap<PackageId, bool> = packages
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k, v.publish))
+            .collect();
+        for package_key in package_keys.clone() {
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            // Loop through all the dependencies, if we don't know of it, skip it
+            if let Some(package) = packages.get_mut(&package_key) {
+                if let Some(ref pb) = pb {
+                    pb.set_message(format!("{} : {}", package.workspace, package.package));
+                }
+                package.dependencies.retain(|d| {
+                    d.package_id
+                        .as_ref()
+                        .is_some_and(|p| package_keys.contains(p))
+                });
+                for dep in &mut package.dependencies {
+                    if let Some(package_name) = &dep.package_id
+                        && let Some(dep_p) = publish_status.get(package_name)
+                    {
+                        dep.publishable = *dep_p;
+                    }
+                }
             }
         }
-    }
-    if common_options.progress {
-        println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
-    }
+        let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
+        tracing::debug!("Package list: {package_keys:#?}");
 
-    Ok(Results {
-        members: packages,
-        crate_graph: crates,
-    })
+        if self.common_options.progress {
+            println!(
+                "{} {}Checking if needs testing...",
+                style("[7/7]").bold().dim(),
+                TRUCK
+            );
+        }
+
+        let diff_strategy = self.options.diff.strategy();
+        if self.options.check_changed && diff_strategy != DiffStrategy::All {
+            if self.common_options.progress {
+                pb = Some(ProgressBar::new(packages.len() as u64).with_style(
+                    ProgressStyle::with_template("{spinner} {wide_msg} {pos}/{len}")?,
+                ));
+            }
+
+            let repo = Repository::open(self.repo_root)?;
+            let (base_commit, head_commit) = diff_strategy.git_commits(&repo)?;
+            // Check changed from a git pov
+            let changed_package_paths =
+                crates.changed_packages(&repo, base_commit, head_commit, &diff_strategy)?;
+            tracing::info!("Changed packages: {changed_package_paths:#?}");
+            // Any packages that transitively depend on changed packages are also considered "changed".
+            let changed_closure = crates
+                .dependency_graph()
+                .reverse_closure(changed_package_paths.iter().map(AsRef::as_ref));
+            tracing::info!("Changed closure: {changed_closure:#?}");
+
+            for package_key in package_keys.clone() {
+                if let Some(ref pb) = pb {
+                    pb.inc(1);
+                }
+                if let Some(package) = packages.get_mut(&package_key) {
+                    if let Some(ref pb) = pb {
+                        pb.set_message(format!("{} : {}", package.workspace, package.package));
+                    }
+                    if package.ignored {
+                        continue;
+                    }
+                    if self.options.check_publish && package.publish {
+                        // mark package as changed
+                        package.changed = true;
+                        tracing::info!(
+                            "Marking package as changed for publish: {:?}",
+                            package.path
+                        );
+                        continue;
+                    }
+                    if changed_package_paths.contains(&package.path) {
+                        tracing::info!("Detected change in {:?}", package.path);
+                        package.changed = true;
+                    } else if changed_closure.contains(&package.path) {
+                        tracing::info!("A dependency changed for {:?}", package.path);
+                        package.dependencies_changed = true;
+                    }
+                }
+            }
+        }
+        for package_key in package_keys.clone() {
+            if let Some(package) = packages.get_mut(&package_key) {
+                if package.ignored {
+                    continue;
+                }
+                // We retest when dependencies change because not doing so has caused us to miss
+                // serious bugs, or even compilation errors until the package is changed. This
+                // results in longer test times, but removing the check is not a solution.
+                if package.changed
+                    || package.dependencies_changed
+                    || diff_strategy == DiffStrategy::All
+                {
+                    package.perform_test = true;
+                }
+            }
+        }
+        if self.common_options.progress {
+            println!("{} Done in {}", SPARKLE, HumanDuration(started.elapsed()));
+        }
+
+        Ok(Results {
+            members: packages,
+            crate_graph: crates,
+        })
+    }
+}
+
+pub async fn check_workspace<C: CrateChecker + Default>(
+    common_options: &PackageRelatedOptions,
+    options: &Options,
+    repo_root: PathBuf,
+) -> anyhow::Result<Results> {
+    let crate_checker = C::default();
+    WorkspaceChecker::new(common_options, options, repo_root, crate_checker)
+        .check_workspace()
+        .await
 }
 
 #[cfg(test)]
@@ -1252,10 +1310,11 @@ mod tests {
     use crate::{
         PackageRelatedOptions,
         cli_args::{DiffOptions, DiffStrategy},
-        commands::check_workspace::{Options, Result as Package, check_workspace},
+        commands::check_workspace::{
+            Options, Result as Package, WorkspaceChecker, check_workspace,
+        },
         utils::{
-            cargo::Cargo,
-            cargo::tests::TestCargo,
+            cargo::{Cargo, tests::MockCargo},
             test::{commit_repo, create_complex_workspace, modify_file, stage_file},
         },
     };
@@ -1265,7 +1324,7 @@ mod tests {
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Could not install crypto provider");
-        let ws = create_complex_workspace();
+        let ws = create_complex_workspace(true);
 
         // Check workspace information
         let common_options = PackageRelatedOptions::default();
@@ -1310,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rust_toolchain_trigger_full_test() {
-        let ws = create_complex_workspace();
+        let ws = create_complex_workspace(true);
         modify_file(
             &ws,
             "rust-toolchain.toml",
@@ -1329,7 +1388,7 @@ mod tests {
             ..Default::default()
         };
         let results =
-            check_workspace::<TestCargo>(&common_options, &check_workspace_options, ws.clone())
+            check_workspace::<Cargo>(&common_options, &check_workspace_options, ws.clone())
                 .await
                 .unwrap();
         for (_, member) in results.members {
@@ -1338,13 +1397,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_whitelist_is_respected_for_tests() {
+        // First we test without whitelist
+        let ws = create_complex_workspace(false);
+
+        let common_options = PackageRelatedOptions {
+            ..Default::default()
+        };
+        let check_workspace_options = Options {
+            diff: DiffOptions {
+                strategy: Some(DiffStrategy::All),
+                ..Default::default()
+            },
+            check_changed: true,
+            ..Default::default()
+        };
+
+        let mut crate_checker = MockCargo::new();
+        crate_checker.expect_add_registry().returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
+
+        let results = WorkspaceChecker::new(
+            &common_options,
+            &check_workspace_options,
+            ws.clone(),
+            crate_checker,
+        )
+        .check_workspace()
+        .await
+        .unwrap();
+
+        let expected_test_status = HashMap::from([
+            ("workspace_a".to_string(), true),
+            ("workspace_a__crates_a".to_string(), true),
+            ("workspace_a__crates_b".to_string(), true),
+            ("workspace_a__crates_c".to_string(), true),
+            ("workspace_d".to_string(), true),
+            ("workspace_d__crates_e".to_string(), true),
+            ("workspace_d__crates_f".to_string(), true),
+            ("crates_g".to_string(), true),
+        ]);
+        let actual_test_status: HashMap<String, bool> = results
+            .members
+            .values()
+            .map(|p| (p.package.clone(), p.perform_test))
+            .collect();
+        assert_eq!(expected_test_status, actual_test_status);
+
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_a__crates_c".to_string()],
+            ..Default::default()
+        };
+        let mut crate_checker = MockCargo::new();
+        crate_checker.expect_add_registry().returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
+
+        let results = WorkspaceChecker::new(
+            &common_options,
+            &check_workspace_options,
+            ws.clone(),
+            crate_checker,
+        )
+        .check_workspace()
+        .await
+        .unwrap();
+
+        let expected_test_status = HashMap::from([
+            ("workspace_a".to_string(), false),
+            ("workspace_a__crates_a".to_string(), false),
+            ("workspace_a__crates_b".to_string(), false),
+            ("workspace_a__crates_c".to_string(), true),
+            ("workspace_d".to_string(), false),
+            ("workspace_d__crates_e".to_string(), false),
+            ("workspace_d__crates_f".to_string(), false),
+            ("crates_g".to_string(), false),
+        ]);
+        let actual_test_status: HashMap<String, bool> = results
+            .members
+            .values()
+            .map(|p| (p.package.clone(), p.perform_test))
+            .collect();
+        assert_eq!(expected_test_status, actual_test_status);
+    }
+
+    #[tokio::test]
     async fn test_whitelist_include_unpublished_required_package() {
         // If package_a depends on package_b and the whitelist only cares
         // about package_a. If to publish_a we need package_b published
         // Then package_b should be marked as published.
-        let ws = create_complex_workspace();
+        let ws = create_complex_workspace(false);
+
         let common_options = PackageRelatedOptions {
-            whitelist: vec!["workspace_d__crates_e".to_string()],
+            whitelist: vec!["crates_g".to_string()],
+            ..Default::default()
+        };
+        let check_workspace_options = Options {
+            check_publish: true,
+            ..Default::default()
+        };
+
+        let mut crate_checker = MockCargo::new();
+        crate_checker.expect_add_registry().returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
+
+        let results = WorkspaceChecker::new(
+            &common_options,
+            &check_workspace_options,
+            ws.clone(),
+            crate_checker,
+        )
+        .check_workspace()
+        .await
+        .unwrap();
+
+        let expected_publish_status = HashMap::from([
+            ("workspace_a".to_string(), false),
+            ("workspace_a__crates_a".to_string(), true),
+            ("workspace_a__crates_b".to_string(), true),
+            ("workspace_a__crates_c".to_string(), false),
+            ("workspace_d".to_string(), false),
+            ("workspace_d__crates_e".to_string(), true),
+            ("workspace_d__crates_f".to_string(), false),
+            ("crates_g".to_string(), true),
+        ]);
+        let actual_publish_status: HashMap<String, bool> = results
+            .members
+            .values()
+            .map(|p| (p.package.clone(), p.publish))
+            .collect();
+        assert_eq!(expected_publish_status, actual_publish_status);
+    }
+
+    #[tokio::test]
+    async fn test_publish_whitelist_only_check_for_whitelisted_packages() {
+        let ws = create_complex_workspace(false);
+
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["crates_g".to_string()],
             ..Default::default()
         };
         let check_workspace_options = Options {
@@ -1353,14 +1548,35 @@ mod tests {
             ..Default::default()
         };
 
-        let results =
-            check_workspace::<TestCargo>(&common_options, &check_workspace_options, ws.clone())
-                .await
-                .unwrap();
+        let mut crate_checker = MockCargo::new();
+        crate_checker
+            .expect_add_registry()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .times(4)
+            .returning(|_, _, _| Ok(false));
+
+        let results = WorkspaceChecker::new(
+            &common_options,
+            &check_workspace_options,
+            ws.clone(),
+            crate_checker,
+        )
+        .check_workspace()
+        .await
+        .unwrap();
 
         let expected_publish_status = HashMap::from([
-            ("workspace_d__crates_e".to_string(), true),
+            ("workspace_a".to_string(), false),
             ("workspace_a__crates_a".to_string(), true),
+            ("workspace_a__crates_b".to_string(), true),
+            ("workspace_a__crates_c".to_string(), false),
+            ("workspace_d".to_string(), false),
+            ("workspace_d__crates_e".to_string(), true),
+            ("workspace_d__crates_f".to_string(), false),
+            ("crates_g".to_string(), true),
         ]);
         let actual_publish_status: HashMap<String, bool> = results
             .members

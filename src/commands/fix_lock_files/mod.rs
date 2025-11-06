@@ -399,7 +399,7 @@ version = "0.2.0"
     }
     #[tokio::test]
     async fn test_fix_lockfile_updates_in_complex_ws() {
-        let ws = create_complex_workspace();
+        let ws = create_complex_workspace(true);
         let graph = CrateGraph::new(&ws, "", None).unwrap();
 
         // Remove lock files created from running cargo-metadata.

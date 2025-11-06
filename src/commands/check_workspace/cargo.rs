@@ -10,7 +10,7 @@ pub struct PackageMetadataFslabsCiPublishCargo {
     #[serde(skip)]
     pub publish: bool,
     #[serde(default, rename = "publish")]
-    actual_publish: Option<bool>,
+    pub(crate) actual_publish: Option<bool>,
     #[serde(alias = "alternate_registries")]
     pub registries: Option<HashSet<String>>,
     #[serde(default)]
@@ -70,7 +70,7 @@ impl PackageMetadataFslabsCiPublishCargo {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::utils::cargo::tests::TestCargo;
+    use crate::utils::cargo::tests::MockCargo;
 
     #[tokio::test]
     async fn test_standard_publish_is_respected_when_publish_inexisting_crate() {
@@ -78,7 +78,11 @@ pub(crate) mod tests {
         publish = true
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo::default();
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -95,7 +99,11 @@ pub(crate) mod tests {
         publish = false
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo::default();
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -111,7 +119,11 @@ pub(crate) mod tests {
         let toml = r#"
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo::default();
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -127,7 +139,11 @@ pub(crate) mod tests {
         let toml = r#"
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo::default();
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -145,7 +161,11 @@ pub(crate) mod tests {
         publish = false
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo::default();
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(false));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -160,7 +180,11 @@ pub(crate) mod tests {
         let toml = r#"
         publish = true
         "#;
-        let cargo = TestCargo { exists: true };
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(true));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
@@ -177,7 +201,11 @@ pub(crate) mod tests {
         publish = true
         alternate_registries = ["test_registry"]
         "#;
-        let cargo = TestCargo { exists: true };
+        let mut cargo = MockCargo::new();
+
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Ok(true));
 
         let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
         cargo_publish
