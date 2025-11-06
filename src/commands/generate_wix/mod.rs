@@ -3,6 +3,7 @@ use crate::{
     commands::check_workspace::{
         Options as CheckWorkspaceOptions, Result as Member, check_workspace,
     },
+    utils::cargo::Cargo,
 };
 use clap::Parser;
 use convert_case::{Case, Casing};
@@ -913,7 +914,7 @@ pub async fn generate_wix(
     working_directory: PathBuf,
 ) -> anyhow::Result<GenerateResult> {
     // Get Workspace members that needs a wix file
-    let members: Vec<Member> = check_workspace(
+    let members: Vec<Member> = check_workspace::<Cargo>(
         &PackageRelatedOptions::default(),
         &CheckWorkspaceOptions::new(),
         working_directory.clone(),

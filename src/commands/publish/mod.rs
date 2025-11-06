@@ -1232,13 +1232,14 @@ pub async fn publish(
         .with_autopublish_cargo(options.autopublish_cargo)
         .with_ignore_dev_dependencies(true);
 
-    let results = check_workspace(common_options, &check_workspace_options, repo_root.clone())
-        .await
-        .map_err(|e| {
-            tracing::error!("Check directory for crates that need publishing: {}", e);
-            e
-        })
-        .with_context(|| "Could not get directory information")?;
+    let results =
+        check_workspace::<Cargo>(common_options, &check_workspace_options, repo_root.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("Check directory for crates that need publishing: {}", e);
+                e
+            })
+            .with_context(|| "Could not get directory information")?;
 
     let mut registries = HashSet::new();
     for member in results.members.values() {

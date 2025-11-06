@@ -272,6 +272,28 @@ pub struct Cargo {
     client: Option<HyperClient<HttpsConnector<HttpConnector>, Empty<Bytes>>>,
 }
 
+impl Default for Cargo {
+    fn default() -> Self {
+        let client = (|| {
+            let tls_config = rustls::ClientConfig::builder()
+                .with_native_roots()
+                .ok()? // returns None if building fails
+                .with_no_client_auth();
+
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(tls_config)
+                .https_or_http()
+                .enable_http1()
+                .build();
+
+            Some(HyperClient::builder(TokioExecutor::new()).build(https))
+        })();
+        Self {
+            registries: Default::default(),
+            client,
+        }
+    }
+}
 pub trait CrateChecker {
     async fn check_crate_exists(
         &self,
@@ -279,22 +301,13 @@ pub trait CrateChecker {
         name: String,
         version: String,
     ) -> anyhow::Result<bool>;
+
+    fn add_registry(&mut self, registry_name: String, fetch_indexes: bool) -> anyhow::Result<()>;
 }
 
 impl Cargo {
     pub fn new(registries: &HashSet<String>, fetch_indexes: bool) -> anyhow::Result<Self> {
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(
-                rustls::ClientConfig::builder()
-                    .with_native_roots()?
-                    .with_no_client_auth(),
-            )
-            .https_or_http()
-            .enable_http1()
-            .build();
-
         Ok(Self {
-            client: Some(HyperClient::builder(TokioExecutor::new()).build(https)),
             registries: registries
                 .iter()
                 .filter_map(|k| {
@@ -303,6 +316,7 @@ impl Cargo {
                         .map(|r| (k.clone(), r))
                 })
                 .collect(),
+            ..Default::default()
         })
     }
 
@@ -310,7 +324,6 @@ impl Cargo {
         self.registries.get(name)
     }
 
-    #[cfg(test)]
     pub fn add_registry(&mut self, registry: CargoRegistry) {
         self.registries.insert(registry.name.clone(), registry);
     }
@@ -439,6 +452,24 @@ impl CrateChecker for Cargo {
             ));
         }
         Ok(false)
+    }
+
+    fn add_registry(&mut self, registry_name: String, fetch_indexes: bool) -> anyhow::Result<()> {
+        let registry = CargoRegistry::new(
+            registry_name.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            fetch_indexes,
+        )
+        .context(format!(
+            "Could not create a cargo registry from {}",
+            registry_name
+        ))?;
+        self.add_registry(registry);
+        Ok(())
     }
 }
 
@@ -618,8 +649,31 @@ pub fn patch_crate_for_registry(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::utils::test::create_rust_index;
+
+    #[derive(Default)]
+    pub struct TestCargo {
+        pub exists: bool,
+    }
+    impl CrateChecker for TestCargo {
+        async fn check_crate_exists(
+            &self,
+            _registry_name: String,
+            _name: String,
+            _version: String,
+        ) -> anyhow::Result<bool> {
+            Ok(self.exists)
+        }
+
+        fn add_registry(
+            &mut self,
+            _registry_name: String,
+            _fetch_indexes: bool,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     use super::*;
     use std::fs;
