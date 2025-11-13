@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     PackageRelatedOptions, PrettyPrintable,
-    cli_args::{DiffOptions, DiffStrategy},
+    cli_args::DiffOptions,
     commands::{
         check_workspace::{Options as CheckWorkspaceOptions, check_workspace},
         fix_lock_files::fix_workspace_lockfile,
@@ -289,6 +289,7 @@ pub async fn tests(
     tracing::info!("Running the tests with the following arguments:");
     tracing::info!("* `check_changed`: true");
     tracing::info!("* `check_publish`: false");
+    tracing::info!("* `base_sha`: {:?}", options.diff.base_sha);
     tracing::info!("* `diff_strategy`: {}", diff_strategy);
     tracing::info!("* `whitelist`: {}", common_options.whitelist.join(","));
     tracing::info!("* `blacklist`: {}", common_options.blacklist.join(","));
@@ -328,10 +329,15 @@ pub async fn tests(
         !member.test_detail.skip.unwrap_or_default() && (member.perform_test || options.run_all)
     }) {
         let common_opts = Arc::new(common_options.clone());
+        let base_revspec = options
+            .diff
+            .base_sha
+            .clone()
+            .unwrap_or_else(|| "origin/main".into());
         let task_handle = tokio::spawn(do_test_on_package(
             common_opts,
             repo_root.clone(),
-            diff_strategy.clone(),
+            base_revspec,
             member,
             metrics.clone(),
             semaphore.clone(),
@@ -404,7 +410,7 @@ struct Metrics {
 async fn do_test_on_package(
     common_options: Arc<PackageRelatedOptions>,
     repo_root: PathBuf,
-    diff_strategy: DiffStrategy,
+    base_revspec: String,
     member: super::check_workspace::Result,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
@@ -836,7 +842,7 @@ async fn do_test_on_package(
                     .await;
             }
             let test_output = match fslabs_test.id == "cargo_lock" {
-                true => fix_workspace_lockfile(&repo_root, &package_path, &diff_strategy, true)
+                true => fix_workspace_lockfile(&repo_root, &package_path, &base_revspec, true)
                     .unwrap_or_else(|e| e.into()),
 
                 false => {

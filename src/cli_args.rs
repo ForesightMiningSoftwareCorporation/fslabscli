@@ -60,6 +60,8 @@ impl fmt::Display for DiffStrategy {
     }
 }
 
+/// Relevant env vars are specified by Prow here:
+/// <https://docs.prow.k8s.io/docs/jobs/#job-environment-variables>
 #[derive(Debug, Parser, Default, Clone)]
 pub struct DiffOptions {
     #[clap(long, env = "PULL_PULL_SHA")]
