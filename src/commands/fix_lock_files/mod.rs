@@ -1,8 +1,5 @@
 use crate::{
-    PackageRelatedOptions, PrettyPrintable,
-    cli_args::{DiffOptions, DiffStrategy},
-    crate_graph::CrateGraph,
-    script::CommandOutput,
+    PackageRelatedOptions, PrettyPrintable, crate_graph::CrateGraph, script::CommandOutput,
 };
 use clap::Parser;
 use diffy::create_patch;
@@ -10,14 +7,39 @@ use git2::Repository;
 use std::path::Path;
 use tracing::{debug, info};
 
-#[derive(Debug, Parser, Default)]
+#[derive(Debug, Parser)]
 #[command(about = "Fix inconsistencies in all Cargo.lock files.")]
 pub struct Options {
-    /// Run the fix in check mode, if set, an updated lockfile would yield an error
+    /// Exit with a failure status if the `Cargo.lock` files were not updated
+    /// *minimally* (with respect to the `base_rev`) to satisfy the `Cargo.toml`s.
+    /// By "minimal", we mean the change must be equivalent to running `cargo update --workspace`.
+    ///
+    /// This check is perhaps a bit too strict, but it will catch if a developer
+    /// forgets to completely update `Cargo.lock` files corresponding to their
+    /// `Cargo.toml` changes. Eventually we should relax this check so that
+    /// running `cargo update` without touching any `Cargo.toml` is supported.
     #[arg(long)]
     check: bool,
-    #[clap(flatten)]
-    diff: DiffOptions,
+    /// The base revision spec used for checking `Cargo.lock` files.
+    ///
+    /// This can either be a git revision SHA or any other revision spec
+    /// supported by the `git2` crate. For example, a local branch name can be
+    /// given as "$branch_name", or a remote branch as "remote/$branch_name", as
+    /// in "origin/main".
+    ///
+    /// This can be specified via the `PULL_BASE_SHA` env var, as specified by Prow:
+    /// <https://docs.prow.k8s.io/docs/jobs/#job-environment-variables>
+    #[clap(long, env = "PULL_BASE_SHA", default_value = "origin/main")]
+    base_rev: String,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            check: false,
+            base_rev: "origin/main".into(),
+        }
+    }
 }
 
 /// Read the content of a file from a specific commit without checking it out.
@@ -57,9 +79,7 @@ fn read_file_from_commit(
 ///
 /// Performs the following:
 ///
-/// 1. Restore all `Cargo.lock` files to their state at `base_rev`.
-///    If no `base_rev` are given, then the checks run on the current state.
-///    This is useful for local fixing.
+/// 1. Restore all `Cargo.lock` files to their state at `base_revspec`.
 /// 2. Run `cargo update --workspace` in each workspace to ensure
 ///    the `Cargo.lock` files are updated to reflect any changes in
 ///    `Cargo.toml`s.
@@ -71,7 +91,7 @@ fn read_file_from_commit(
 pub fn fix_workspace_lockfile(
     repo_root: &Path,
     workspace_path: &Path,
-    diff_strategy: &DiffStrategy,
+    base_revspec: &str,
     check: bool,
 ) -> anyhow::Result<CommandOutput> {
     let lock_path = workspace_path.join("Cargo.lock");
@@ -84,32 +104,30 @@ pub fn fix_workspace_lockfile(
     };
 
     let repo = Repository::open(repo_root)?;
-    let (base_commit, head_commit) = diff_strategy.git_commits(&repo)?;
-    if let DiffStrategy::Explicit { .. } = diff_strategy {
-        // Restore `Cargo.lock` file to its state at `base_rev` using git blob reading
-        // instead of checkout to avoid interfering with parallel tests.
-        debug!("Reading Cargo.lock from base commit {}", base_commit.id());
+    let base_commit = repo.revparse_single(base_revspec)?;
+    // Restore `Cargo.lock` file to its state at `base_rev` using git blob reading
+    // instead of checkout to avoid interfering with parallel tests.
+    debug!("Reading Cargo.lock from base commit {}", base_commit.id());
 
-        // Get relative path from repo root for git tree lookup
-        let lock_path_relative = lock_path.strip_prefix(repo_root)?;
+    // Get relative path from repo root for git tree lookup
+    let lock_path_relative = lock_path.strip_prefix(repo_root)?;
 
-        // Read the lockfile content from base_commit without checking it out
-        let base_lockfile = read_file_from_commit(&repo, &base_commit, lock_path_relative)?;
+    // Read the lockfile content from base_commit without checking it out
+    let base_lockfile = read_file_from_commit(&repo, &base_commit, lock_path_relative)?;
 
-        if let Some(base_contents) = base_lockfile {
-            debug!(
-                "Restoring {lock_path:?} to contents at {}",
-                base_commit.id()
-            );
-            std::fs::write(&lock_path, base_contents)?;
-        } else {
-            debug!(
-                "Cargo.lock did not exist at {}, removing if present",
-                base_commit.id()
-            );
-            // If the file didn't exist at base_commit, remove it if it exists now
-            let _ = std::fs::remove_file(&lock_path);
-        }
+    if let Some(base_contents) = base_lockfile {
+        debug!(
+            "Restoring {lock_path:?} to contents at {}",
+            base_commit.id()
+        );
+        std::fs::write(&lock_path, base_contents)?;
+    } else {
+        debug!(
+            "Cargo.lock did not exist at {}, removing if present",
+            base_commit.id()
+        );
+        // If the file didn't exist at base_commit, remove it if it exists now
+        let _ = std::fs::remove_file(&lock_path);
     }
 
     info!("Running 'cargo update --workspace' in {workspace_path:?}");
@@ -141,11 +159,7 @@ pub fn fix_workspace_lockfile(
         if changed {
             let mut diff_output = String::new();
 
-            diff_output.push_str(&format!(
-                "Diff in {} at {:?}:\n",
-                lock_path.display(),
-                head_commit
-            ));
+            diff_output.push_str(&format!("Diff in {}:\n", lock_path.display()));
             let orig = orig_lockfile.as_deref().unwrap_or("");
             let updated = updated_lockfile.as_deref().unwrap_or("");
             let patch = create_patch(orig, updated);
@@ -185,7 +199,7 @@ pub fn fix_lock_files(
         cargo_main_registry,
         ..
     } = common_options;
-    let Options { check, diff } = options;
+    let Options { check, base_rev } = options;
 
     let graph = CrateGraph::new(repo_root, cargo_main_registry.clone(), None)?;
     let check_workspaces: Vec<_> = graph
@@ -195,10 +209,8 @@ pub fn fix_lock_files(
         .map(|w| repo_root.join(&w.path))
         .collect();
 
-    let diff_strategy = diff.strategy();
-
     for workspace_path in check_workspaces {
-        fix_workspace_lockfile(repo_root, &workspace_path, &diff_strategy, *check)?;
+        fix_workspace_lockfile(repo_root, &workspace_path, base_rev, *check)?;
     }
 
     Ok("".into())
@@ -320,14 +332,18 @@ version = "0.99.99"
         let repo = create_simple_rust_crate();
 
         let common_options = PackageRelatedOptions::default();
-        let options = Options::default();
+        let options = Options {
+            base_rev: "HEAD~".into(),
+            ..Default::default()
+        };
         // Call the fix_lockfile function
-        let result = fix_lock_files(&common_options, &options, &repo).map_err(|e| {
-            println!("Got error: {e}");
-            e
-        });
+        fix_lock_files(&common_options, &options, &repo)
+            .map_err(|e| {
+                println!("Got error: {e}");
+                e
+            })
+            .unwrap();
 
-        assert!(result.is_ok());
         // Assert that lock file has been created.
         assert!(repo.join("Cargo.lock").exists());
     }
@@ -336,7 +352,10 @@ version = "0.99.99"
     async fn test_fix_lockfile_updates() {
         let repo = create_simple_rust_crate();
         let common_options = PackageRelatedOptions::default();
-        let options = Options::default();
+        let options = Options {
+            base_rev: "HEAD~".into(),
+            ..Default::default()
+        };
         // Call the fix_lockfile function to generate the first lock file
         let _ = fix_lock_files(&common_options, &options, &repo).map_err(|e| {
             println!("Got error: {e}");
@@ -374,7 +393,10 @@ version = "0.1.0"
         );
 
         let common_options = PackageRelatedOptions::default();
-        let options = Options::default();
+        let options = Options {
+            base_rev: "HEAD~".into(),
+            ..Default::default()
+        };
         // Call the fix_lockfile function
         let result = fix_lock_files(&common_options, &options, &repo).map_err(|e| {
             println!("Got error: {e}");
@@ -397,6 +419,9 @@ version = "0.2.0"
 "#
         );
     }
+
+    // TODO: what is the point of this test? Not clear what it's asserting from the name.
+    //
     #[tokio::test]
     async fn test_fix_lockfile_updates_in_complex_ws() {
         let ws = create_complex_workspace(true);
@@ -408,16 +433,16 @@ version = "0.2.0"
         }
 
         let common_options = PackageRelatedOptions::default();
-        let options = Options::default();
-        let _ = fix_lock_files(&common_options, &options, &ws).map_err(|e| {
-            println!("Got error: {e}");
-            e
-        });
+        let options = Options {
+            base_rev: "HEAD".into(),
+            ..Default::default()
+        };
+        let _ = fix_lock_files(&common_options, &options, &ws).unwrap();
         // Assert that lock files have been created.
         for workspace in graph.workspaces() {
             assert!(
                 ws.join(&workspace.path).join("Cargo.lock").exists(),
-                "{:?}",
+                "{:?} in {ws:?}",
                 workspace.path
             );
         }
@@ -456,13 +481,8 @@ version = "0.2.0"
         // - Corrupted Cargo.lock with version 0.99.99
         // - Modified main.rs with marker comment
 
-        // Call fix_workspace_lockfile with DiffStrategy::Explicit comparing HEAD to initial commit
-        let diff_strategy = DiffStrategy::Explicit {
-            base: initial_commit_sha.clone(),
-            head: "HEAD".to_string(),
-        };
-
-        let result = fix_workspace_lockfile(&repo_path, &repo_path, &diff_strategy, false);
+        // Compare HEAD to initial commit
+        let result = fix_workspace_lockfile(&repo_path, &repo_path, &initial_commit_sha, false);
 
         assert!(
             result.is_ok(),
@@ -564,16 +584,10 @@ version = "0.2.0"
             let task = tokio::spawn(async move {
                 println!("Task {}: Starting fix_workspace_lockfile", task_id);
 
-                // Call fix_workspace_lockfile with DiffStrategy::Explicit
-                let diff_strategy = DiffStrategy::Explicit {
-                    base: initial_commit_clone,
-                    head: "HEAD".to_string(),
-                };
-
                 let result = fix_workspace_lockfile(
                     &repo_path_clone,
                     &repo_path_clone,
-                    &diff_strategy,
+                    &initial_commit_clone,
                     false,
                 );
 
