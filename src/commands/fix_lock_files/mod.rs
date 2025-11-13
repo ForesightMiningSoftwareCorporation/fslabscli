@@ -8,7 +8,6 @@ use std::path::Path;
 use tracing::{debug, info};
 
 #[derive(Debug, Parser)]
-#[command(about = "Fix inconsistencies in all Cargo.lock files.")]
 pub struct Options {
     /// Exit with a failure status if the `Cargo.lock` files were not updated
     /// *minimally* (with respect to the `base_rev`) to satisfy the `Cargo.toml`s.
@@ -40,6 +39,21 @@ impl Default for Options {
             base_rev: "origin/main".into(),
         }
     }
+}
+
+impl Options {
+    pub const ABOUT: &str = "\
+Fix inconsistencies in all Cargo.lock files.";
+
+    pub const LONG_ABOUT: &str = "\
+Fix inconsistencies in all Cargo.lock files.
+
+The default options cater to the most common use case:
+developers trying to fix their PR branch to pass CI.
+
+This most often means using `origin/main` as a baseline.
+If your PR targets some other branch, like a release branch,
+then you must manually specify that branch with `--base-rev`.";
 }
 
 /// Read the content of a file from a specific commit without checking it out.

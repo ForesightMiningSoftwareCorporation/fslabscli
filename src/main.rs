@@ -96,6 +96,8 @@ enum CargoSubcommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    // Github Commands
+    //
     GenerateReleaseWorkflow(Box<GenerateWorkflowOptions>),
     GenerateWix(Box<GenerateWixOptions>),
     /// Summarize a github action run
@@ -106,8 +108,10 @@ enum Commands {
     GithubAppToken(Box<GithubAppTokenOptions>),
     /// Build and push docker image
     DockerBuildPush(Box<DockerBuildPushOptions>),
+
     // Packages Related Commands
-    /// Fix inconsistencies in all Cargo.lock files.
+    //
+    #[command(about = FixLockFilesOptions::ABOUT, long_about = FixLockFilesOptions::LONG_ABOUT)]
     FixLockFiles {
         #[command(flatten)]
         common_options: Box<PackageRelatedOptions>,
@@ -136,6 +140,9 @@ enum Commands {
         #[command(flatten)]
         options: Box<PublishOptions>,
     },
+
+    // Meta Commands
+    //
     /// Generate a shell completions script
     Completions {
         /// The shell for which to generate the script
