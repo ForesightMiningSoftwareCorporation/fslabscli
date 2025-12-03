@@ -1,6 +1,6 @@
 [package]
 name = "fsl_test_api"
-version = "2.33.0"
+version = "2.33.1"
 description = "API for use within tests that depend on the fslabscli test runner"
 authors = ["FSLABS DevOps Gods"]
 edition = "2024"
