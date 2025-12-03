@@ -1,6 +1,6 @@
 [package]
 name = "fsl_test_api"
-version = "2.32.0"
+version = "2.33.0"
 description = "API for use within tests that depend on the fslabscli test runner"
 authors = ["FSLABS DevOps Gods"]
 edition = "2024"
@@ -11,3 +11,7 @@ repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
 [dependencies]
 envconfig = "0.11.0"
 url = "2.5.7"
+
+[package.metadata.fslabs.publish.cargo]
+publish = true
+alternate_registries = ["fslabs-nominal"]
