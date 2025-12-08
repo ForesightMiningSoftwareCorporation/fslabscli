@@ -15,6 +15,8 @@ pub struct PackageMetadataFslabsCiPublishS3 {
     #[serde(default)]
     pub output_dir: Option<String>,
     #[serde(default)]
+    pub cloudfront_distribution_id: Option<String>,
+    #[serde(default)]
     pub error: Option<String>,
 }
 
