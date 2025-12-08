@@ -3,6 +3,7 @@ use cargo_metadata::{DependencyKind, PackageId};
 use clap::Parser;
 use git2::Repository;
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
+use mime_guess;
 use octocrab::Octocrab;
 use octocrab::params::repos::Reference;
 use opendal::{Operator, services};
@@ -641,21 +642,27 @@ async fn do_publish_package(
                                         None => relative.display().to_string(),
                                     };
                                     match fs::read(path) {
-                                        Ok(bytes) => match store_client.write(&key, bytes).await {
-                                            Ok(_) => {
-                                                result.s3.stdout = format!(
-                                                    "{}\nUploaded: {}",
-                                                    result.s3.stdout, key
-                                                );
-                                            }
-                                            Err(e) => {
-                                                result.s3.success = false;
-                                                result.s3.stderr = format!(
-                                                    "{}\nUpload failed {}: {}",
-                                                    result.s3.stderr, key, e
-                                                );
-                                                is_failed = true;
-                                                break;
+                                        Ok(bytes) => {
+                                            let content_type = mime_guess::from_path(path)
+                                                .first_or_octet_stream()
+                                                .to_string();
+
+                                            match store_client.write_with(&key, bytes).content_type(&content_type).await {
+                                                Ok(_) => {
+                                                    result.s3.stdout = format!(
+                                                        "{}\nUploaded: {} (Content-Type: {})",
+                                                        result.s3.stdout, key, content_type
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    result.s3.success = false;
+                                                    result.s3.stderr = format!(
+                                                        "{}\nUpload failed {}: {}",
+                                                        result.s3.stderr, key, e
+                                                    );
+                                                    is_failed = true;
+                                                    break;
+                                                }
                                             }
                                         },
                                         Err(e) => {
@@ -1681,5 +1688,86 @@ mod tests {
             "Error message should mention repository opening failure, got: {}",
             err_msg
         );
+    }
+
+    // Content-type detection tests
+    #[test]
+    fn test_content_type_detection_html() {
+        use std::path::Path;
+        let path = Path::new("index.html");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "text/html");
+    }
+
+    #[test]
+    fn test_content_type_detection_javascript() {
+        use std::path::Path;
+        let path = Path::new("script.js");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "text/javascript");
+    }
+
+    #[test]
+    fn test_content_type_detection_css() {
+        use std::path::Path;
+        let path = Path::new("styles.css");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "text/css");
+    }
+
+    #[test]
+    fn test_content_type_detection_json() {
+        use std::path::Path;
+        let path = Path::new("data.json");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "application/json");
+    }
+
+    #[test]
+    fn test_content_type_detection_png() {
+        use std::path::Path;
+        let path = Path::new("image.png");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "image/png");
+    }
+
+    #[test]
+    fn test_content_type_detection_jpeg() {
+        use std::path::Path;
+        let path = Path::new("photo.jpg");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "image/jpeg");
+    }
+
+    #[test]
+    fn test_content_type_detection_wasm() {
+        use std::path::Path;
+        let path = Path::new("module.wasm");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "application/wasm");
+    }
+
+    #[test]
+    fn test_content_type_detection_unknown_extension() {
+        use std::path::Path;
+        let path = Path::new("file.xyz123unknown");
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        assert_eq!(content_type, "application/octet-stream");
     }
 }
