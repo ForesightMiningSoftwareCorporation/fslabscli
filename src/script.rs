@@ -20,15 +20,16 @@ pub struct Script {
 }
 
 impl Script {
-    pub fn new(script: impl AsRef<str>) -> Self {
+    pub fn new(script: impl AsRef<str>, xtrace: bool) -> Self {
         // See https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html
         #[cfg(not(target_os = "windows"))]
         let script = format!(
             "set -o errexit
             set -o nounset
             set -o pipefail
-            set -o xtrace
+            {}
             {}",
+            if xtrace { "set -o xtrace" } else { "" },
             script.as_ref()
         );
         #[cfg(target_os = "windows")]

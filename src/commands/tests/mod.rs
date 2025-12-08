@@ -462,7 +462,7 @@ async fn do_test_on_package(
             stdout,
             stderr,
             success,
-        } = Script::new(pre_service_script)
+        } = Script::new(pre_service_script, true)
             .name(format!("{package_name}::pre_service_script"))
             .current_dir(&package_path)
             .log_stdout(tracing::Level::DEBUG)
@@ -569,7 +569,7 @@ async fn do_test_on_package(
     for (name, command) in &test_args.custom_services {
         tracing::info!("│ {package_name:30.30}     │ Starting custom service '{name}'");
         let start_time = OffsetDateTime::now_utc();
-        match Script::new(command)
+        match Script::new(command, true)
             .name(format!("{package_name}::{name}"))
             .current_dir(&package_path)
             .maybe_env("DATABASE_URL", database_url.clone())
@@ -602,7 +602,7 @@ async fn do_test_on_package(
     if !failed && let Some(cache_miss_command) = &test_args.additional_cache_miss {
         tracing::info!("│ {package_name:30.30}     │ Running cache miss command");
         let start_time = OffsetDateTime::now_utc();
-        let command_output = Script::new(cache_miss_command)
+        let command_output = Script::new(cache_miss_command, true)
             .current_dir(&repo_root)
             .maybe_env("DATABASE_URL", database_url.clone())
             .execute()
@@ -630,7 +630,7 @@ async fn do_test_on_package(
             stdout,
             stderr,
             success,
-        } = Script::new(pre_test_script)
+        } = Script::new(pre_test_script, true)
             .name(format!("{package_name}::pre_test_script"))
             .current_dir(&package_path)
             .maybe_env("DATABASE_URL", database_url.clone())
@@ -835,7 +835,7 @@ async fn do_test_on_package(
             }
 
             if let Some(pre_command) = fslabs_test.pre_command {
-                Script::new(&pre_command)
+                Script::new(&pre_command, true)
                     .current_dir(&package_path)
                     .envs(&fslabs_test.envs)
                     .execute()
@@ -846,7 +846,7 @@ async fn do_test_on_package(
                     .unwrap_or_else(|e| e.into()),
 
                 false => {
-                    Script::new(&fslabs_test.command)
+                    Script::new(&fslabs_test.command, true)
                         .name(format!("{package_name}::test_command"))
                         .current_dir(&package_path)
                         .envs(&fslabs_test.envs)
@@ -857,7 +857,7 @@ async fn do_test_on_package(
                 }
             };
             if let Some(post_command) = fslabs_test.post_command {
-                Script::new(&post_command)
+                Script::new(&post_command, true)
                     .current_dir(&package_path)
                     .envs(&fslabs_test.envs)
                     .execute()
