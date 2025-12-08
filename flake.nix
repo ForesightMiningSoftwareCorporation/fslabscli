@@ -52,7 +52,7 @@
             "aarch64-darwin" = rec {
               rustTarget = "aarch64-apple-darwin";
               pkgsCross = generateCross rustTarget;
-              depsBuildBuild = [ ];
+              depsBuildBuild = [ pkgsCross.libiconv ];
             };
             "x86_64-windows" =
               let
@@ -152,6 +152,12 @@
 
               CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
               LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
+              AR = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ar";
+              RANLIB = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ranlib";
+
+              # Target-specific variants for openssl-sys
+              "AR_x86_64_unknown_linux_musl" = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ar";
+              "RANLIB_x86_64_unknown_linux_musl" = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ranlib";
 
               OPENSSL_STATIC = "1";
               OPENSSL_NO_VENDOR = "0";
@@ -227,6 +233,7 @@
                     # self.packages.${system}.default
                     # updatecli
                     cargo-deny
+                    trunk
                     # cargo-nextest
                     xunit-viewer
                     protobuf
@@ -239,7 +246,13 @@
                 languages = {
                   rust = {
                     enable = true;
-                    toolchainPackage = toolchain;
+                    toolchainPackage =
+                      with fenixPkgs;
+                      combine [
+                        minimal.cargo
+                        minimal.rustc
+                        targets.wasm32-unknown-unknown.latest.rust-std
+                      ];
                   };
                 };
 

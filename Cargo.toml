@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["foresight_mining_software_corporation"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.34.0"
+version = "2.34.1"
 
 [package.metadata.fslabs.publish.binary]
 name = "FSLABS Cli tool"
@@ -85,8 +85,11 @@ diffy = "0.4.2"
 strum = "0.27.2"
 mime_guess = "2.0.5"
 temp-dir = "0.1.16"
-aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
-aws-sdk-cloudfront = "1.102.0"
+# Use tls-rustls feature to enable legacy ring-based TLS instead of aws-lc-rs
+# This is required for cross-compilation to Windows (aws-lc-sys doesn't support MinGW)
+aws-config = { version = "1.1.7", default-features = false, features = ["behavior-version-latest", "rt-tokio", "sso", "credentials-process"] }
+aws-sdk-cloudfront = { version = "1.102.0", default-features = false, features = ["rt-tokio"] }
+aws-smithy-runtime = { version = "1.9.4", default-features = false, features = ["client", "connector-hyper-0-14-x", "rt-tokio", "tls-rustls"] }
 
 [dependencies.anyhow]
 features = []
