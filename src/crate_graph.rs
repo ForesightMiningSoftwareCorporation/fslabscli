@@ -1,6 +1,6 @@
 #[cfg(test)]
 use cargo_metadata::semver::Version;
-use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package, PackageId};
+use cargo_metadata::{CargoOpt, DependencyKind, Metadata, MetadataCommand, Package, PackageId};
 use git2::{DiffDelta, Object, Repository};
 use ignore::gitignore::Gitignore;
 use std::{
@@ -84,6 +84,7 @@ impl CrateGraph {
             // Found a manifest. Get metadata.
             let mut command = MetadataCommand::new();
             command.current_dir(dir);
+            command.features(CargoOpt::AllFeatures);
             for (k, v) in envs {
                 command.env(k, v);
             }
