@@ -152,13 +152,6 @@
 
               CC = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
               LD = "${pkgsCross.stdenv.cc}/bin/${pkgsCross.stdenv.cc.targetPrefix}cc";
-              AR = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ar";
-              RANLIB = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ranlib";
-
-              # Target-specific variants for openssl-sys
-              "AR_x86_64_unknown_linux_musl" = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ar";
-              "RANLIB_x86_64_unknown_linux_musl" = "${pkgsCross.stdenv.cc.bintools}/bin/${pkgsCross.stdenv.cc.targetPrefix}ranlib";
-
               OPENSSL_STATIC = "1";
               OPENSSL_NO_VENDOR = "0";
               PKG_CONFIG_ALL_STATIC = "1";
