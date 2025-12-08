@@ -1306,6 +1306,7 @@ pub async fn check_workspace<C: CrateChecker + Default>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Once;
 
     use crate::{
         PackageRelatedOptions,
@@ -1319,11 +1320,21 @@ mod tests {
         },
     };
 
+    static INIT_CRYPTO: Once = Once::new();
+
+    /// Initialize the Rustls crypto provider once for all tests.
+    /// This must be called before any code that creates HTTP clients.
+    fn init_crypto_provider() {
+        INIT_CRYPTO.call_once(|| {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .ok(); // Ignore error if already installed
+        });
+    }
+
     #[tokio::test]
     async fn test_alternate_registry_back_feeding() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("Could not install crypto provider");
+        init_crypto_provider();
         let ws = create_complex_workspace(true);
 
         // Check workspace information
@@ -1369,6 +1380,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rust_toolchain_trigger_full_test() {
+        init_crypto_provider();
         let ws = create_complex_workspace(true);
         modify_file(
             &ws,
@@ -1398,6 +1410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_whitelist_is_respected_for_tests() {
+        init_crypto_provider();
         // First we test without whitelist
         let ws = create_complex_workspace(false);
 
@@ -1486,6 +1499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_whitelist_include_unpublished_required_package() {
+        init_crypto_provider();
         // If package_a depends on package_b and the whitelist only cares
         // about package_a. If to publish_a we need package_b published
         // Then package_b should be marked as published.
@@ -1536,6 +1550,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_whitelist_only_check_for_whitelisted_packages() {
+        init_crypto_provider();
         let ws = create_complex_workspace(false);
 
         let common_options = PackageRelatedOptions {

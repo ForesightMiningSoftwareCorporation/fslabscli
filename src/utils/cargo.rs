@@ -275,6 +275,9 @@ pub struct Cargo {
 impl Default for Cargo {
     fn default() -> Self {
         let client = (|| {
+            // Ensure rustls has a crypto provider installed (use ring)
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             let tls_config = rustls::ClientConfig::builder()
                 .with_native_roots()
                 .ok()? // returns None if building fails
