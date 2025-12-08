@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 name = "cargo-fslabscli"
 publish = ["foresight_mining_software_corporation"]
 repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
-version = "2.33.1"
+version = "2.34.0"
 
 [package.metadata.fslabs.publish.binary]
 name = "FSLABS Cli tool"
@@ -137,7 +137,7 @@ version = "0.38.3"
 
 [dependencies.rustls]
 default-features = false
-features = ["tls12"]
+features = ["tls12", "ring"]
 version = "0.23.34"
 
 [dependencies.serde]
