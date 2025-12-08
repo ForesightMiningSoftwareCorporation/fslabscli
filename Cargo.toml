@@ -85,6 +85,8 @@ diffy = "0.4.2"
 strum = "0.27.2"
 mime_guess = "2.0.5"
 temp-dir = "0.1.16"
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-cloudfront = "1.102.0"
 
 [dependencies.anyhow]
 features = []

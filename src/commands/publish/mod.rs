@@ -1,4 +1,5 @@
 use anyhow::Context;
+use aws_sdk_cloudfront as cloudfront;
 use cargo_metadata::{DependencyKind, PackageId};
 use clap::Parser;
 use git2::Repository;
@@ -74,6 +75,8 @@ pub struct Options {
     s3_secret_access_key: Option<String>,
     #[arg(long, env)]
     s3_endpoint: Option<String>,
+    #[arg(long, env)]
+    cloudfront_distribution_id: Option<String>,
     #[arg(long, env, default_value = "false")]
     dry_run: bool,
     #[arg(long, env, default_value = "false")]
@@ -531,6 +534,77 @@ pub async fn create_s3_client(
     }
 }
 
+/// Creates a CloudFront invalidation for the specified paths
+pub async fn create_cloudfront_invalidation(
+    distribution_id: &str,
+    paths: Vec<String>,
+    region: Option<String>,
+) -> anyhow::Result<String> {
+    if paths.is_empty() {
+        return Ok("No paths to invalidate".to_string());
+    }
+
+    let mut config_loader = aws_config::from_env();
+    if let Some(region) = region {
+        config_loader = config_loader.region(aws_config::Region::new(region));
+    }
+    let config = config_loader.load().await;
+
+    let client = cloudfront::Client::new(&config);
+
+    // CloudFront paths must start with /
+    let invalidation_paths: Vec<String> = paths
+        .into_iter()
+        .map(|p| {
+            if p.starts_with('/') {
+                p
+            } else {
+                format!("/{}", p)
+            }
+        })
+        .collect();
+
+    // Create unique caller reference using timestamp
+    let caller_reference = format!(
+        "fslabscli-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let invalidation_batch = cloudfront::types::InvalidationBatch::builder()
+        .paths(
+            cloudfront::types::Paths::builder()
+                .quantity(invalidation_paths.len() as i32)
+                .set_items(Some(invalidation_paths.clone()))
+                .build()
+                .context("Failed to build invalidation paths")?,
+        )
+        .caller_reference(&caller_reference)
+        .build()
+        .context("Failed to build invalidation batch")?;
+
+    let response = client
+        .create_invalidation()
+        .distribution_id(distribution_id)
+        .invalidation_batch(invalidation_batch)
+        .send()
+        .await
+        .context("Failed to create CloudFront invalidation")?;
+
+    let invalidation_id = response
+        .invalidation()
+        .map(|i| i.id().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Ok(format!(
+        "Created CloudFront invalidation {} for {} paths",
+        invalidation_id,
+        invalidation_paths.len()
+    ))
+}
+
 /// Actual Publish
 async fn do_publish_package(
     repo_root: PathBuf,
@@ -602,6 +676,7 @@ async fn do_publish_package(
             result.s3.update_from_command(command_output);
             is_failed = !result.s3.success;
             if !is_failed {
+                let mut uploaded_paths: Vec<String> = Vec::new();
                 match create_s3_client(
                     package.publish_detail.s3.bucket_name.clone(),
                     package.publish_detail.s3.bucket_region.clone(),
@@ -647,12 +722,17 @@ async fn do_publish_package(
                                                 .first_or_octet_stream()
                                                 .to_string();
 
-                                            match store_client.write_with(&key, bytes).content_type(&content_type).await {
+                                            match store_client
+                                                .write_with(&key, bytes)
+                                                .content_type(&content_type)
+                                                .await
+                                            {
                                                 Ok(_) => {
                                                     result.s3.stdout = format!(
                                                         "{}\nUploaded: {} (Content-Type: {})",
                                                         result.s3.stdout, key, content_type
                                                     );
+                                                    uploaded_paths.push(key.clone());
                                                 }
                                                 Err(e) => {
                                                     result.s3.success = false;
@@ -664,7 +744,7 @@ async fn do_publish_package(
                                                     break;
                                                 }
                                             }
-                                        },
+                                        }
                                         Err(e) => {
                                             result.s3.success = false;
                                             result.s3.stderr = format!(
@@ -693,6 +773,42 @@ async fn do_publish_package(
                         result.nix_binary.success = false;
                         result.nix_binary.stderr = format!("{}\n{}", result.s3.stderr, e);
                         is_failed = true;
+                    }
+                }
+
+                // CloudFront cache invalidation (if configured)
+                // CLI option takes precedence over package metadata
+                if !is_failed {
+                    let distribution_id = options.cloudfront_distribution_id.as_ref().or(package
+                        .publish_detail
+                        .s3
+                        .cloudfront_distribution_id
+                        .as_ref());
+
+                    if let Some(distribution_id) = distribution_id {
+                        info!(
+                            "Creating CloudFront invalidation for distribution: {}",
+                            distribution_id
+                        );
+                        match create_cloudfront_invalidation(
+                            distribution_id,
+                            uploaded_paths,
+                            package.publish_detail.s3.bucket_region.clone(),
+                        )
+                        .await
+                        {
+                            Ok(msg) => {
+                                result.s3.stdout = format!("{}\n{}", result.s3.stdout, msg);
+                                info!("{}", msg);
+                            }
+                            Err(e) => {
+                                // CloudFront invalidation failure should not fail the entire publish
+                                // but we should warn about it
+                                let err_msg = format!("CloudFront invalidation warning: {}", e);
+                                result.s3.stderr = format!("{}\n{}", result.s3.stderr, err_msg);
+                                tracing::warn!("{}", err_msg);
+                            }
+                        }
                     }
                 }
             }
