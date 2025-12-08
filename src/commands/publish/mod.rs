@@ -590,7 +590,7 @@ async fn do_publish_package(
             }
             // First we build
             let build_command = package.publish_detail.s3.build_command;
-            let command_output = Script::new(&build_command)
+            let command_output = Script::new(&build_command, true)
                 .current_dir(&package_path)
                 .env_removals(&blacklist_envs)
                 .envs(&envs)
@@ -703,28 +703,31 @@ async fn do_publish_package(
                 env::var("ATTICD_TOKEN"),
             ) {
                 info!("Login to atticd");
-                let command_output =
-                    Script::new(format!("attic login central {atticd_url}/ {atticd_token}"))
-                        .current_dir(&repo_root)
-                        .log_stdout(tracing::Level::DEBUG)
-                        .log_stderr(tracing::Level::DEBUG)
-                        .execute()
-                        .await;
+                let command_output = Script::new(
+                    format!("attic login central {atticd_url}/ {atticd_token}"),
+                    false,
+                )
+                .current_dir(&repo_root)
+                .log_stdout(tracing::Level::DEBUG)
+                .log_stderr(tracing::Level::DEBUG)
+                .execute()
+                .await;
                 result.nix_binary.update_from_command(command_output);
                 is_failed = !result.nix_binary.success;
                 if !is_failed {
-                    let command_output = Script::new(format!("attic use central:{atticd_cache}"))
-                        .current_dir(&package_path)
-                        .log_stdout(tracing::Level::DEBUG)
-                        .log_stderr(tracing::Level::DEBUG)
-                        .execute()
-                        .await;
+                    let command_output =
+                        Script::new(format!("attic use central:{atticd_cache}"), true)
+                            .current_dir(&package_path)
+                            .log_stdout(tracing::Level::DEBUG)
+                            .log_stderr(tracing::Level::DEBUG)
+                            .execute()
+                            .await;
                     result.nix_binary.update_from_command(command_output);
                     is_failed = !result.nix_binary.success;
                 }
             }
             if !is_failed {
-                let mut command_output = Script::new("nix build .#release")
+                let mut command_output = Script::new("nix build .#release", true)
                     .current_dir(&package_path)
                     .log_stdout(tracing::Level::INFO)
                     .log_stderr(tracing::Level::INFO)
@@ -743,7 +746,7 @@ async fn do_publish_package(
                 info!("Pushing to atticd");
                 let command_output = Script::new(format!(
                     "attic push {atticd_cache} $(nix-store -qR --include-outputs $(nix-store -qd ./result) | grep -v '\\.drv$')"
-                ))
+                ), true)
                     .current_dir(&package_path)
                     .log_stdout(tracing::Level::INFO)
                     .log_stderr(tracing::Level::INFO)
@@ -813,10 +816,10 @@ async fn do_publish_package(
                         if options.dry_run {
                             args.push("--dry-run".to_string())
                         }
-                        let command_output = Script::new(format!(
-                            "printenv | grep CARGO && cargo publish {}",
-                            args.join(" ")
-                        ))
+                        let command_output = Script::new(
+                            format!("printenv | grep CARGO && cargo publish {}", args.join(" ")),
+                            true,
+                        )
                         .current_dir(&package_path)
                         .env_removals(&blacklist_envs)
                         .envs(&envs)
@@ -944,10 +947,13 @@ async fn do_publish_package(
             }
             args.push(context.clone());
             // First we build
-            let command_output = Script::new(format!(
-                "docker buildx build --push --progress plain {}",
-                args.join(" ")
-            ))
+            let command_output = Script::new(
+                format!(
+                    "docker buildx build --push --progress plain {}",
+                    args.join(" ")
+                ),
+                true,
+            )
             .current_dir(&repo_root)
             .env_removals(&blacklist_envs)
             .envs(&envs)
@@ -1025,6 +1031,7 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
     if options.docker_hub_username.is_some() && options.docker_hub_password.is_some() {
         let command_output = Script::new(
             "echo \"$DOCKER_HUB_PASSWORD\" | docker login registry-1.docker.io --username $DOCKER_HUB_USERNAME --password-stdin >/dev/null",
+            false
         )
             .current_dir(repo_root)
             .log_stdout(tracing::Level::INFO)
@@ -1040,6 +1047,7 @@ pub async fn login(options: &Options, repo_root: &PathBuf) -> anyhow::Result<()>
     {
         let command_output = Script::new(
             "echo \"${GHCR_OCI_PASSWORD}\" | docker login \"${GHCR_OCI_URL#oci://}\" --username \"${GHCR_OCI_USERNAME}\" --password-stdin >/dev/null",
+            false
         )
             .current_dir(repo_root)
             .log_stdout(tracing::Level::INFO)

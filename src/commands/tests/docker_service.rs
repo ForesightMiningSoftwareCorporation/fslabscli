@@ -53,9 +53,10 @@ impl DockerContainer {
         let suffix = Alphanumeric.sample_string(&mut rand::rng(), 6);
         let container_name = format!("{prefix}_{suffix}");
         let path = std::env::current_dir().unwrap();
-        let command_output = Script::new(format!(
-            "docker run --name={container_name} -d {env} {port} {image} {command}"
-        ))
+        let command_output = Script::new(
+            format!("docker run --name={container_name} -d {env} {port} {image} {command}"),
+            true,
+        )
         .current_dir(&path)
         .execute()
         .await;
@@ -64,7 +65,7 @@ impl DockerContainer {
         }
         // HACK: Wait 5 Sec
         tokio::time::sleep(Duration::from_millis(5000)).await;
-        let command_output = Script::new(format!("docker ps -q -f name={container_name}"))
+        let command_output = Script::new(format!("docker ps -q -f name={container_name}"), true)
             .current_dir(&path)
             .execute()
             .await;
@@ -86,11 +87,11 @@ impl DockerProcess {
     pub async fn teardown(self) {
         let Self { container_id } = self;
         let path = std::env::current_dir().unwrap();
-        Script::new(format!("docker stop {container_id}"))
+        Script::new(format!("docker stop {container_id}"), true)
             .current_dir(&path)
             .execute()
             .await;
-        Script::new(format!("docker rm {container_id}"))
+        Script::new(format!("docker rm {container_id}"), true)
             .current_dir(&path)
             .execute()
             .await;
