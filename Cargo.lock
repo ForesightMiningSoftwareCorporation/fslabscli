@@ -262,9 +262,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-cloudfront"
-version = "1.105.0"
+version = "1.106.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "274d73c589ac39d97a42e553a5b9b8a79cd51b04e1078e7499f81f4bd9e85d74"
+checksum = "1ab4cef77601b6d7da203b97433e945ba5005f9e570e50fa594a45d67f8a75a3"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -3993,7 +3993,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

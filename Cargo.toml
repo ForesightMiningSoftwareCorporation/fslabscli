@@ -86,7 +86,7 @@ strum = "0.27.2"
 mime_guess = "2.0.5"
 temp-dir = "0.1.16"
 aws-config = { version = "1.8.12", default-features = false, features = ["behavior-version-latest", "rt-tokio", "sso", "credentials-process"] }
-aws-sdk-cloudfront = { version = "1.102.0", default-features = false, features = ["rt-tokio"] }
+aws-sdk-cloudfront = { version = "1.106.0", default-features = false, features = ["rt-tokio"] }
 
 [dependencies.anyhow]
 features = []
