@@ -124,7 +124,7 @@ version = "2.12.1"
 
 [dependencies.opendal]
 features = ["services-s3", "services-azblob"]
-version = "0.54.1"
+version = "0.55.0"
 
 [dependencies.oci-distribution]
 default-features = false
