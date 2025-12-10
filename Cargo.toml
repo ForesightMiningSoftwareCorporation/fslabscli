@@ -98,7 +98,7 @@ version = "4.5.53"
 
 [dependencies.git2]
 default-features = false
-version = "0.20.2"
+version = "0.20.3"
 features = ["vendored-openssl", "https", "ssh"]
 
 [dependencies.humanize-duration]
