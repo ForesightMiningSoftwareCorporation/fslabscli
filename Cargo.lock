@@ -778,7 +778,7 @@ dependencies = [
  "hyper-util",
  "ignore",
  "indexmap 2.12.1",
- "indicatif 0.18.2",
+ "indicatif 0.18.3",
  "indoc",
  "itertools",
  "jsonwebtoken",
@@ -2092,9 +2092,9 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ade6dfcba0dfb62ad59e59e7241ec8912af34fd29e0e743e3db992bd278e8b65"
+checksum = "9375e112e4b463ec1b1c6c011953545c65a30164fbab5b581df32b3abf0dcb88"
 dependencies = [
  "console 0.16.1",
  "portable-atomic",
@@ -3992,7 +3992,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
