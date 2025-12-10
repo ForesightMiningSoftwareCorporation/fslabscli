@@ -146,7 +146,7 @@ version = "1.0.228"
 
 [dependencies.serde_with]
 features = ["macros"]
-version = "3.15.1"
+version = "3.16.1"
 
 [dependencies.tokio]
 features = ["full"]
