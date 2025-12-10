@@ -120,7 +120,7 @@ version = "0.1.19"
 
 [dependencies.indexmap]
 features = ["serde"]
-version = "2.12.0"
+version = "2.12.1"
 
 [dependencies.opendal]
 features = ["services-s3", "services-azblob"]
