@@ -65,7 +65,7 @@ tracing-subscriber = { version = "0.3.22", features = [
     "env-filter",
     "fmt",
 ] }
-url = "2.5.7"
+url = "2.5.8"
 void = "1.0.2"
 zip = "7.0.0"
 tracing-core = "0.1.36"

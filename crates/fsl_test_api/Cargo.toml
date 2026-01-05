@@ -10,7 +10,7 @@ repository = "https://github.com/ForesightMiningSoftwareCorporation/fslabsci"
 
 [dependencies]
 envconfig = "0.11.1"
-url = "2.5.7"
+url = "2.5.8"
 
 [package.metadata.fslabs.publish.cargo]
 publish = true
