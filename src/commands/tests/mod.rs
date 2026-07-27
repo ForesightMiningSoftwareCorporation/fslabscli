@@ -46,8 +46,39 @@ use crate::{
     },
     init_metrics,
     script::{CommandOutput, Script},
+    test_args::TestArgs,
     utils::cargo::Cargo,
 };
+
+/// Env var that, when set to `"true"`, skips the `cargo_test` step for
+/// packages that declare no external services (Bazel already covers
+/// compilation and unit tests for serviceless crates in CI).
+const SKIP_TESTS_WITHOUT_SERVICES_ENV: &str = "SKIP_TESTS_WITHOUT_SERVICES";
+
+/// Whether a package needs external test fixtures: any known service
+/// (postgres/azurite/minio), a custom service, or a pre-service/pre-test
+/// script.
+#[allow(dead_code)] // false positive: module is named `tests`
+fn package_requires_services(test_args: &TestArgs) -> bool {
+    test_args.services.postgres
+        || test_args.services.azurite
+        || test_args.services.minio
+        || !test_args.custom_services.is_empty()
+        || test_args.pre_service_script.is_some()
+        || test_args.pre_test_script.is_some()
+}
+
+/// Checks whether the `cargo_test` step should be skipped for a package that
+/// declares no services. Returns `true` only when `SKIP_TESTS_WITHOUT_SERVICES`
+/// equals `"true"`, the package requires no services, and it uses the default
+/// test command (custom test commands, e.g. `wasm-pack test`, are not covered
+/// by Bazel).
+#[allow(dead_code)] // false positive: module is named `tests`
+fn should_skip_serviceless_cargo_test(test_args: &TestArgs) -> bool {
+    matches!(env::var(SKIP_TESTS_WITHOUT_SERVICES_ENV), Ok(v) if v == "true")
+        && !package_requires_services(test_args)
+        && test_args.test_command.is_none()
+}
 
 #[derive(Debug, Parser, Default, Clone)]
 #[command(about = "Run tests")]
@@ -1286,6 +1317,14 @@ async fn run_package_tests(
         if should_skip_step(&t.id) {
             t.skip = true;
         }
+        // Bazel covers serviceless crates in CI: skip cargo_test when the
+        // package declares no services and the opt-in env var is set.
+        if t.id == "cargo_test" && !t.skip && should_skip_serviceless_cargo_test(&test_args) {
+            tracing::info!(
+                "│ {package_name:30.30}     │ Skipping cargo_test: {SKIP_TESTS_WITHOUT_SERVICES_ENV}=true and package declares no services"
+            );
+            t.skip = true;
+        }
         t
     })
     .collect();
@@ -1630,9 +1669,19 @@ fn step_is_covered_by_batch(
 mod unit_tests {
     use super::*;
 
+    /// Serialises all tests that mutate the process environment: setenv and
+    /// getenv are not thread-safe and cargo runs tests in parallel within one
+    /// process.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Helper: sets an env var, runs the closure, then removes the var.
     /// Keeps the unsafe surface small and centralised.
     fn with_env_var(key: &str, value: &str, f: impl FnOnce()) {
+        let _guard = lock_env();
         unsafe { env::set_var(key, value) };
         f();
         unsafe { env::remove_var(key) };
@@ -1640,6 +1689,7 @@ mod unit_tests {
 
     /// Helper: ensures an env var is absent, runs the closure, then cleans up.
     fn without_env_var(key: &str, f: impl FnOnce()) {
+        let _guard = lock_env();
         unsafe { env::remove_var(key) };
         f();
     }
@@ -1774,5 +1824,79 @@ mod unit_tests {
             "0.1.0",
             "cargo_fmt"
         ));
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_env_var_is_absent() {
+        without_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, || {
+            assert!(!should_skip_serviceless_cargo_test(&TestArgs::default()));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_skip_when_env_var_is_true_and_no_services() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            assert!(should_skip_serviceless_cargo_test(&TestArgs::default()));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_env_var_is_false() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "false", || {
+            assert!(!should_skip_serviceless_cargo_test(&TestArgs::default()));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_package_declares_a_service() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            let mut test_args = TestArgs::default();
+            test_args.services.postgres = true;
+            assert!(!should_skip_serviceless_cargo_test(&test_args));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_package_declares_a_custom_service() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            let mut test_args = TestArgs::default();
+            test_args
+                .custom_services
+                .insert("mock-server".to_string(), "run-mock-server".to_string());
+            assert!(!should_skip_serviceless_cargo_test(&test_args));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_package_has_pre_service_script() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            let test_args = TestArgs {
+                pre_service_script: Some("./setup.sh".to_string()),
+                ..Default::default()
+            };
+            assert!(!should_skip_serviceless_cargo_test(&test_args));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_package_has_pre_test_script() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            let test_args = TestArgs {
+                pre_test_script: Some("./fixtures.sh".to_string()),
+                ..Default::default()
+            };
+            assert!(!should_skip_serviceless_cargo_test(&test_args));
+        });
+    }
+
+    #[test]
+    fn serviceless_should_not_skip_when_package_has_custom_test_command() {
+        with_env_var(SKIP_TESTS_WITHOUT_SERVICES_ENV, "true", || {
+            let test_args = TestArgs {
+                test_command: Some("wasm-pack test".to_string()),
+                ..Default::default()
+            };
+            assert!(!should_skip_serviceless_cargo_test(&test_args));
+        });
     }
 }
