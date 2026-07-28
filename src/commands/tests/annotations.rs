@@ -32,7 +32,33 @@ const MAX_ANNOTATIONS_PER_CALL: usize = 50;
 // POST with a 422 and drops every annotation. Leave a small margin so the
 // truncation notice itself doesn't push us back over.
 const MAX_SUMMARY_CHARS: usize = 65_000;
-const CHECK_NAME: &str = "test-annotations";
+
+/// The parts of the check run that differ per job.
+///
+/// Each job needs its own `check_name`: GitHub keys a check run by name, so two
+/// jobs sharing one name would overwrite each other's findings, and a rerun
+/// would not replace the run it belongs to.
+pub struct CheckStyle {
+    pub check_name: String,
+    /// Command that reproduces the run locally, shown under "Reproduce".
+    pub reproduce: String,
+    /// Prow job to rerun, shown under "Rerun" as `/test <job>`.
+    pub rerun_job: String,
+    /// Optional extra line under "Reproduce", e.g. how to narrow the run.
+    pub reproduce_hint: Option<String>,
+}
+
+impl CheckStyle {
+    /// Style used by `fslabscli rust-tests`.
+    pub fn rust_tests() -> Self {
+        Self {
+            check_name: "test-annotations".into(),
+            reproduce: "cargo-fslabscli rust-tests".into(),
+            rerun_job: "cargo-tests".into(),
+            reproduce_hint: Some("Narrow to a single crate with `--whitelist <path>`.".into()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +226,7 @@ fn parse_cargo_diagnostics(
                     "cargo_check" => "cargo check",
                     "cargo_clippy" => "cargo clippy",
                     "cargo_doc" => "cargo doc",
+                    "bazel_rustc" => "rustc (via bazel)",
                     _ => "cargo diagnostic",
                 };
                 out.push(Annotation {
@@ -253,6 +280,8 @@ struct JUnitTestSuites {
 
 #[derive(Debug, serde::Deserialize)]
 struct JUnitTestSuite {
+    #[serde(rename = "@name", default)]
+    name: String,
     #[serde(rename = "testcase", default)]
     testcases: Vec<JUnitTestCase>,
 }
@@ -263,7 +292,16 @@ struct JUnitTestCase {
     name: String,
     #[serde(default)]
     failure: Option<JUnitFailure>,
+    /// Bazel's `test.xml` reports a crashed target as `<error>` rather than
+    /// `<failure>`; nextest only ever emits the latter.
+    #[serde(default)]
+    error: Option<JUnitFailure>,
+    #[serde(default)]
+    skipped: Option<JUnitSkipped>,
 }
+
+#[derive(Debug, serde::Deserialize)]
+struct JUnitSkipped {}
 
 #[derive(Debug, serde::Deserialize)]
 struct JUnitFailure {
@@ -279,10 +317,59 @@ struct JUnitFailure {
 const MAX_MESSAGE_CHARS: usize = 400;
 
 fn parse_nextest_junit(xml: &str, base: &Path, repo_root: &Path) -> Vec<Annotation> {
-    let doc: JUnitTestSuites = match quick_xml::de::from_str(xml) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
+    parse_junit(xml, base, repo_root, "cargo test").0
+}
+
+/// Extract failure annotations and per-suite counts from a JUnit document.
+///
+/// Handles both roots: nextest and Bazel wrap suites in `<testsuites>`, but a
+/// lone `<testsuite>` root is also valid JUnit and Bazel emits it for
+/// single-target runs.
+fn parse_junit(
+    xml: &str,
+    base: &Path,
+    repo_root: &Path,
+    tool: &'static str,
+) -> (Vec<Annotation>, Vec<PackageStat>) {
+    let suites = match quick_xml::de::from_str::<JUnitTestSuites>(xml) {
+        Ok(d) if !d.testsuites.is_empty() => d.testsuites,
+        _ => match quick_xml::de::from_str::<JUnitTestSuite>(xml) {
+            Ok(s) => vec![s],
+            Err(_) => return (Vec::new(), Vec::new()),
+        },
     };
+
+    let mut stats = Vec::new();
+    for suite in &suites {
+        let mut stat = PackageStat {
+            package: suite.name.clone(),
+            passed: 0,
+            failed: 0,
+            skipped: 0,
+        };
+        for tc in &suite.testcases {
+            if tc.failure.is_some() || tc.error.is_some() {
+                stat.failed += 1;
+            } else if tc.skipped.is_some() {
+                stat.skipped += 1;
+            } else {
+                stat.passed += 1;
+            }
+        }
+        if !stat.package.is_empty() {
+            stats.push(stat);
+        }
+    }
+
+    (junit_annotations(suites, base, repo_root, tool), stats)
+}
+
+fn junit_annotations(
+    suites: Vec<JUnitTestSuite>,
+    base: &Path,
+    repo_root: &Path,
+    tool: &'static str,
+) -> Vec<Annotation> {
     let mut out = Vec::new();
     // Dedup key includes the test name so two distinct tests bottoming out in
     // the same shared assertion helper both produce annotations (each with the
@@ -290,9 +377,11 @@ fn parse_nextest_junit(xml: &str, base: &Path, repo_root: &Path) -> Vec<Annotati
     // collapse defeats the per-test attribution that motivates using JUnit.
     let mut seen: std::collections::HashSet<(String, String, u32)> =
         std::collections::HashSet::new();
-    for suite in doc.testsuites {
+    for suite in suites {
         for tc in suite.testcases {
-            let Some(f) = tc.failure else { continue };
+            let Some(f) = tc.failure.or(tc.error) else {
+                continue;
+            };
             // We still need the panic-message regex here: nextest's JUnit
             // doesn't have file/line as first-class fields, they live inside
             // the free-form panic text.
@@ -328,7 +417,7 @@ fn parse_nextest_junit(xml: &str, base: &Path, repo_root: &Path) -> Vec<Annotati
                 annotation_level: AnnotationLevel::Failure,
                 message,
                 title: Some(title),
-                tool: "cargo test",
+                tool,
             });
         }
     }
@@ -358,6 +447,106 @@ fn parse_cargo_test(text: &str, base: &Path, repo_root: &Path) -> Vec<Annotation
         }
     }
     out
+}
+
+// Bazel reports its own failures as `ERROR: <path>:<line>:<col>: <message>`.
+// BUILD-file errors and failed actions both use this shape, with an absolute
+// path into the workspace.
+static BAZEL_ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^ERROR:\s+(?P<path>[^\s:]+):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.*)$").unwrap()
+});
+
+/// Parse a Bazel console log.
+///
+/// Picks up Bazel's own `ERROR: file:line:col:` reports plus any rustc or
+/// clippy diagnostics the compile actions printed through it: those go through
+/// Bazel unmodified, so they carry the same `--> path:line:col` spans cargo
+/// prints and the cargo diagnostic parser reads them as-is.
+pub fn parse_bazel_log(text: &str, repo_root: &Path) -> Vec<Annotation> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(cap) = BAZEL_ERROR_RE.captures(line) else {
+            continue;
+        };
+        let path_str = cap.name("path").unwrap().as_str();
+        let line_no: u32 = cap.name("line").unwrap().as_str().parse().unwrap_or(1);
+        let Some(rel) = make_path_relative(path_str, repo_root, repo_root) else {
+            continue;
+        };
+        let msg = cap.name("msg").unwrap().as_str().trim();
+        out.push(Annotation {
+            path: rel,
+            start_line: line_no,
+            end_line: line_no,
+            annotation_level: AnnotationLevel::Failure,
+            message: msg.chars().take(MAX_MESSAGE_CHARS).collect(),
+            title: Some("bazel".into()),
+            tool: "bazel",
+        });
+    }
+    out.extend(parse_cargo_diagnostics(
+        text,
+        "bazel_rustc",
+        repo_root,
+        repo_root,
+    ));
+    out.retain(|a| !is_generated_path(&a.path));
+    out
+}
+
+/// Bazel's outputs and fetched externals live inside the workspace but are not
+/// repository files, so an annotation on one can never render on the diff and
+/// would only consume the 50-annotation-per-call budget.
+fn is_generated_path(path: &str) -> bool {
+    ["bazel-out/", "bazel-bin/", "bazel-testlogs/", "external/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+/// Read JUnit XML from each path: a file is parsed directly, a directory is
+/// walked for `*.xml`. Bazel writes one `test.xml` per target, which
+/// `bazel_test.sh` flattens into the artifacts directory.
+pub fn parse_junit_paths(
+    paths: &[PathBuf],
+    repo_root: &Path,
+    tool: &'static str,
+) -> (Vec<Annotation>, Vec<PackageStat>) {
+    let mut files = Vec::new();
+    for p in paths {
+        collect_xml_files(p, &mut files);
+    }
+    files.sort();
+
+    let mut annotations = Vec::new();
+    let mut stats = Vec::new();
+    for f in files {
+        let Ok(xml) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let (anns, st) = parse_junit(&xml, repo_root, repo_root, tool);
+        annotations.extend(anns);
+        stats.extend(st);
+    }
+    annotations.retain(|a| !is_generated_path(&a.path));
+    (annotations, stats)
+}
+
+fn collect_xml_files(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_xml_files(&p, out);
+        } else if p.extension().is_some_and(|e| e == "xml") {
+            out.push(p);
+        }
+    }
 }
 
 // Lexical normalisation only. `.canonicalize()` would require the file to exist
@@ -548,18 +737,18 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, Clone)]
-struct PackageStat {
-    package: String,
-    passed: usize,
-    failed: usize,
-    skipped: usize,
+pub struct PackageStat {
+    pub package: String,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
 }
 
 /// Aggregate per-package test counts from the JUnit report fslabscli builds
 /// while running. Suite names are formatted as
 /// `"<Mandatory|Optional> {workspace} - {package} - {version}"`, so we combine
 /// the two kinds into one row per (workspace, package).
-fn collect_package_stats(report: &Report) -> Vec<PackageStat> {
+pub fn collect_package_stats(report: &Report) -> Vec<PackageStat> {
     use std::collections::BTreeMap;
     let mut acc: BTreeMap<String, PackageStat> = BTreeMap::new();
     for suite in report.testsuites() {
@@ -621,7 +810,12 @@ fn prow_log_url_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
 /// reproduce command, prow log link (when in Prow), per-package test summary,
 /// findings grouped by tool, rerun instructions. Each `file:line` links into
 /// GitHub's blob view at the PR head SHA so a click lands on the exact line.
-fn build_summary(ctx: &GhTarget, annotations: &[Annotation], junit: &Report) -> String {
+fn build_summary(
+    ctx: &GhTarget,
+    style: &CheckStyle,
+    annotations: &[Annotation],
+    stats: &[PackageStat],
+) -> String {
     use std::collections::BTreeMap;
     let failures = annotations
         .iter()
@@ -646,21 +840,23 @@ fn build_summary(ctx: &GhTarget, annotations: &[Annotation], junit: &Report) -> 
     out.push_str("Details also render inline on the *Files changed* tab.\n\n");
 
     out.push_str("### Reproduce\n\n");
-    out.push_str(
-        "Run the full suite locally with:\n\n```\ncargo-fslabscli rust-tests\n```\n\n\
-         Narrow to a single crate with `--whitelist <path>`.\n\n",
-    );
+    out.push_str(&format!(
+        "Run the full suite locally with:\n\n```\n{}\n```\n\n",
+        style.reproduce
+    ));
+    if let Some(hint) = &style.reproduce_hint {
+        out.push_str(&format!("{hint}\n\n"));
+    }
 
     if let Some(url) = prow_log_url() {
         out.push_str(&format!("[View full Prow log]({url})\n\n"));
     }
 
-    let stats = collect_package_stats(junit);
     if !stats.is_empty() {
         out.push_str("### Test summary\n\n");
         out.push_str("| Package | Passed | Failed | Skipped |\n");
         out.push_str("|---|---:|---:|---:|\n");
-        for s in &stats {
+        for s in stats {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 s.package, s.passed, s.failed, s.skipped
@@ -699,10 +895,10 @@ fn build_summary(ctx: &GhTarget, annotations: &[Annotation], junit: &Report) -> 
     }
 
     out.push_str("### Rerun\n\n");
-    out.push_str(
-        "Comment `/test cargo-tests` on this PR to rerun the job, or \
-         `/test cargo-tests-verbose` for extra debug logs.\n",
-    );
+    out.push_str(&format!(
+        "Comment `/test {}` on this PR to rerun the job.\n",
+        style.rerun_job
+    ));
 
     // GitHub caps output.summary at 65,535 chars; oversize bodies fail the
     // whole POST with 422 and drop every annotation. Truncate on a char
@@ -746,8 +942,9 @@ fn redact(text: &str) -> String {
 
 pub async fn post_annotations(
     ctx: &GhContext,
+    style: &CheckStyle,
     annotations: Vec<Annotation>,
-    junit: &Report,
+    stats: &[PackageStat],
 ) -> Result<()> {
     if annotations.is_empty() {
         return Ok(());
@@ -771,7 +968,7 @@ pub async fn post_annotations(
 
     let path = format!("/repos/{}/{}/check-runs", ctx.target.owner, ctx.target.repo);
     let title = "Test summary".to_string();
-    let summary = build_summary(&ctx.target, &annotations, junit);
+    let summary = build_summary(&ctx.target, style, &annotations, stats);
 
     let mut chunks = annotations.chunks(MAX_ANNOTATIONS_PER_CALL);
     let first = chunks.next().unwrap_or(&[]);
@@ -779,7 +976,7 @@ pub async fn post_annotations(
     // Neutral: annotations describe locations, not verdicts. Prow's cargo-tests
     // check already shows failure; a second red X here adds no information.
     let body = json!({
-        "name": CHECK_NAME,
+        "name": style.check_name,
         "head_sha": ctx.target.head_sha,
         "status": "completed",
         "conclusion": "neutral",
@@ -899,10 +1096,6 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
         }
     }
 
-    fn empty_report() -> junit_report::Report {
-        junit_report::ReportBuilder::new().build()
-    }
-
     #[test]
     fn summary_groups_by_tool_alphabetically() {
         let ann = |path: &str, line: u32, tool: &'static str, msg: &str| Annotation {
@@ -919,7 +1112,7 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             ann("src/main.rs", 5, "cargo fmt", "diff"),
             ann("src/a.rs", 3, "cargo clippy", "borrow of moved value"),
         ];
-        let s = build_summary(&fake_ctx(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(s.contains("**3 finding(s)** across 2 tool(s)"));
         // Alphabetical: cargo clippy (2) before cargo fmt (1).
         let clippy = s.find("### cargo clippy (2)").unwrap();
@@ -944,7 +1137,7 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             title: None,
             tool: "cargo clippy",
         }];
-        let s = build_summary(&fake_ctx(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(
             s.contains(&format!(
                 "https://github.com/acme/widget/pull/322/files#diff-{expected_hash}R42"
@@ -964,7 +1157,7 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             title: None,
             tool: "cargo clippy",
         }];
-        let s = build_summary(&fake_ctx_no_pr(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx_no_pr(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(s.contains("/blob/cafef00d/src/foo.rs#L42"));
     }
 
@@ -979,7 +1172,7 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             title: None,
             tool: "cargo test",
         }];
-        let s = build_summary(&fake_ctx(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(s.contains("### Reproduce"));
         assert!(s.contains("cargo-fslabscli rust-tests"));
         assert!(s.contains("### Rerun"));
@@ -1010,7 +1203,12 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             title: None,
             tool: "cargo test",
         }];
-        let s = build_summary(&fake_ctx(), &anns, &report);
+        let s = build_summary(
+            &fake_ctx(),
+            &CheckStyle::rust_tests(),
+            &anns,
+            &collect_package_stats(&report),
+        );
         assert!(s.contains("### Test summary"));
         assert!(s.contains("| ws1 · foo | 2 | 1 | 0 |"));
         assert!(s.contains("| ws1 · bar | 1 | 0 | 1 |"));
@@ -1027,7 +1225,7 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             title: None,
             tool: "cargo fmt",
         }];
-        let s = build_summary(&fake_ctx(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(s.contains("`src/fmt.rs:1`"));
         // No dangling " - " after the anchor when the message is empty.
         assert!(!s.contains(".rs#L1) -"));
@@ -1090,6 +1288,123 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
         c.push_many([ann("src/foo.rs", 1, "cargo clippy")]);
         let drained = c.drain();
         assert_eq!(drained.len(), 1);
+    }
+
+    #[test]
+    fn bazel_log_annotates_build_file_errors() {
+        let log = "\
+Loading: 0 packages loaded
+ERROR: /repo/crates/foo/BUILD.bazel:12:5: no such attribute 'deps' in 'rust_library'
+INFO: Elapsed time: 1.2s";
+        let a = parse_bazel_log(log, &root());
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].path, "crates/foo/BUILD.bazel");
+        assert_eq!(a[0].start_line, 12);
+        assert_eq!(a[0].tool, "bazel");
+        assert!(a[0].message.contains("no such attribute"));
+    }
+
+    #[test]
+    fn bazel_log_reads_rustc_diagnostics_it_relays() {
+        // Bazel passes compiler output through untouched, so the same span
+        // format cargo prints shows up in a bazel log.
+        let log = "\
+ERROR: /repo/crates/foo/BUILD.bazel:3:1: Compiling Rust library foo failed
+error[E0308]: mismatched types
+  --> crates/foo/src/lib.rs:7:9
+   |
+7  |     let x: u32 = \"nope\";";
+        let a = parse_bazel_log(log, &root());
+        let rustc: Vec<_> = a.iter().filter(|x| x.tool == "rustc (via bazel)").collect();
+        assert_eq!(rustc.len(), 1);
+        assert_eq!(rustc[0].path, "crates/foo/src/lib.rs");
+        assert_eq!(rustc[0].start_line, 7);
+        assert_eq!(rustc[0].message, "mismatched types");
+    }
+
+    #[test]
+    fn bazel_log_drops_generated_and_external_paths() {
+        // These resolve inside the workspace but are not repository files, so
+        // an annotation on one can never render and would only eat into the
+        // 50-per-call cap.
+        let log = "\
+ERROR: /repo/bazel-out/k8-fastbuild/bin/generated.rs:3:1: boom
+ERROR: /repo/external/crates_io__serde/src/lib.rs:9:2: boom
+ERROR: /repo/crates/foo/BUILD.bazel:1:1: real one";
+        let a = parse_bazel_log(log, &root());
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].path, "crates/foo/BUILD.bazel");
+    }
+
+    #[test]
+    fn junit_counts_pass_fail_skip_per_suite() {
+        let xml = r#"<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="//crates/foo:foo_test">
+    <testcase name="passes"/>
+    <testcase name="skips"><skipped/></testcase>
+    <testcase name="fails"><failure message="boom">thread 'fails' panicked at crates/foo/src/lib.rs:12:5</failure></testcase>
+  </testsuite>
+</testsuites>"#;
+        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].package, "//crates/foo:foo_test");
+        assert_eq!(
+            (stats[0].passed, stats[0].failed, stats[0].skipped),
+            (1, 1, 1)
+        );
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].path, "crates/foo/src/lib.rs");
+        assert_eq!(anns[0].tool, "bazel test");
+    }
+
+    #[test]
+    fn junit_reads_a_bare_testsuite_root() {
+        // Bazel writes a lone <testsuite> root for a single-target run; both
+        // shapes are valid JUnit and both turn up in bazel-testlogs.
+        let xml = r#"<testsuite name="//crates/bar:bar_test">
+  <testcase name="fails"><failure message="boom">panicked at crates/bar/src/lib.rs:4:1</failure></testcase>
+</testsuite>"#;
+        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].failed, 1);
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].start_line, 4);
+    }
+
+    #[test]
+    fn junit_treats_error_element_as_a_failure() {
+        // A crashed Bazel target is reported as <error>, not <failure>.
+        let xml = r#"<testsuite name="//crates/bar:bar_test">
+  <testcase name="crashes"><error message="signal 6">panicked at crates/bar/src/lib.rs:9:1</error></testcase>
+</testsuite>"#;
+        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        assert_eq!(stats[0].failed, 1);
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].start_line, 9);
+    }
+
+    #[test]
+    fn summary_uses_the_style_it_is_given() {
+        let anns = vec![Annotation {
+            path: "src/foo.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            annotation_level: AnnotationLevel::Failure,
+            message: "boom".into(),
+            title: None,
+            tool: "bazel test",
+        }];
+        let style = CheckStyle {
+            check_name: "bazel-test-annotations".into(),
+            reproduce: "bazel test //...".into(),
+            rerun_job: "bazel-tests".into(),
+            reproduce_hint: None,
+        };
+        let s = build_summary(&fake_ctx(), &style, &anns, &[]);
+        assert!(s.contains("bazel test //..."));
+        assert!(s.contains("/test bazel-tests"));
+        assert!(!s.contains("cargo-fslabscli rust-tests"));
     }
 
     /// Build a getter that returns the value for the exact keys given and
@@ -1338,7 +1653,7 @@ thread 'boom' panicked at src/lib.rs:12:5:\nassertion left == right failed\
                 tool: "cargo clippy",
             })
             .collect();
-        let s = build_summary(&fake_ctx(), &anns, &empty_report());
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
         assert!(
             s.chars().count() <= MAX_SUMMARY_CHARS,
             "len={}",

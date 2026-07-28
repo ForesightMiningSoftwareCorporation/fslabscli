@@ -9,6 +9,7 @@ use clap_complete::{Shell, generate};
 use clap_mangen::Man;
 use utils::cargo::Cargo;
 
+use crate::commands::annotate::{Options as AnnotateOptions, annotate};
 use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
 use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
 use crate::commands::download_artifacts::{
@@ -124,6 +125,8 @@ enum Commands {
     DockerBuildPush(Box<DockerBuildPushOptions>),
     /// Create or update a draft GitHub release and upload artifacts
     DraftRelease(Box<DraftReleaseOptions>),
+    /// Post build findings (logs, JUnit XML) as GitHub check-run annotations
+    Annotate(Box<AnnotateOptions>),
 
     // Packages Related Commands
     //
@@ -498,6 +501,9 @@ async fn run() -> anyhow::Result<String> {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DraftRelease(options) => draft_release(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Annotate(options) => annotate(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::FixLockFiles {
