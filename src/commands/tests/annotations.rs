@@ -719,6 +719,31 @@ fn build_summary(ctx: &GhTarget, annotations: &[Annotation], junit: &Report) -> 
     out
 }
 
+// Credentials that occasionally turn up in build output. The common one is the
+// URL rewrite CI installs to clone private dependencies, which puts a token in
+// the userinfo of every git URL a failing fetch might echo.
+static URL_CREDENTIAL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"://([^/\s:@]+):[^@\s]+@").unwrap());
+static GITHUB_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}").unwrap()
+});
+
+/// Strip well-known credential shapes out of text taken from build output.
+///
+/// Annotations are copied verbatim from compiler and build-tool output into a
+/// check run, which anyone who can see the pull request can read - and some of
+/// the repositories this runs on are public. Prow censors what it uploads to
+/// its own log store, but nothing censors what we POST to GitHub.
+///
+/// This is a backstop for the shapes we can recognise, not a guarantee that no
+/// secret can ever reach a check run.
+fn redact(text: &str) -> String {
+    let without_url_creds = URL_CREDENTIAL_RE.replace_all(text, "://$1:REDACTED@");
+    GITHUB_TOKEN_RE
+        .replace_all(&without_url_creds, "REDACTED")
+        .into_owned()
+}
+
 pub async fn post_annotations(
     ctx: &GhContext,
     annotations: Vec<Annotation>,
@@ -727,6 +752,17 @@ pub async fn post_annotations(
     if annotations.is_empty() {
         return Ok(());
     }
+
+    // Redact once, here, so every caller and every parser is covered and the
+    // summary (built from these messages) inherits it.
+    let annotations: Vec<Annotation> = annotations
+        .into_iter()
+        .map(|a| Annotation {
+            message: redact(&a.message),
+            title: a.title.as_deref().map(redact),
+            ..a
+        })
+        .collect();
 
     let octocrab = Octocrab::builder()
         .personal_token(ctx.token.clone())
@@ -1065,6 +1101,31 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         move |k: &str| map.get(k).cloned()
+    }
+
+    #[test]
+    fn redact_strips_credentials_that_reach_a_public_check_run() {
+        // The URL rewrite CI installs to clone private deps is the realistic
+        // path: a failing fetch echoes the remote, token and all.
+        let msg = "failed to fetch https://x-access-token:ghs_AbCdEfGhIjKlMnOpQrSt@github.com/fslabs/x.git";
+        let out = redact(msg);
+        assert!(!out.contains("ghs_AbCdEfGhIjKlMnOpQrSt"), "{out}");
+        assert!(
+            out.contains("https://x-access-token:REDACTED@github.com/"),
+            "{out}"
+        );
+
+        // Bare tokens, wherever they appear.
+        assert_eq!(
+            redact("token ghp_0123456789abcdefghij here"),
+            "token REDACTED here"
+        );
+        assert!(!redact("github_pat_11ABCDEFG0123456789_abcdefgh").contains("11ABCDEFG"));
+
+        // Ordinary diagnostics must survive untouched, including URLs with no
+        // credentials and colons that are not userinfo.
+        let plain = "error[E0308]: mismatched types at https://docs.rs/foo/1.0/foo.html";
+        assert_eq!(redact(plain), plain);
     }
 
     #[test]
