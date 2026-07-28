@@ -59,7 +59,9 @@ pub async fn generate_github_app_token(
                 installation.access_tokens_url
             }
             InstallationRetrievalMode::Repository => {
-                let (owner, repo) = payload.split_once(':').ok_or_else(|| {
+                // Only `owner:repo` used to parse, while the error asked for
+                // `owner/repo`. Accept either rather than making callers guess.
+                let (owner, repo) = payload.split_once(['/', ':']).ok_or_else(|| {
                     anyhow::anyhow!("Repo is not in format owner/repo: {}", payload)
                 })?;
                 create_access_token.repositories.push(repo.to_string());

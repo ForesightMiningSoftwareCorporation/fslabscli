@@ -2,7 +2,7 @@ mod annotations;
 mod docker_service;
 
 use crate::commands::tests::annotations::{
-    AnnotationCollector, GhContext, parse_output_for, post_annotations,
+    AnnotationCollector, GhContext, GhTarget, parse_output_for, post_annotations, resolve_token,
 };
 
 use anyhow::Context;
@@ -96,6 +96,13 @@ pub struct Options {
     /// Run tests on all packages, ignoring change detection
     #[arg(long)]
     run_all: bool,
+    /// App ID of a GitHub App holding `checks: write`, used to post test
+    /// annotations when the job has no `GITHUB_TOKEN`.
+    #[arg(long, env = "FSLABSCLI_CHECKS_APP_ID")]
+    checks_app_id: Option<u64>,
+    /// Path to the private key of the app named by `--checks-app-id`.
+    #[arg(long, env = "FSLABSCLI_CHECKS_APP_PRIVATE_KEY")]
+    checks_app_private_key: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -828,23 +835,45 @@ pub async fn tests(
 
     let collected_annotations = annotation_collector.drain();
     if !collected_annotations.is_empty() {
-        if let Some(gh) = GhContext::from_env() {
-            let count = collected_annotations.len();
-            match post_annotations(&gh, collected_annotations, &global_junit_report).await {
-                Ok(()) => tracing::info!(
-                    "Posted {} GitHub check-run annotation(s) to {}/{}@{}",
-                    count,
-                    gh.owner,
-                    gh.repo,
-                    gh.head_sha
-                ),
-                Err(e) => tracing::warn!("Failed to post annotations: {:#}", e),
+        let count = collected_annotations.len();
+        // Every failure here is reported at warn! and then dropped. Posting
+        // annotations is a reporting nicety; the job's pass/fail verdict is
+        // decided by global_failed below and must not depend on GitHub being
+        // reachable. But it is logged loudly, because a silent skip is exactly
+        // how this feature shipped disabled and stayed that way.
+        match GhTarget::from_env() {
+            Ok(target) => {
+                match resolve_token(
+                    &target,
+                    options.checks_app_id,
+                    options.checks_app_private_key.as_deref(),
+                )
+                .await
+                {
+                    Ok(token) => {
+                        let gh = GhContext { target, token };
+                        match post_annotations(&gh, collected_annotations, &global_junit_report)
+                            .await
+                        {
+                            Ok(()) => tracing::info!(
+                                "Posted {} GitHub check-run annotation(s) to {}/{}@{}",
+                                count,
+                                gh.target.owner,
+                                gh.target.repo,
+                                gh.target.head_sha
+                            ),
+                            Err(e) => tracing::warn!("Failed to post annotations: {:#}", e),
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "Not posting {count} GitHub check-run annotation(s): {:#}",
+                        e
+                    ),
+                }
             }
-        } else {
-            tracing::debug!(
-                "Skipping GitHub annotations: missing REPO_OWNER / REPO_NAME / \
-                 PULL_PULL_SHA / GITHUB_TOKEN, or FSLABSCLI_ANNOTATIONS_DISABLE is set"
-            );
+            Err(reason) => {
+                tracing::warn!("Not posting {count} GitHub check-run annotation(s): {reason}")
+            }
         }
     }
 

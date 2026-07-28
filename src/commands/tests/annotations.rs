@@ -3,8 +3,13 @@
 //!
 //! Conclusion is always `neutral`: this reports locations, not verdicts.
 //! Prow's own `cargo-tests` check is the pass/fail gate. Posting is a no-op
-//! outside Prow (any of `REPO_OWNER`, `REPO_NAME`, `PULL_PULL_SHA`, or
-//! `GITHUB_TOKEN` missing, or `FSLABSCLI_ANNOTATIONS_DISABLE=1`).
+//! outside Prow (any of `REPO_OWNER`, `REPO_NAME` or `PULL_PULL_SHA` missing,
+//! or `FSLABSCLI_ANNOTATIONS_DISABLE=1`).
+//!
+//! The credential is either `GITHUB_TOKEN` or a GitHub App key, from which we
+//! mint an installation token scoped to the repository under test. CI uses the
+//! App: the token is short-lived and cannot reach any other repo, which matters
+//! because this runs in a pod that compiles unreviewed pull-request code.
 //!
 //! API: <https://docs.github.com/en/rest/checks/runs>
 
@@ -19,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::script::CommandOutput;
+use crate::utils::github::{InstallationRetrievalMode, generate_github_app_token};
 
 // GitHub caps a single check-runs API call at 50 annotations.
 const MAX_ANNOTATIONS_PER_CALL: usize = 50;
@@ -387,19 +393,43 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     out
 }
 
-pub struct GhContext {
+/// Which commit in which repository the check run describes. Holds no
+/// credential, so it can be resolved from the environment before we know where
+/// the token is coming from.
+#[derive(Debug)]
+pub struct GhTarget {
     pub owner: String,
     pub repo: String,
     pub head_sha: String,
-    pub token: String,
     /// PR number, used to construct diff-view anchors. `None` on non-presubmit
     /// runs (postsubmit, periodic); in that case the summary falls back to
     /// blob-view links.
     pub pull_number: Option<u64>,
 }
 
-impl GhContext {
-    pub fn from_env() -> Option<Self> {
+/// Why there is nothing to post to. Carried as a value rather than a bare
+/// `None` so the caller can log the specific thing that is missing; the
+/// original code logged all five candidates at once, at `debug!`, and the
+/// feature sat silently disabled in CI for twelve days as a result.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoTarget {
+    Disabled,
+    Missing(Vec<&'static str>),
+}
+
+impl std::fmt::Display for NoTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => write!(f, "FSLABSCLI_ANNOTATIONS_DISABLE is set"),
+            Self::Missing(vars) => {
+                write!(f, "{} unset (not running under Prow?)", vars.join(", "))
+            }
+        }
+    }
+}
+
+impl GhTarget {
+    pub fn from_env() -> Result<Self, NoTarget> {
         Self::from_env_with(|k| std::env::var(k).ok())
     }
 
@@ -408,22 +438,81 @@ impl GhContext {
     /// can exercise the missing-var / empty-string / present-value shapes with
     /// a HashMap-backed getter instead of mutating the shared process env
     /// (mutation would race with any parallel test that reads REPO_OWNER etc).
-    pub fn from_env_with(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
+    pub fn from_env_with(get: impl Fn(&str) -> Option<String>) -> Result<Self, NoTarget> {
         let get_nonempty = |k: &str| get(k).filter(|s| !s.is_empty());
         if get("FSLABSCLI_ANNOTATIONS_DISABLE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
         {
-            return None;
+            return Err(NoTarget::Disabled);
         }
-        Some(Self {
-            owner: get_nonempty("REPO_OWNER")?,
-            repo: get_nonempty("REPO_NAME")?,
-            head_sha: get_nonempty("PULL_PULL_SHA").or_else(|| get_nonempty("PULL_BASE_SHA"))?,
-            token: get_nonempty("GITHUB_TOKEN")?,
-            pull_number: get_nonempty("PULL_NUMBER").and_then(|v| v.parse().ok()),
-        })
+        let owner = get_nonempty("REPO_OWNER");
+        let repo = get_nonempty("REPO_NAME");
+        let head_sha = get_nonempty("PULL_PULL_SHA").or_else(|| get_nonempty("PULL_BASE_SHA"));
+
+        let mut missing = Vec::new();
+        if owner.is_none() {
+            missing.push("REPO_OWNER");
+        }
+        if repo.is_none() {
+            missing.push("REPO_NAME");
+        }
+        if head_sha.is_none() {
+            missing.push("PULL_PULL_SHA");
+        }
+
+        match (owner, repo, head_sha) {
+            (Some(owner), Some(repo), Some(head_sha)) => Ok(Self {
+                owner,
+                repo,
+                head_sha,
+                pull_number: get_nonempty("PULL_NUMBER").and_then(|v| v.parse().ok()),
+            }),
+            _ => Err(NoTarget::Missing(missing)),
+        }
     }
+}
+
+pub struct GhContext {
+    pub target: GhTarget,
+    pub token: String,
+}
+
+/// Obtain a credential for the check-runs API.
+///
+/// Prefers `GITHUB_TOKEN` when the job already has one. Otherwise mints an
+/// installation token from a GitHub App key, scoped with
+/// [`InstallationRetrievalMode::Repository`] to the repository under test, so
+/// the credential a test pod holds cannot write anywhere else in the org.
+pub async fn resolve_token(
+    target: &GhTarget,
+    app_id: Option<u64>,
+    app_private_key: Option<&Path>,
+) -> Result<String> {
+    if let Some(token) = std::env::var("GITHUB_TOKEN").ok().filter(|s| !s.is_empty()) {
+        return Ok(token);
+    }
+    let (Some(app_id), Some(key_path)) = (app_id, app_private_key) else {
+        anyhow::bail!(
+            "no GITHUB_TOKEN, and no GitHub App to mint one from \
+             (set FSLABSCLI_CHECKS_APP_ID and FSLABSCLI_CHECKS_APP_PRIVATE_KEY)"
+        );
+    };
+    generate_github_app_token(
+        app_id,
+        key_path.to_path_buf(),
+        InstallationRetrievalMode::Repository,
+        Some(format!("{}/{}", target.owner, target.repo)),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "mint a checks token for {}/{} from app {app_id} (key {})",
+            target.owner,
+            target.repo,
+            key_path.display(),
+        )
+    })
 }
 
 /// Build a click-through URL for one annotation. Prefers the PR files-diff
@@ -432,7 +521,7 @@ impl GhContext {
 /// the failing line WITH the annotation banner still visible. Falls back to
 /// the blob view when there's no PR number (postsubmit, periodic) - the
 /// anchor is stable but no annotation banner is drawn.
-fn annotation_url(ctx: &GhContext, path: &str, line: u32) -> String {
+fn annotation_url(ctx: &GhTarget, path: &str, line: u32) -> String {
     match ctx.pull_number {
         Some(pr) => {
             let mut hasher = Sha256::new();
@@ -532,7 +621,7 @@ fn prow_log_url_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
 /// reproduce command, prow log link (when in Prow), per-package test summary,
 /// findings grouped by tool, rerun instructions. Each `file:line` links into
 /// GitHub's blob view at the PR head SHA so a click lands on the exact line.
-fn build_summary(ctx: &GhContext, annotations: &[Annotation], junit: &Report) -> String {
+fn build_summary(ctx: &GhTarget, annotations: &[Annotation], junit: &Report) -> String {
     use std::collections::BTreeMap;
     let failures = annotations
         .iter()
@@ -644,9 +733,9 @@ pub async fn post_annotations(
         .build()
         .context("build octocrab client")?;
 
-    let path = format!("/repos/{}/{}/check-runs", ctx.owner, ctx.repo);
+    let path = format!("/repos/{}/{}/check-runs", ctx.target.owner, ctx.target.repo);
     let title = "Test summary".to_string();
-    let summary = build_summary(ctx, &annotations, junit);
+    let summary = build_summary(&ctx.target, &annotations, junit);
 
     let mut chunks = annotations.chunks(MAX_ANNOTATIONS_PER_CALL);
     let first = chunks.next().unwrap_or(&[]);
@@ -655,7 +744,7 @@ pub async fn post_annotations(
     // check already shows failure; a second red X here adds no information.
     let body = json!({
         "name": CHECK_NAME,
-        "head_sha": ctx.head_sha,
+        "head_sha": ctx.target.head_sha,
         "status": "completed",
         "conclusion": "neutral",
         "output": {
@@ -677,7 +766,7 @@ pub async fn post_annotations(
 
     let update_path = format!(
         "/repos/{}/{}/check-runs/{}",
-        ctx.owner, ctx.repo, created.id
+        ctx.target.owner, ctx.target.repo, created.id
     );
     for chunk in chunks {
         let body = json!({
@@ -758,18 +847,17 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
         assert_eq!(a[0].path, "crates/foo/Cargo.lock");
     }
 
-    fn fake_ctx() -> GhContext {
-        GhContext {
+    fn fake_ctx() -> GhTarget {
+        GhTarget {
             owner: "acme".into(),
             repo: "widget".into(),
             head_sha: "cafef00d".into(),
-            token: "unused".into(),
             pull_number: Some(322),
         }
     }
 
-    fn fake_ctx_no_pr() -> GhContext {
-        GhContext {
+    fn fake_ctx_no_pr() -> GhTarget {
+        GhTarget {
             pull_number: None,
             ..fake_ctx()
         }
@@ -980,32 +1068,48 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
     }
 
     #[test]
-    fn from_env_returns_none_when_required_var_missing() {
-        // Nothing set at all.
-        assert!(GhContext::from_env_with(env_from(&[])).is_none());
-        // Everything except GITHUB_TOKEN set.
-        let g = GhContext::from_env_with(env_from(&[
+    fn from_env_names_every_missing_var() {
+        // The reason has to name the specific variables: a caller that can only
+        // say "something was missing" is what let this sit broken unnoticed.
+        let err = GhTarget::from_env_with(env_from(&[])).unwrap_err();
+        assert_eq!(
+            err,
+            NoTarget::Missing(vec!["REPO_OWNER", "REPO_NAME", "PULL_PULL_SHA"])
+        );
+        let err = GhTarget::from_env_with(env_from(&[
+            ("REPO_OWNER", "acme"),
+            ("PULL_PULL_SHA", "sha"),
+        ]))
+        .unwrap_err();
+        assert_eq!(err, NoTarget::Missing(vec!["REPO_NAME"]));
+    }
+
+    #[test]
+    fn from_env_does_not_require_a_token() {
+        // The credential is resolved separately (env var or GitHub App), so a
+        // target must build without GITHUB_TOKEN present.
+        let t = GhTarget::from_env_with(env_from(&[
             ("REPO_OWNER", "acme"),
             ("REPO_NAME", "widget"),
             ("PULL_PULL_SHA", "sha"),
-        ]));
-        assert!(g.is_none());
+        ]))
+        .unwrap();
+        assert_eq!(t.owner, "acme");
     }
 
     #[test]
     fn from_env_rejects_empty_string_env_var() {
         // Regression: env::var("X") returns Ok("") for an empty-string value,
-        // so a naive .ok()? would build a GhContext with an empty owner and
-        // POST to /repos//<empty>/check-runs (422). All required vars must
-        // treat "" the same as unset.
+        // so a naive .ok()? would build a target with an empty owner and POST
+        // to /repos//<empty>/check-runs (422). All required vars must treat ""
+        // the same as unset.
         let base = &[
             ("REPO_OWNER", "acme"),
             ("REPO_NAME", "widget"),
             ("PULL_PULL_SHA", "sha"),
-            ("GITHUB_TOKEN", "tok"),
         ];
-        assert!(GhContext::from_env_with(env_from(base)).is_some());
-        for empty_key in ["REPO_OWNER", "REPO_NAME", "PULL_PULL_SHA", "GITHUB_TOKEN"] {
+        assert!(GhTarget::from_env_with(env_from(base)).is_ok());
+        for empty_key in ["REPO_OWNER", "REPO_NAME", "PULL_PULL_SHA"] {
             let mut pairs = base.to_vec();
             for (k, v) in pairs.iter_mut() {
                 if k == &empty_key {
@@ -1013,19 +1117,18 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
                 }
             }
             assert!(
-                GhContext::from_env_with(env_from(&pairs)).is_none(),
-                "expected None when {empty_key} is empty"
+                GhTarget::from_env_with(env_from(&pairs)).is_err(),
+                "expected an error when {empty_key} is empty"
             );
         }
     }
 
     #[test]
     fn from_env_falls_back_to_pull_base_sha() {
-        let g = GhContext::from_env_with(env_from(&[
+        let g = GhTarget::from_env_with(env_from(&[
             ("REPO_OWNER", "acme"),
             ("REPO_NAME", "widget"),
             ("PULL_BASE_SHA", "basesha"),
-            ("GITHUB_TOKEN", "tok"),
         ]))
         .unwrap();
         assert_eq!(g.head_sha, "basesha");
@@ -1034,15 +1137,15 @@ thread 'main' panicked at 'boom', src/lib.rs:12:5
 
     #[test]
     fn from_env_disable_flag_short_circuits() {
-        // Even when every other var is valid, the disable flag returns None.
-        let g = GhContext::from_env_with(env_from(&[
+        // Even when every other var is valid, the disable flag wins.
+        let err = GhTarget::from_env_with(env_from(&[
             ("FSLABSCLI_ANNOTATIONS_DISABLE", "1"),
             ("REPO_OWNER", "acme"),
             ("REPO_NAME", "widget"),
             ("PULL_PULL_SHA", "sha"),
-            ("GITHUB_TOKEN", "tok"),
-        ]));
-        assert!(g.is_none());
+        ]))
+        .unwrap_err();
+        assert_eq!(err, NoTarget::Disabled);
     }
 
     #[test]
