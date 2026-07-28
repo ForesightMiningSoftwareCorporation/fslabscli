@@ -503,7 +503,10 @@ async fn run() -> anyhow::Result<String> {
         Commands::DraftRelease(options) => draft_release(options, working_directory)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
-        Commands::Annotate(options) => annotate(options, working_directory)
+        // Repo root, not the working directory: annotation paths are anchored
+        // at the repository root by GitHub, and the job may be invoked from a
+        // subdirectory.
+        Commands::Annotate(options) => annotate(options, repo_root)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::FixLockFiles {
