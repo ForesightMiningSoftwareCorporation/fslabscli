@@ -71,10 +71,7 @@ impl PrettyPrintable for AnnotateResult {
     }
 }
 
-pub async fn annotate(
-    options: Box<Options>,
-    working_directory: PathBuf,
-) -> anyhow::Result<AnnotateResult> {
+pub async fn annotate(options: Box<Options>, repo_root: PathBuf) -> anyhow::Result<AnnotateResult> {
     // Leak once, at the edge: Annotation::tool is &'static str so the summary
     // can group by it without cloning per finding.
     let tool: &'static str = Box::leak(options.tool.clone().into_boxed_str());
@@ -84,7 +81,7 @@ pub async fn annotate(
 
     for log in &options.log {
         match std::fs::read_to_string(log) {
-            Ok(text) => annotations.extend(parse_bazel_log(&text, &working_directory)),
+            Ok(text) => annotations.extend(parse_bazel_log(&text, &repo_root)),
             // A missing log is normal: bazel_test.sh only writes one when the
             // build produced output, and a green run may produce none.
             Err(e) => tracing::warn!("Could not read log {}: {e}", log.display()),
@@ -92,7 +89,7 @@ pub async fn annotate(
     }
 
     if !options.junit.is_empty() {
-        let (anns, st) = parse_junit_paths(&options.junit, &working_directory, tool);
+        let (anns, st) = parse_junit_paths(&options.junit, &repo_root, tool);
         annotations.extend(anns);
         stats.extend(st);
     }
