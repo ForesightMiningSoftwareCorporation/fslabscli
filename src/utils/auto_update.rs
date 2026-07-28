@@ -102,6 +102,22 @@ fn extract_version_from_tag(tag: &str) -> &str {
     }
 }
 
+/// Tag shapes a release may carry, most likely first.
+///
+/// `draft-release` and `publish` both default to the `{package_name}-{version}`
+/// template, so releases are tagged `cargo-fslabscli-2.47.0`. Deriving the
+/// prefix from `CARGO_PKG_NAME` keeps this in step with that default rather
+/// than restating it. Two April 2026 releases (2.44.0 and 2.45.0) were tagged
+/// `v{version}` instead, so keep that shape as a fallback rather than making
+/// those two unpinnable, and try the bare version last.
+fn candidate_tags(version: &str) -> [String; 3] {
+    [
+        format!("{}-{version}", env!("CARGO_PKG_NAME")),
+        format!("v{version}"),
+        version.to_string(),
+    ]
+}
+
 pub fn auto_update(target_version: Option<&str>) -> Result<(), Box<dyn error::Error>> {
     let checker = self_update::backends::github::Update::configure()
         .repo_owner("fslabs")
@@ -121,9 +137,26 @@ pub fn auto_update(target_version: Option<&str>) -> Result<(), Box<dyn error::Er
             return Ok(());
         }
 
-        let release = checker
-            .get_release_version(&format!("v{normalized}"))
-            .map_err(|_| format!("Requested version {} not found in GitHub releases", version))?;
+        let mut found = None;
+        let mut last_error = None;
+        for tag in candidate_tags(normalized) {
+            match checker.get_release_version(&tag) {
+                Ok(release) => {
+                    found = Some(release);
+                    break;
+                }
+                // Keep the underlying error: swallowing it reported a network
+                // failure or a rate limit as "version not found", which sent
+                // you looking in the wrong place entirely.
+                Err(e) => last_error = Some(format!("{tag}: {e}")),
+            }
+        }
+        let release = found.ok_or_else(|| match last_error {
+            Some(e) => format!(
+                "Requested version {version} not found in GitHub releases (last attempt {e})"
+            ),
+            None => format!("Requested version {version} not found in GitHub releases"),
+        })?;
 
         let release_asset = compatible_targets
             .iter()
@@ -167,6 +200,26 @@ pub fn auto_update(target_version: Option<&str>) -> Result<(), Box<dyn error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_candidate_tags_tries_the_real_scheme_first() {
+        // Regression: this looked up "v{version}" only, so pinning to any
+        // release tagged cargo-fslabscli-{version} 404'd and, because a failed
+        // pin exits the process, the command never ran at all.
+        let tags = candidate_tags("2.47.0");
+        assert_eq!(tags[0], "cargo-fslabscli-2.47.0");
+        assert_eq!(tags[1], "v2.47.0");
+        assert_eq!(tags[2], "2.47.0");
+    }
+
+    #[test]
+    fn test_candidate_tags_round_trip_through_extract() {
+        // Whatever shape we ask for, parsing it back must yield the version we
+        // started with, so the two halves cannot drift apart.
+        for tag in candidate_tags("2.47.0") {
+            assert_eq!(extract_version_from_tag(&tag), "2.47.0");
+        }
+    }
 
     #[test]
     fn test_extract_version_from_tag_v_prefix() {

@@ -399,12 +399,20 @@ async fn main() -> ExitCode {
         .and_then(|matches| matches.get_one::<bool>("fslabscli_auto_update").cloned())
         .unwrap_or_default();
 
+    // self_update drives blocking HTTP, and dropping that client inside an
+    // async context aborts the process ("Cannot drop a runtime in a context
+    // where blocking is not allowed"). block_in_place hands this thread over to
+    // blocking work, which makes the drop legal.
     if let Some(version) = fslabscli_version {
-        if let Err(err) = utils::auto_update::auto_update(Some(&version)) {
+        if let Err(err) =
+            tokio::task::block_in_place(|| utils::auto_update::auto_update(Some(&version)))
+        {
             eprintln!("Error trying to update to pinned version: {err:?}");
             std::process::exit(1);
         }
-    } else if fslabscli_auto_update && let Err(err) = utils::auto_update::auto_update(None) {
+    } else if fslabscli_auto_update
+        && let Err(err) = tokio::task::block_in_place(|| utils::auto_update::auto_update(None))
+    {
         eprintln!("Error trying to update: {err:?}");
     }
 
