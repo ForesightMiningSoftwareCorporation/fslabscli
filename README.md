@@ -51,6 +51,28 @@ installation token scoped to one repository and holding only `checks: write` is
 far less useful to an attacker than a broadly-scoped one. The private key must
 belong to an app installed on the repository being tested.
 
+### Annotating a build fslabscli did not run
+
+`rust-tests` annotates its own output because it invokes each cargo tool
+itself. For builds driven by something else — Bazel, in our CI — `fslabscli
+annotate` reads what the run left behind instead:
+
+```
+fslabscli annotate --log bazel.log --junit "$ARTIFACTS"
+```
+
+`--log` parses Bazel's `ERROR: file:line:col:` reports plus any compiler
+diagnostics relayed through it; `--junit` takes an XML file or a directory to
+scan, which is where Bazel's per-target `test.xml` files end up. Paths under
+`bazel-out/`, `bazel-bin/`, `bazel-testlogs/` and `external/` are dropped: they
+resolve inside the workspace but are not repository files, so an annotation on
+one cannot render on the diff.
+
+Give each job its own `--check-name` (Bazel defaults to
+`bazel-test-annotations`). GitHub keys check runs by name, so two jobs sharing
+one would overwrite each other's findings. `--reproduce` and `--rerun-job` set
+the corresponding sections of the Details page.
+
 ## Release Process
 
 **Version source of truth:** `Cargo.toml`

@@ -1,8 +1,9 @@
-mod annotations;
+pub mod annotations;
 mod docker_service;
 
 use crate::commands::tests::annotations::{
-    AnnotationCollector, GhContext, GhTarget, parse_output_for, post_annotations, resolve_token,
+    AnnotationCollector, CheckStyle, GhContext, GhTarget, collect_package_stats, parse_output_for,
+    post_annotations, resolve_token,
 };
 
 use anyhow::Context;
@@ -852,8 +853,14 @@ pub async fn tests(
                 {
                     Ok(token) => {
                         let gh = GhContext { target, token };
-                        match post_annotations(&gh, collected_annotations, &global_junit_report)
-                            .await
+                        let stats = collect_package_stats(&global_junit_report);
+                        match post_annotations(
+                            &gh,
+                            &CheckStyle::rust_tests(),
+                            collected_annotations,
+                            &stats,
+                        )
+                        .await
                         {
                             Ok(()) => tracing::info!(
                                 "Posted {} GitHub check-run annotation(s) to {}/{}@{}",
