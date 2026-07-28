@@ -19,6 +19,38 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 To install, run the following command:
 ``cargo install --git https://github.com/fslabs/fslabscli``
 
+## Test annotations
+
+`fslabscli rust-tests` posts the `file:line` locations of cargo failures as a
+`test-annotations` GitHub check run, so they render inline on the pull request's
+*Files changed* tab. The conclusion is always `neutral` — this reports
+locations, not a verdict, and the CI job's own check remains the pass/fail gate.
+Posting never fails the build: if it cannot post, it logs a warning saying why.
+
+It needs to know which commit to annotate. Prow injects these into every
+decorated job, so there is nothing to configure in CI:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `REPO_OWNER` | yes | Repository owner |
+| `REPO_NAME` | yes | Repository name |
+| `PULL_PULL_SHA` | yes | Commit to attach the check run to; falls back to `PULL_BASE_SHA` |
+| `PULL_NUMBER` | no | Links findings into the PR diff rather than the blob view |
+| `FSLABSCLI_ANNOTATIONS_DISABLE` | no | Set to `1` or `true` to turn posting off |
+
+It also needs a credential with the `checks: write` permission, from one of:
+
+| Variable | Purpose |
+|---|---|
+| `GITHUB_TOKEN` | Used directly when present |
+| `FSLABSCLI_CHECKS_APP_ID` + `FSLABSCLI_CHECKS_APP_PRIVATE_KEY` | App ID and private-key path; mints a token scoped to the repository under test |
+
+Prefer the App in CI. A test job compiles and runs unreviewed pull-request code,
+so any credential it holds should be assumed readable by that code; an
+installation token scoped to one repository and holding only `checks: write` is
+far less useful to an attacker than a broadly-scoped one. The private key must
+belong to an app installed on the repository being tested.
+
 ## Release Process
 
 **Version source of truth:** `Cargo.toml`
