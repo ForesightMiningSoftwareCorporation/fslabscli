@@ -123,19 +123,44 @@ impl AnnotationCollector {
     }
 }
 
+/// The directories a parse pass needs to turn tool output into repo-relative
+/// paths.
+///
+/// `workspace_dir` and `package_dir` are the same only for a package that sits
+/// at its workspace root, and getting them the wrong way round is silent: the
+/// annotation is still produced, just on a path no file has, so GitHub accepts
+/// it and renders nothing on the diff.
+pub struct ParseDirs<'a> {
+    /// Directory the command ran in. Used only to locate per-package
+    /// artifacts, i.e. the nextest JUnit report.
+    pub package_dir: &'a Path,
+    /// Root of the cargo workspace the package belongs to. Cargo prints
+    /// relative source paths against this, whatever directory cargo itself
+    /// was invoked from, and the lockfile a workspace is checked against
+    /// lives here.
+    pub workspace_dir: &'a Path,
+    /// Repository root. Annotation paths are reported relative to it, which
+    /// is what GitHub resolves them against.
+    pub repo_root: &'a Path,
+}
+
 pub fn parse_output_for(
     tool_id: &str,
     output: &CommandOutput,
-    package_dir: &Path,
-    repo_root: &Path,
+    dirs: &ParseDirs<'_>,
 ) -> Vec<Annotation> {
+    let ParseDirs {
+        package_dir,
+        workspace_dir,
+        repo_root,
+    } = *dirs;
     let combined = format!("{}\n{}", output.stdout, output.stderr);
     match tool_id {
         "cargo_fmt" => parse_cargo_fmt(&combined, repo_root),
         "cargo_check" | "cargo_clippy" | "cargo_doc" => {
-            parse_cargo_diagnostics(&combined, tool_id, package_dir, repo_root)
+            parse_cargo_diagnostics(&combined, tool_id, workspace_dir, repo_root)
         }
-        "cargo_lock" => parse_cargo_lock(package_dir, repo_root),
+        "cargo_lock" => parse_cargo_lock(workspace_dir, repo_root),
         "cargo_test" => {
             // Prefer nextest JUnit if it exists: per-test attribution, correct
             // failure-vs-timeout distinction, and no dependence on the panic
@@ -144,12 +169,12 @@ pub fn parse_output_for(
             // or when JUnit wasn't produced for any other reason.
             let junit_path = package_dir.join("target/nextest/default/junit.xml");
             if let Ok(xml) = std::fs::read_to_string(&junit_path) {
-                let anns = parse_nextest_junit(&xml, package_dir, repo_root);
+                let anns = parse_nextest_junit(&xml, workspace_dir, repo_root);
                 if !anns.is_empty() {
                     return anns;
                 }
             }
-            parse_cargo_test(&combined, package_dir, repo_root)
+            parse_cargo_test(&combined, workspace_dir, repo_root)
         }
         _ => Vec::new(),
     }
@@ -549,6 +574,11 @@ fn collect_xml_files(path: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+// Resolve a path as printed by a tool into one relative to the repo root.
+// `base` is what a relative `candidate` is relative to: for everything cargo
+// prints - compiler spans and panic locations alike - that is the workspace
+// root, not the package directory and not the directory cargo ran in.
+//
 // Lexical normalisation only. `.canonicalize()` would require the file to exist
 // on disk, which is true during a real CI run but breaks unit tests and any
 // stale-target scenario where the compiler complained about a file we later
@@ -1024,6 +1054,10 @@ mod tests {
     fn root() -> PathBuf {
         PathBuf::from("/repo")
     }
+    // A workspace that is not the repo root, e.g. fsl_libs' `fdk_apps/`.
+    fn nested_ws() -> PathBuf {
+        PathBuf::from("/repo/apps")
+    }
     fn pkg() -> PathBuf {
         PathBuf::from("/repo/crates/foo")
     }
@@ -1037,29 +1071,90 @@ mod tests {
 
     #[test]
     fn clippy_attaches_message_only_to_primary_span() {
+        // Spans are workspace-root relative, so a package at crates/foo is
+        // reported as `crates/foo/src/a.rs`.
         let text = "\
 error[E0308]: mismatched types
-  --> src/a.rs:1:1
+  --> crates/foo/src/a.rs:1:1
    |
    = note: expected `u32`
-::: src/b.rs:2:2
+::: crates/foo/src/b.rs:2:2
    |
 ";
-        let a = parse_cargo_diagnostics(text, "cargo_clippy", &pkg(), &root());
+        let a = parse_cargo_diagnostics(text, "cargo_clippy", &root(), &root());
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].path, "crates/foo/src/a.rs");
     }
 
     #[test]
+    fn diagnostics_resolve_against_a_workspace_below_the_repo_root() {
+        // Sub-workspace at /repo/apps: cargo prints paths relative to it, and
+        // the annotation has to come back out relative to the repo root.
+        let text = "\
+error[E0308]: mismatched types
+  --> viewer/src/main.rs:4:9
+";
+        let a = parse_cargo_diagnostics(text, "cargo_check", &nested_ws(), &root());
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].path, "apps/viewer/src/main.rs");
+    }
+
+    #[test]
     fn test_panic_deduplicates_repeated_report() {
         let text = "\
-thread 'main' panicked at 'boom', src/lib.rs:12:5
+thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
 ... stack trace ...
-thread 'main' panicked at 'boom', src/lib.rs:12:5
+thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
 ";
-        let a = parse_cargo_test(text, &pkg(), &root());
+        let a = parse_cargo_test(text, &root(), &root());
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].path, "crates/foo/src/lib.rs");
+    }
+
+    #[test]
+    fn test_panic_is_not_resolved_against_the_package_directory() {
+        // Regression: cargo prints panic locations relative to the workspace
+        // root even when it was invoked from the package directory, so using
+        // the package directory as the base doubled the prefix
+        // (`dagger/tests/dagger/tests/import_one_partition.rs`). GitHub accepts
+        // such an annotation and then renders nothing, because no file in the
+        // repo has that path.
+        let text = "thread 'boom' panicked at crates/foo/tests/it.rs:65:5:\n";
+        let dirs = ParseDirs {
+            package_dir: &pkg(),
+            workspace_dir: &root(),
+            repo_root: &root(),
+        };
+        let out = CommandOutput {
+            stdout: text.into(),
+            stderr: String::new(),
+            success: false,
+        };
+        let a = parse_output_for("cargo_test", &out, &dirs);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].path, "crates/foo/tests/it.rs");
+        assert_eq!(a[0].start_line, 65);
+    }
+
+    #[test]
+    fn lock_annotation_follows_the_workspace_not_the_package() {
+        // The lockfile checked for a member of the root workspace is the root
+        // one, whatever directory the member lives in.
+        let out = CommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            success: false,
+        };
+        let a = parse_output_for(
+            "cargo_lock",
+            &out,
+            &ParseDirs {
+                package_dir: &pkg(),
+                workspace_dir: &root(),
+                repo_root: &root(),
+            },
+        );
+        assert_eq!(a[0].path, "Cargo.lock");
     }
 
     #[test]
@@ -1603,7 +1698,7 @@ assertion failed</failure>
   </testsuite>
 </testsuites>
 "#;
-        let a = parse_nextest_junit(xml, &pkg(), &root());
+        let a = parse_nextest_junit(xml, &root(), &root());
         assert_eq!(a.len(), 2);
         assert!(
             a.iter()
@@ -1627,7 +1722,7 @@ assertion failed</failure>
 assertion left == right failed\n  left: 1\n  right: 2\">\
 thread 'boom' panicked at src/lib.rs:12:5:\nassertion left == right failed\
 </failure></testcase></testsuite></testsuites>";
-        let a = parse_nextest_junit(xml, &pkg(), &root());
+        let a = parse_nextest_junit(xml, &root(), &root());
         assert_eq!(a.len(), 1);
         assert!(!a[0].message.contains('\n'), "message: {:?}", a[0].message);
         assert!(
@@ -1725,7 +1820,15 @@ mod real_cargo {
             "cargo fmt --check unexpectedly succeeded: {}",
             out.stdout
         );
-        let anns = parse_output_for("cargo_fmt", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_fmt",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(
             !anns.is_empty(),
             "no annotations parsed from: {}",
@@ -1754,7 +1857,15 @@ mod real_cargo {
             "cargo clippy unexpectedly succeeded: {} {}",
             out.stdout, out.stderr
         );
-        let anns = parse_output_for("cargo_clippy", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_clippy",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(
             !anns.is_empty(),
             "no annotations parsed from clippy output: {}",
@@ -1775,7 +1886,15 @@ mod real_cargo {
         );
         let out = run(tmp.path(), &["check", "--all-targets"]);
         assert!(!out.success);
-        let anns = parse_output_for("cargo_check", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_check",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(
             !anns.is_empty(),
             "no annotations from cargo check: {}",
@@ -1804,7 +1923,15 @@ mod real_cargo {
         );
         let out = run(tmp.path(), &["test", "--", "--nocapture"]);
         assert!(!out.success);
-        let anns = parse_output_for("cargo_test", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_test",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(
             !anns.is_empty(),
             "no annotations from cargo test panic: {} {}",
@@ -1848,7 +1975,15 @@ mod real_cargo {
             "nextest did not produce junit at {:?}",
             junit
         );
-        let anns = parse_output_for("cargo_test", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_test",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(!anns.is_empty(), "no annotations from nextest junit");
         assert!(anns.iter().any(|a| a.path == "src/lib.rs"));
         // JUnit path should win over the stdout regex fallback, so titles
@@ -1886,7 +2021,15 @@ mod real_cargo {
         .unwrap();
         let out = run(tmp.path(), &["nextest", "run", "--no-fail-fast"]);
         assert!(!out.success);
-        let anns = parse_output_for("cargo_test", &out, &canon(tmp.path()), &canon(tmp.path()));
+        let anns = parse_output_for(
+            "cargo_test",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(tmp.path()),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
         assert!(
             anns.is_empty(),
             "expected no annotations for Result::Err failure, got: {:?}",
@@ -1900,5 +2043,79 @@ mod real_cargo {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    /// Write a workspace root with one member at `sub/pkg`, mirroring the
+    /// layout every fsl_libs package has (and which no other fixture here
+    /// covers, since a lone crate is its own workspace root).
+    fn write_workspace_member(root: &std::path::Path, name: &str, lib_rs: &str) -> PathBuf {
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"sub/pkg\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        let pkg = root.join("sub/pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        write_crate(&pkg, name, lib_rs);
+        pkg
+    }
+
+    #[test]
+    fn member_package_paths_are_relative_to_the_workspace_root() {
+        // Regression for `dagger/tests/dagger/tests/import_one_partition.rs`:
+        // cargo prints `sub/pkg/src/lib.rs` (workspace-root relative) even
+        // though it was invoked from `sub/pkg`, so resolving that against the
+        // package directory doubled the prefix and the annotation silently
+        // failed to render on the diff.
+        let tmp = TempDir::new().unwrap();
+        let pkg = write_workspace_member(
+            tmp.path(),
+            "member_probe",
+            "pub fn f() {\n    let _: u32 = \"hi\";\n}\n",
+        );
+        let out = run(&pkg, &["check", "--all-targets"]);
+        assert!(!out.success);
+        let anns = parse_output_for(
+            "cargo_check",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(&pkg),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
+        assert!(
+            anns.iter().any(|a| a.path == "sub/pkg/src/lib.rs"),
+            "expected a workspace-relative path, got: {:?}",
+            anns.iter().map(|a| &a.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn member_package_panic_paths_are_relative_to_the_workspace_root() {
+        // Same regression on the path that actually produced the bad
+        // annotation in CI: a panicking test in a workspace member.
+        let tmp = TempDir::new().unwrap();
+        let pkg = write_workspace_member(
+            tmp.path(),
+            "member_panic_probe",
+            "#[test]\nfn boom() {\n    assert_eq!(1, 2);\n}\n",
+        );
+        let out = run(&pkg, &["test", "--", "--nocapture"]);
+        assert!(!out.success);
+        let anns = parse_output_for(
+            "cargo_test",
+            &out,
+            &ParseDirs {
+                package_dir: &canon(&pkg),
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+            },
+        );
+        assert!(
+            anns.iter().any(|a| a.path == "sub/pkg/src/lib.rs"),
+            "expected a workspace-relative path, got: {:?}",
+            anns.iter().map(|a| &a.path).collect::<Vec<_>>()
+        );
     }
 }

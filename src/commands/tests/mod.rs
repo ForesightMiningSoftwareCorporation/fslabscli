@@ -2,8 +2,8 @@ pub mod annotations;
 mod docker_service;
 
 use crate::commands::tests::annotations::{
-    AnnotationCollector, CheckStyle, GhContext, GhTarget, collect_package_stats, parse_output_for,
-    post_annotations, resolve_token,
+    AnnotationCollector, CheckStyle, GhContext, GhTarget, ParseDirs, collect_package_stats,
+    parse_output_for, post_annotations, resolve_token,
 };
 
 use anyhow::Context;
@@ -594,8 +594,11 @@ pub async fn tests(
                     annotation_collector.push_many(parse_output_for(
                         "cargo_lock",
                         &lock_result,
-                        &ws_path,
-                        &repo_root,
+                        &ParseDirs {
+                            package_dir: &ws_path,
+                            workspace_dir: &ws_path,
+                            repo_root: &repo_root,
+                        },
                     ));
                     global_failed = true;
                     // The after-loop clone at the end of the labeled `'batch`
@@ -762,8 +765,15 @@ pub async fn tests(
                         // Batch step ids are `batch_fmt`/`batch_check`/... but the
                         // parsers dispatch on `cargo_fmt`/`cargo_check`/...
                         let parser_id = id.replace("batch_", "cargo_");
-                        annotation_collector
-                            .push_many(parse_output_for(&parser_id, &output, &ws_path, &repo_root));
+                        annotation_collector.push_many(parse_output_for(
+                            &parser_id,
+                            &output,
+                            &ParseDirs {
+                                package_dir: &ws_path,
+                                workspace_dir: &ws_path,
+                                repo_root: &repo_root,
+                            },
+                        ));
                         global_failed = true;
                         batch_junit_report.add_testsuite(ts);
                         // Same reason as the lock failure path: don't clone
@@ -1002,6 +1012,10 @@ async fn run_package_tests(
     let package_name = &member.package;
     let package_version = &member.version;
     let package_path = repo_root.join(&member.path);
+    // Cargo reports source paths relative to the workspace root even when it is
+    // run from a member directory, so annotations resolve against this rather
+    // than against `package_path`.
+    let workspace_path = repo_root.join(&member.workspace);
     let test_args = member.test_detail.args.clone().unwrap_or_default();
     let use_nextest = has_cargo_nextest().await;
     let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
@@ -1457,7 +1471,6 @@ async fn run_package_tests(
             }
             let test_output = match fslabs_test.id == "cargo_lock" {
                 true => {
-                    let workspace_path = repo_root.join(&member.workspace);
                     let cell = {
                         let mut cache = lock_check_cache.lock().await;
                         cache
@@ -1531,8 +1544,15 @@ async fn run_package_tests(
             let duration = end_time - start_time;
 
             if !test_output.success {
-                let anns =
-                    parse_output_for(&fslabs_test.id, &test_output, &package_path, &repo_root);
+                let anns = parse_output_for(
+                    &fslabs_test.id,
+                    &test_output,
+                    &ParseDirs {
+                        package_dir: &package_path,
+                        workspace_dir: &workspace_path,
+                        repo_root: &repo_root,
+                    },
+                );
                 if !anns.is_empty() {
                     annotation_collector.push_many(anns);
                 }
