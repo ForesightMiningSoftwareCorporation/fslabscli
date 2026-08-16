@@ -196,6 +196,12 @@ pub struct Result {
     pub package_id: Option<PackageId>,
     pub version: String,
     pub path: PathBuf,
+    /// Absolute cargo target directory for this package's workspace, as
+    /// resolved by cargo itself. Predicting it as `<workspace>/target` is
+    /// wrong under `CARGO_TARGET_DIR` or a `build.target-dir` config, and
+    /// tools that write into it (nextest's JUnit report) then land somewhere
+    /// nothing looks.
+    pub target_directory: PathBuf,
     pub publish_detail: PackageMetadataFslabsCiPublish,
     pub publish: bool,
     hide_dependencies: bool,
@@ -315,6 +321,7 @@ impl Result {
         workspace: String,
         package: Package,
         root_dir: PathBuf,
+        target_directory: PathBuf,
         hide_dependencies: bool,
         dep_to_id: &HashMap<String, PackageId>,
     ) -> anyhow::Result<Self> {
@@ -389,6 +396,7 @@ impl Result {
             package: package.name.to_string(),
             version: package.version.to_string(),
             path,
+            target_directory,
             publish_detail: publish,
             test_detail: metadata.fslabs.test.unwrap_or_default(),
             hide_dependencies,
@@ -1007,6 +1015,11 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                     workspace.path.to_string_lossy().into(),
                     package.clone(),
                     self.repo_root.clone(),
+                    workspace
+                        .metadata
+                        .target_directory
+                        .clone()
+                        .into_std_path_buf(),
                     self.options.hide_dependencies,
                     &dep_to_id,
                 ) {
@@ -1845,6 +1858,11 @@ mod tests {
                     workspace.path.to_string_lossy().into(),
                     package.clone(),
                     repo_root.to_path_buf(),
+                    workspace
+                        .metadata
+                        .target_directory
+                        .clone()
+                        .into_std_path_buf(),
                     false,
                     &dep_to_id,
                 ) {
