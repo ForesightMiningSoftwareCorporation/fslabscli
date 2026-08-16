@@ -626,7 +626,7 @@ pub async fn tests(
                 batch_junit_report.add_testsuite(ts);
 
                 if !lock_result.success {
-                    annotation_collector.push_many(parse_output_for(
+                    annotation_collector.push(parse_output_for(
                         "cargo_lock",
                         &lock_result,
                         &ParseDirs {
@@ -800,7 +800,7 @@ pub async fn tests(
                         // Batch step ids are `batch_fmt`/`batch_check`/... but the
                         // parsers dispatch on `cargo_fmt`/`cargo_check`/...
                         let parser_id = id.replace("batch_", "cargo_");
-                        annotation_collector.push_many(parse_output_for(
+                        annotation_collector.push(parse_output_for(
                             &parser_id,
                             &output,
                             &ParseDirs {
@@ -879,9 +879,11 @@ pub async fn tests(
         }
     }
 
-    let collected_annotations = annotation_collector.drain();
-    if !collected_annotations.is_empty() {
-        let count = collected_annotations.len();
+    let collected = annotation_collector.drain();
+    if !collected.is_empty() {
+        // Both halves are reported by the same check run: annotations render
+        // on the diff, unlocated failures are named in its summary.
+        let count = collected.annotations.len() + collected.unlocated.len();
         // Every failure here is reported at warn! and then dropped. Posting
         // annotations is a reporting nicety; the job's pass/fail verdict is
         // decided by global_failed below and must not depend on GitHub being
@@ -899,13 +901,8 @@ pub async fn tests(
                     Ok(token) => {
                         let gh = GhContext { target, token };
                         let stats = collect_package_stats(&global_junit_report);
-                        match post_annotations(
-                            &gh,
-                            &CheckStyle::rust_tests(),
-                            collected_annotations,
-                            &stats,
-                        )
-                        .await
+                        match post_annotations(&gh, &CheckStyle::rust_tests(), collected, &stats)
+                            .await
                         {
                             Ok(()) => tracing::info!(
                                 "Posted {} GitHub check-run annotation(s) to {}/{}@{}",
@@ -1595,7 +1592,7 @@ async fn run_package_tests(
                     },
                 );
                 if !anns.is_empty() {
-                    annotation_collector.push_many(anns);
+                    annotation_collector.push(anns);
                 }
             }
 

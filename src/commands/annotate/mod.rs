@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::PrettyPrintable;
 use crate::commands::tests::annotations::{
-    Annotation, CheckStyle, GhContext, GhTarget, PackageStat, parse_bazel_log, parse_junit_paths,
+    CheckStyle, GhContext, GhTarget, PackageStat, ParseOutcome, parse_bazel_log, parse_junit_paths,
     post_annotations, resolve_token,
 };
 
@@ -76,12 +76,14 @@ pub async fn annotate(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resu
     // can group by it without cloning per finding.
     let tool: &'static str = Box::leak(options.tool.clone().into_boxed_str());
 
-    let mut annotations: Vec<Annotation> = Vec::new();
+    let mut outcome = ParseOutcome::default();
     let mut stats: Vec<PackageStat> = Vec::new();
 
     for log in &options.log {
         match std::fs::read_to_string(log) {
-            Ok(text) => annotations.extend(parse_bazel_log(&text, &repo_root)),
+            Ok(text) => outcome
+                .annotations
+                .extend(parse_bazel_log(&text, &repo_root)),
             // A missing log is normal: bazel_test.sh only writes one when the
             // build produced output, and a green run may produce none.
             Err(e) => tracing::warn!("Could not read log {}: {e}", log.display()),
@@ -89,17 +91,24 @@ pub async fn annotate(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resu
     }
 
     if !options.junit.is_empty() {
-        let (anns, st) = parse_junit_paths(&options.junit, &repo_root, tool);
-        annotations.extend(anns);
+        let (found, st) = parse_junit_paths(&options.junit, &repo_root, tool);
+        outcome.annotations.extend(found.annotations);
+        outcome.unlocated.extend(found.unlocated);
         stats.extend(st);
     }
 
     // Same dedupe the in-process collector applies: one finding can be reported
     // both by Bazel's own ERROR line and by the compiler diagnostic under it.
     let mut seen = std::collections::HashSet::new();
-    annotations.retain(|a| seen.insert((a.tool, a.path.clone(), a.start_line)));
+    outcome
+        .annotations
+        .retain(|a| seen.insert((a.tool, a.path.clone(), a.start_line)));
+    let mut seen_tests = std::collections::HashSet::new();
+    outcome
+        .unlocated
+        .retain(|f| seen_tests.insert((f.suite.clone(), f.test.clone())));
 
-    if annotations.is_empty() {
+    if outcome.is_empty() {
         tracing::info!("No findings to annotate");
         return Ok(AnnotateResult {
             posted: 0,
@@ -107,10 +116,12 @@ pub async fn annotate(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resu
         });
     }
 
+    let posted = outcome.annotations.len() + outcome.unlocated.len();
+
     let target = match GhTarget::from_env() {
         Ok(t) => t,
         Err(reason) => {
-            tracing::warn!("Not posting {} annotation(s): {reason}", annotations.len());
+            tracing::warn!("Not posting {posted} finding(s): {reason}");
             return Ok(AnnotateResult {
                 posted: 0,
                 skipped_reason: Some(reason.to_string()),
@@ -132,8 +143,7 @@ pub async fn annotate(options: Box<Options>, repo_root: PathBuf) -> anyhow::Resu
         reproduce_hint: None,
     };
 
-    let posted = annotations.len();
-    post_annotations(&GhContext { target, token }, &style, annotations, &stats).await?;
+    post_annotations(&GhContext { target, token }, &style, outcome, &stats).await?;
 
     Ok(AnnotateResult {
         posted,

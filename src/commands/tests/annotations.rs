@@ -85,9 +85,51 @@ pub struct Annotation {
     pub tool: &'static str,
 }
 
+/// A failing test the parser could not pin to a line.
+///
+/// A timeout is the common case: nextest reports it as
+/// `<failure type="test timeout"/>` with no message, no body and no panic, so
+/// there is nothing to hang an inline annotation on. A test that returns `Err`
+/// is the same shape with a message but still no location. Dropping these left
+/// the most common CI failure mode reported nowhere at all, so they are named
+/// in the check summary instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlocatedFailure {
+    /// JUnit suite, i.e. the test binary.
+    pub suite: String,
+    pub test: String,
+    pub timed_out: bool,
+    /// First line of whatever the runner did say, possibly empty.
+    pub detail: String,
+}
+
+/// Everything one parse pass found: what can be shown on the diff, and what
+/// can only be named in the summary.
+#[derive(Debug, Default)]
+pub struct ParseOutcome {
+    pub annotations: Vec<Annotation>,
+    pub unlocated: Vec<UnlocatedFailure>,
+}
+
+impl ParseOutcome {
+    pub fn is_empty(&self) -> bool {
+        self.annotations.is_empty() && self.unlocated.is_empty()
+    }
+}
+
+impl From<Vec<Annotation>> for ParseOutcome {
+    fn from(annotations: Vec<Annotation>) -> Self {
+        Self {
+            annotations,
+            unlocated: Vec::new(),
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct AnnotationCollector {
     inner: Arc<Mutex<Vec<Annotation>>>,
+    unlocated: Arc<Mutex<Vec<UnlocatedFailure>>>,
 }
 
 impl AnnotationCollector {
@@ -95,17 +137,19 @@ impl AnnotationCollector {
         Self::default()
     }
 
-    pub fn push_many<I: IntoIterator<Item = Annotation>>(&self, items: I) {
+    pub fn push(&self, outcome: ParseOutcome) {
         // Recover the guard on poison rather than silently dropping the input;
         // losing failure annotations is worse than acting on a data structure
         // that another thread may have left in an unexpected state (the Vec
         // itself is fine, poison just means some other push panicked while
         // holding the guard).
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.extend(items);
+        g.extend(outcome.annotations);
+        let mut u = self.unlocated.lock().unwrap_or_else(|e| e.into_inner());
+        u.extend(outcome.unlocated);
     }
 
-    pub fn drain(&self) -> Vec<Annotation> {
+    pub fn drain(&self) -> ParseOutcome {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         // Dedupe by (tool, path, line): the same finding can arrive from more
         // than one code path (batch step and the per-package fallback of the
@@ -113,13 +157,27 @@ impl AnnotationCollector {
         // API cap without adding information.
         let mut seen: std::collections::HashSet<(&'static str, String, u32)> =
             std::collections::HashSet::new();
-        let mut out = Vec::with_capacity(g.len());
+        let mut annotations = Vec::with_capacity(g.len());
         for a in g.drain(..) {
             if seen.insert((a.tool, a.path.clone(), a.start_line)) {
-                out.push(a);
+                annotations.push(a);
             }
         }
-        out
+
+        let mut u = self.unlocated.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen_tests: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut unlocated = Vec::with_capacity(u.len());
+        for f in u.drain(..) {
+            if seen_tests.insert((f.suite.clone(), f.test.clone())) {
+                unlocated.push(f);
+            }
+        }
+
+        ParseOutcome {
+            annotations,
+            unlocated,
+        }
     }
 }
 
@@ -149,7 +207,7 @@ pub fn parse_output_for(
     tool_id: &str,
     output: &CommandOutput,
     dirs: &ParseDirs<'_>,
-) -> Vec<Annotation> {
+) -> ParseOutcome {
     let ParseDirs {
         workspace_dir,
         repo_root,
@@ -157,26 +215,26 @@ pub fn parse_output_for(
     } = *dirs;
     let combined = format!("{}\n{}", output.stdout, output.stderr);
     match tool_id {
-        "cargo_fmt" => parse_cargo_fmt(&combined, repo_root),
+        "cargo_fmt" => parse_cargo_fmt(&combined, repo_root).into(),
         "cargo_check" | "cargo_clippy" | "cargo_doc" => {
-            parse_cargo_diagnostics(&combined, tool_id, workspace_dir, repo_root)
+            parse_cargo_diagnostics(&combined, tool_id, workspace_dir, repo_root).into()
         }
-        "cargo_lock" => parse_cargo_lock(workspace_dir, repo_root),
+        "cargo_lock" => parse_cargo_lock(workspace_dir, repo_root).into(),
         "cargo_test" => {
-            // Prefer nextest JUnit if it exists: per-test attribution, correct
-            // failure-vs-timeout distinction, and no dependence on the panic
-            // format staying stable. Fall back to the stdout panic regex when
-            // fslabscli ran plain `cargo test` (no nextest binary available)
-            // or when JUnit wasn't produced for any other reason.
+            // Prefer nextest JUnit if it exists: per-test attribution, the
+            // failure-versus-timeout distinction, and no dependence on the
+            // panic format staying stable. Fall back to the stdout panic regex
+            // when fslabscli ran plain `cargo test` (no nextest binary
+            // available) or when JUnit wasn't produced for any other reason.
             if let Some(xml) = junit_path.and_then(|p| std::fs::read_to_string(p).ok()) {
-                let anns = parse_nextest_junit(&xml, workspace_dir, repo_root);
-                if !anns.is_empty() {
-                    return anns;
+                let outcome = parse_nextest_junit(&xml, workspace_dir, repo_root);
+                if !outcome.is_empty() {
+                    return outcome;
                 }
             }
-            parse_cargo_test(&combined, workspace_dir, repo_root)
+            parse_cargo_test(&combined, workspace_dir, repo_root).into()
         }
-        _ => Vec::new(),
+        _ => ParseOutcome::default(),
     }
 }
 
@@ -332,6 +390,11 @@ struct JUnitSkipped {}
 struct JUnitFailure {
     #[serde(rename = "@message", default)]
     message: String,
+    /// Nextest's failure kind, e.g. `test timeout` or
+    /// `test failure with exit code 101`. A timeout carries this and nothing
+    /// else: no message, no body, no location.
+    #[serde(rename = "@type", default)]
+    kind: String,
     #[serde(rename = "$text", default)]
     text: String,
 }
@@ -341,7 +404,7 @@ struct JUnitFailure {
 // long into a "..." teaser that hides the useful part.
 const MAX_MESSAGE_CHARS: usize = 400;
 
-fn parse_nextest_junit(xml: &str, base: &Path, repo_root: &Path) -> Vec<Annotation> {
+fn parse_nextest_junit(xml: &str, base: &Path, repo_root: &Path) -> ParseOutcome {
     parse_junit(xml, base, repo_root, "cargo test").0
 }
 
@@ -355,12 +418,12 @@ fn parse_junit(
     base: &Path,
     repo_root: &Path,
     tool: &'static str,
-) -> (Vec<Annotation>, Vec<PackageStat>) {
+) -> (ParseOutcome, Vec<PackageStat>) {
     let suites = match quick_xml::de::from_str::<JUnitTestSuites>(xml) {
         Ok(d) if !d.testsuites.is_empty() => d.testsuites,
         _ => match quick_xml::de::from_str::<JUnitTestSuite>(xml) {
             Ok(s) => vec![s],
-            Err(_) => return (Vec::new(), Vec::new()),
+            Err(_) => return (ParseOutcome::default(), Vec::new()),
         },
     };
 
@@ -386,16 +449,17 @@ fn parse_junit(
         }
     }
 
-    (junit_annotations(suites, base, repo_root, tool), stats)
+    (junit_findings(suites, base, repo_root, tool), stats)
 }
 
-fn junit_annotations(
+fn junit_findings(
     suites: Vec<JUnitTestSuite>,
     base: &Path,
     repo_root: &Path,
     tool: &'static str,
-) -> Vec<Annotation> {
+) -> ParseOutcome {
     let mut out = Vec::new();
+    let mut unlocated = Vec::new();
     // Dedup key includes the test name so two distinct tests bottoming out in
     // the same shared assertion helper both produce annotations (each with the
     // correct test-name title). Without the name in the key, cross-testcase
@@ -403,6 +467,7 @@ fn junit_annotations(
     let mut seen: std::collections::HashSet<(String, String, u32)> =
         std::collections::HashSet::new();
     for suite in suites {
+        let suite_name = suite.name.clone();
         for tc in suite.testcases {
             let Some(f) = tc.failure.or(tc.error) else {
                 continue;
@@ -411,11 +476,37 @@ fn junit_annotations(
             // doesn't have file/line as first-class fields, they live inside
             // the free-form panic text.
             let Some(cap) = PANIC_RE.captures(&f.text) else {
+                // No location to annotate. A timeout has neither text nor
+                // message, only `type="test timeout"`; a test that returns
+                // `Err` has a message but still no file and line.
+                unlocated.push(UnlocatedFailure {
+                    suite: suite_name.clone(),
+                    test: tc.name.clone(),
+                    timed_out: f.kind.contains("timeout"),
+                    detail: first_line(if f.message.is_empty() {
+                        &f.text
+                    } else {
+                        &f.message
+                    }),
+                });
                 continue;
             };
             let path_str = cap.get(1).unwrap().as_str();
             let line_no: u32 = cap.get(2).unwrap().as_str().parse().unwrap_or(1);
             let Some(rel) = make_path_relative(path_str, base, repo_root) else {
+                // Panicked outside the repository, typically inside a
+                // dependency. Still a failing test, still nothing GitHub can
+                // render on the diff.
+                unlocated.push(UnlocatedFailure {
+                    suite: suite_name.clone(),
+                    test: tc.name.clone(),
+                    timed_out: false,
+                    detail: first_line(if f.message.is_empty() {
+                        &f.text
+                    } else {
+                        &f.message
+                    }),
+                });
                 continue;
             };
             if !seen.insert((tc.name.clone(), rel.clone(), line_no)) {
@@ -446,7 +537,21 @@ fn junit_annotations(
             });
         }
     }
-    out
+    ParseOutcome {
+        annotations: out,
+        unlocated,
+    }
+}
+
+/// First non-empty line, trimmed and capped, for a one-line summary bullet.
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(MAX_MESSAGE_CHARS)
+        .collect()
 }
 
 fn parse_cargo_test(text: &str, base: &Path, repo_root: &Path) -> Vec<Annotation> {
@@ -535,25 +640,26 @@ pub fn parse_junit_paths(
     paths: &[PathBuf],
     repo_root: &Path,
     tool: &'static str,
-) -> (Vec<Annotation>, Vec<PackageStat>) {
+) -> (ParseOutcome, Vec<PackageStat>) {
     let mut files = Vec::new();
     for p in paths {
         collect_xml_files(p, &mut files);
     }
     files.sort();
 
-    let mut annotations = Vec::new();
+    let mut outcome = ParseOutcome::default();
     let mut stats = Vec::new();
     for f in files {
         let Ok(xml) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let (anns, st) = parse_junit(&xml, repo_root, repo_root, tool);
-        annotations.extend(anns);
+        let (found, st) = parse_junit(&xml, repo_root, repo_root, tool);
+        outcome.annotations.extend(found.annotations);
+        outcome.unlocated.extend(found.unlocated);
         stats.extend(st);
     }
-    annotations.retain(|a| !is_generated_path(&a.path));
-    (annotations, stats)
+    outcome.annotations.retain(|a| !is_generated_path(&a.path));
+    (outcome, stats)
 }
 
 fn collect_xml_files(path: &Path, out: &mut Vec<PathBuf>) {
@@ -844,6 +950,7 @@ fn build_summary(
     ctx: &GhTarget,
     style: &CheckStyle,
     annotations: &[Annotation],
+    unlocated: &[UnlocatedFailure],
     stats: &[PackageStat],
 ) -> String {
     use std::collections::BTreeMap;
@@ -867,6 +974,13 @@ fn build_summary(
         "**{total} finding(s)** across {} tool(s): {failures} failure(s), {warnings} warning(s).\n\n",
         by_tool.len(),
     ));
+    if !unlocated.is_empty() {
+        let timed_out = unlocated.iter().filter(|f| f.timed_out).count();
+        out.push_str(&format!(
+            "**{} test(s)** failed with no source location to annotate, {timed_out} of them by timeout. They are listed below and nowhere else.\n\n",
+            unlocated.len(),
+        ));
+    }
     out.push_str("Details also render inline on the *Files changed* tab.\n\n");
 
     out.push_str("### Reproduce\n\n");
@@ -895,7 +1009,42 @@ fn build_summary(
         out.push('\n');
     }
 
-    out.push_str("### Findings\n\n");
+    if !unlocated.is_empty() {
+        // Ahead of the annotated findings: these are the ones a reviewer will
+        // not stumble on anywhere else in the UI.
+        out.push_str(&format!("### Not annotated ({})\n\n", unlocated.len()));
+        out.push_str(
+            "A timeout carries no panic, and neither does a test that returns `Err`, \
+             so there is no line for GitHub to mark on the diff.\n\n",
+        );
+        let mut items: Vec<&UnlocatedFailure> = unlocated.iter().collect();
+        // Timeouts first: they are the ones that cost a whole job's wall clock.
+        items.sort_by(|a, b| {
+            b.timed_out
+                .cmp(&a.timed_out)
+                .then_with(|| a.suite.cmp(&b.suite))
+                .then_with(|| a.test.cmp(&b.test))
+        });
+        for f in items {
+            let kind = if f.timed_out { "timed out" } else { "failed" };
+            let suite = if f.suite.is_empty() {
+                String::new()
+            } else {
+                format!(" (`{}`)", f.suite)
+            };
+            let detail: String = f.detail.chars().take(160).collect();
+            if detail.is_empty() {
+                out.push_str(&format!("- **{kind}** `{}`{suite}\n", f.test));
+            } else {
+                out.push_str(&format!("- **{kind}** `{}`{suite} - {detail}\n", f.test));
+            }
+        }
+        out.push('\n');
+    }
+
+    if !by_tool.is_empty() {
+        out.push_str("### Findings\n\n");
+    }
     for (tool, items) in by_tool {
         let mut items = items.clone();
         items.sort_by(|a, b| {
@@ -973,21 +1122,30 @@ fn redact(text: &str) -> String {
 pub async fn post_annotations(
     ctx: &GhContext,
     style: &CheckStyle,
-    annotations: Vec<Annotation>,
+    outcome: ParseOutcome,
     stats: &[PackageStat],
 ) -> Result<()> {
-    if annotations.is_empty() {
+    if outcome.is_empty() {
         return Ok(());
     }
 
     // Redact once, here, so every caller and every parser is covered and the
     // summary (built from these messages) inherits it.
-    let annotations: Vec<Annotation> = annotations
+    let annotations: Vec<Annotation> = outcome
+        .annotations
         .into_iter()
         .map(|a| Annotation {
             message: redact(&a.message),
             title: a.title.as_deref().map(redact),
             ..a
+        })
+        .collect();
+    let unlocated: Vec<UnlocatedFailure> = outcome
+        .unlocated
+        .into_iter()
+        .map(|f| UnlocatedFailure {
+            detail: redact(&f.detail),
+            ..f
         })
         .collect();
 
@@ -998,7 +1156,7 @@ pub async fn post_annotations(
 
     let path = format!("/repos/{}/{}/check-runs", ctx.target.owner, ctx.target.repo);
     let title = "Test summary".to_string();
-    let summary = build_summary(&ctx.target, style, &annotations, stats);
+    let summary = build_summary(&ctx.target, style, &annotations, &unlocated, stats);
 
     let mut chunks = annotations.chunks(MAX_ANNOTATIONS_PER_CALL);
     let first = chunks.next().unwrap_or(&[]);
@@ -1130,7 +1288,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             stderr: String::new(),
             success: false,
         };
-        let a = parse_output_for("cargo_test", &out, &dirs);
+        let a = parse_output_for("cargo_test", &out, &dirs).annotations;
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].path, "crates/foo/tests/it.rs");
         assert_eq!(a[0].start_line, 65);
@@ -1153,7 +1311,8 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
                 repo_root: &root(),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert_eq!(a[0].path, "Cargo.lock");
     }
 
@@ -1207,7 +1366,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             ann("src/main.rs", 5, "cargo fmt", "diff"),
             ann("src/a.rs", 3, "cargo clippy", "borrow of moved value"),
         ];
-        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
         assert!(s.contains("**3 finding(s)** across 2 tool(s)"));
         // Alphabetical: cargo clippy (2) before cargo fmt (1).
         let clippy = s.find("### cargo clippy (2)").unwrap();
@@ -1232,7 +1391,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             title: None,
             tool: "cargo clippy",
         }];
-        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
         assert!(
             s.contains(&format!(
                 "https://github.com/acme/widget/pull/322/files#diff-{expected_hash}R42"
@@ -1252,7 +1411,13 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             title: None,
             tool: "cargo clippy",
         }];
-        let s = build_summary(&fake_ctx_no_pr(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(
+            &fake_ctx_no_pr(),
+            &CheckStyle::rust_tests(),
+            &anns,
+            &[],
+            &[],
+        );
         assert!(s.contains("/blob/cafef00d/src/foo.rs#L42"));
     }
 
@@ -1267,7 +1432,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             title: None,
             tool: "cargo test",
         }];
-        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
         assert!(s.contains("### Reproduce"));
         assert!(s.contains("cargo-fslabscli rust-tests"));
         assert!(s.contains("### Rerun"));
@@ -1302,6 +1467,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             &fake_ctx(),
             &CheckStyle::rust_tests(),
             &anns,
+            &[],
             &collect_package_stats(&report),
         );
         assert!(s.contains("### Test summary"));
@@ -1320,7 +1486,7 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
             title: None,
             tool: "cargo fmt",
         }];
-        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
         assert!(s.contains("`src/fmt.rs:1`"));
         // No dangling " - " after the anchor when the message is empty.
         assert!(!s.contains(".rs#L1) -"));
@@ -1341,9 +1507,9 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
     #[test]
     fn collector_drain_is_idempotent() {
         let c = AnnotationCollector::new();
-        c.push_many([ann("a", 1, "test")]);
-        assert_eq!(c.drain().len(), 1);
-        assert_eq!(c.drain().len(), 0);
+        c.push(vec![ann("a", 1, "test")].into());
+        assert_eq!(c.drain().annotations.len(), 1);
+        assert_eq!(c.drain().annotations.len(), 0);
     }
 
     #[test]
@@ -1351,27 +1517,30 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
         // Same finding pushed from batch phase and per-package fallback must
         // collapse to one annotation (the check-run API caps at 50 per call).
         let c = AnnotationCollector::new();
-        c.push_many([ann("Cargo.lock", 1, "cargo lock")]);
-        c.push_many([ann("Cargo.lock", 1, "cargo lock")]);
-        c.push_many([ann("Cargo.lock", 1, "cargo lock")]);
-        assert_eq!(c.drain().len(), 1);
+        c.push(vec![ann("Cargo.lock", 1, "cargo lock")].into());
+        c.push(vec![ann("Cargo.lock", 1, "cargo lock")].into());
+        c.push(vec![ann("Cargo.lock", 1, "cargo lock")].into());
+        assert_eq!(c.drain().annotations.len(), 1);
     }
 
     #[test]
     fn collector_drain_keeps_distinct_findings() {
         let c = AnnotationCollector::new();
-        c.push_many([
-            ann("src/foo.rs", 10, "cargo clippy"),
-            ann("src/foo.rs", 10, "cargo fmt"),
-            ann("src/foo.rs", 11, "cargo clippy"),
-        ]);
-        assert_eq!(c.drain().len(), 3);
+        c.push(
+            vec![
+                ann("src/foo.rs", 10, "cargo clippy"),
+                ann("src/foo.rs", 10, "cargo fmt"),
+                ann("src/foo.rs", 11, "cargo clippy"),
+            ]
+            .into(),
+        );
+        assert_eq!(c.drain().annotations.len(), 3);
     }
 
     #[test]
     fn collector_recovers_from_mutex_poison() {
         // Poison the mutex by panicking while holding the guard, then verify
-        // push_many/drain still work rather than silently dropping data.
+        // push/drain still work rather than silently dropping data.
         let c = AnnotationCollector::new();
         let inner = c.inner.clone();
         let _ = std::thread::spawn(move || {
@@ -1380,9 +1549,9 @@ thread 'main' panicked at 'boom', crates/foo/src/lib.rs:12:5
         })
         .join();
         assert!(c.inner.is_poisoned());
-        c.push_many([ann("src/foo.rs", 1, "cargo clippy")]);
+        c.push(vec![ann("src/foo.rs", 1, "cargo clippy")].into());
         let drained = c.drain();
-        assert_eq!(drained.len(), 1);
+        assert_eq!(drained.annotations.len(), 1);
     }
 
     #[test]
@@ -1441,7 +1610,8 @@ ERROR: /repo/crates/foo/BUILD.bazel:1:1: real one";
     <testcase name="fails"><failure message="boom">thread 'fails' panicked at crates/foo/src/lib.rs:12:5</failure></testcase>
   </testsuite>
 </testsuites>"#;
-        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let (found, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let anns = found.annotations;
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].package, "//crates/foo:foo_test");
         assert_eq!(
@@ -1460,7 +1630,8 @@ ERROR: /repo/crates/foo/BUILD.bazel:1:1: real one";
         let xml = r#"<testsuite name="//crates/bar:bar_test">
   <testcase name="fails"><failure message="boom">panicked at crates/bar/src/lib.rs:4:1</failure></testcase>
 </testsuite>"#;
-        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let (found, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let anns = found.annotations;
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].failed, 1);
         assert_eq!(anns.len(), 1);
@@ -1473,7 +1644,8 @@ ERROR: /repo/crates/foo/BUILD.bazel:1:1: real one";
         let xml = r#"<testsuite name="//crates/bar:bar_test">
   <testcase name="crashes"><error message="signal 6">panicked at crates/bar/src/lib.rs:9:1</error></testcase>
 </testsuite>"#;
-        let (anns, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let (found, stats) = parse_junit(xml, &root(), &root(), "bazel test");
+        let anns = found.annotations;
         assert_eq!(stats[0].failed, 1);
         assert_eq!(anns.len(), 1);
         assert_eq!(anns[0].start_line, 9);
@@ -1496,7 +1668,7 @@ ERROR: /repo/crates/foo/BUILD.bazel:1:1: real one";
             rerun_job: "bazel-tests".into(),
             reproduce_hint: None,
         };
-        let s = build_summary(&fake_ctx(), &style, &anns, &[]);
+        let s = build_summary(&fake_ctx(), &style, &anns, &[], &[]);
         assert!(s.contains("bazel test //..."));
         assert!(s.contains("/test bazel-tests"));
         assert!(!s.contains("cargo-fslabscli rust-tests"));
@@ -1698,7 +1870,7 @@ assertion failed</failure>
   </testsuite>
 </testsuites>
 "#;
-        let a = parse_nextest_junit(xml, &root(), &root());
+        let a = parse_nextest_junit(xml, &root(), &root()).annotations;
         assert_eq!(a.len(), 2);
         assert!(
             a.iter()
@@ -1722,7 +1894,7 @@ assertion failed</failure>
 assertion left == right failed\n  left: 1\n  right: 2\">\
 thread 'boom' panicked at src/lib.rs:12:5:\nassertion left == right failed\
 </failure></testcase></testsuite></testsuites>";
-        let a = parse_nextest_junit(xml, &root(), &root());
+        let a = parse_nextest_junit(xml, &root(), &root()).annotations;
         assert_eq!(a.len(), 1);
         assert!(!a[0].message.contains('\n'), "message: {:?}", a[0].message);
         assert!(
@@ -1730,6 +1902,117 @@ thread 'boom' panicked at src/lib.rs:12:5:\nassertion left == right failed\
             "message: {:?}",
             a[0].message
         );
+    }
+
+    fn unlocated(test: &str, timed_out: bool, detail: &str) -> UnlocatedFailure {
+        UnlocatedFailure {
+            suite: "dagger::tests".into(),
+            test: test.into(),
+            timed_out,
+            detail: detail.into(),
+        }
+    }
+
+    #[test]
+    fn junit_reports_a_timeout_that_has_no_location() {
+        // Nextest's shape for a terminated test: a type and nothing else.
+        let xml = r#"<testsuite name="tests">
+  <testcase name="import_one_partition"><failure type="test timeout"/></testcase>
+</testsuite>"#;
+        let (found, stats) = parse_junit(xml, &root(), &root(), "cargo test");
+        assert!(found.annotations.is_empty());
+        assert_eq!(found.unlocated.len(), 1);
+        assert!(found.unlocated[0].timed_out);
+        assert_eq!(found.unlocated[0].test, "import_one_partition");
+        assert_eq!(found.unlocated[0].suite, "tests");
+        // Still counted as a failure in the per-package table.
+        assert_eq!(stats[0].failed, 1);
+    }
+
+    #[test]
+    fn junit_keeps_a_panic_outside_the_repo_as_unlocated() {
+        // A panic inside a dependency resolves to a path outside the repo, so
+        // it cannot be annotated. Dropping it silently would lose the failure.
+        let xml = r#"<testsuite name="tests">
+  <testcase name="calls_a_dep"><failure message="boom">panicked at /home/runner/.cargo/registry/src/x/lib.rs:9:1</failure></testcase>
+</testsuite>"#;
+        let (found, _) = parse_junit(xml, &root(), &root(), "cargo test");
+        assert!(found.annotations.is_empty());
+        assert_eq!(found.unlocated.len(), 1);
+        assert!(!found.unlocated[0].timed_out);
+    }
+
+    #[test]
+    fn summary_names_unlocated_failures_with_timeouts_first() {
+        let anns = vec![Annotation {
+            path: "src/foo.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            annotation_level: AnnotationLevel::Failure,
+            message: "boom".into(),
+            title: None,
+            tool: "cargo test",
+        }];
+        let un = vec![
+            unlocated("returns_err", false, "Error: \"nope\""),
+            unlocated("hangs", true, ""),
+        ];
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &un, &[]);
+        assert!(s.contains("### Not annotated (2)"), "{s}");
+        let timeout_at = s.find("**timed out** `hangs`").unwrap();
+        let failure_at = s.find("**failed** `returns_err`").unwrap();
+        assert!(timeout_at < failure_at, "timeouts should come first:\n{s}");
+        // The detail survives for the ones that have any.
+        assert!(s.contains("Error: \"nope\""), "{s}");
+        // Counted in the header so the number is visible without scrolling.
+        assert!(
+            s.contains("**2 test(s)** failed with no source location"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn summary_without_annotations_still_lists_unlocated_failures() {
+        // A run where every failure is a timeout: there are no findings to
+        // group, so the Findings header must not be emitted empty, and the
+        // timeouts must still be there.
+        let un = vec![unlocated("hangs", true, "")];
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &[], &un, &[]);
+        assert!(!s.contains("### Findings"), "{s}");
+        assert!(s.contains("**timed out** `hangs`"), "{s}");
+    }
+
+    #[test]
+    fn summary_omits_the_unlocated_section_when_there_are_none() {
+        let anns = vec![Annotation {
+            path: "src/foo.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            annotation_level: AnnotationLevel::Failure,
+            message: "boom".into(),
+            title: None,
+            tool: "cargo test",
+        }];
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
+        assert!(!s.contains("Not annotated"), "{s}");
+        assert!(!s.contains("no source location"), "{s}");
+    }
+
+    #[test]
+    fn collector_dedupes_unlocated_by_suite_and_test() {
+        // The same failing test can arrive twice when a package is parsed by
+        // both the batch step and the per-package fallback.
+        let c = AnnotationCollector::new();
+        c.push(ParseOutcome {
+            annotations: Vec::new(),
+            unlocated: vec![unlocated("hangs", true, "")],
+        });
+        c.push(ParseOutcome {
+            annotations: Vec::new(),
+            unlocated: vec![unlocated("hangs", true, ""), unlocated("other", true, "")],
+        });
+        let drained = c.drain();
+        assert_eq!(drained.unlocated.len(), 2);
     }
 
     #[test]
@@ -1748,7 +2031,7 @@ thread 'boom' panicked at src/lib.rs:12:5:\nassertion left == right failed\
                 tool: "cargo clippy",
             })
             .collect();
-        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[]);
+        let s = build_summary(&fake_ctx(), &CheckStyle::rust_tests(), &anns, &[], &[]);
         assert!(
             s.chars().count() <= MAX_SUMMARY_CHARS,
             "len={}",
@@ -1837,7 +2120,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             !anns.is_empty(),
             "no annotations parsed from: {}",
@@ -1874,7 +2158,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             !anns.is_empty(),
             "no annotations parsed from clippy output: {}",
@@ -1903,7 +2188,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             !anns.is_empty(),
             "no annotations from cargo check: {}",
@@ -1940,7 +2226,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             !anns.is_empty(),
             "no annotations from cargo test panic: {} {}",
@@ -1985,7 +2272,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: Some(&junit),
             },
-        );
+        )
+        .annotations;
         assert!(!anns.is_empty(), "no annotations from nextest junit");
         assert!(anns.iter().any(|a| a.path == "src/lib.rs"));
         // JUnit path should win over the stdout regex fallback, so titles
@@ -1999,12 +2287,11 @@ mod real_cargo {
     }
 
     #[test]
-    fn cargo_test_err_return_produces_no_annotation() {
+    fn cargo_test_err_return_is_reported_without_a_location() {
         // A #[test] fn that returns `Err` produces a JUnit <failure> with no
-        // `panicked at path:line`, so we correctly emit zero annotations
-        // (pinning to a wrong line would be worse than nothing). Documents
-        // the known-gap: these failures are visible in the Prow log but not
-        // inline in the diff.
+        // `panicked at path:line`. Pinning it to a guessed line would be worse
+        // than nothing, so it produces no annotation, but it must still be
+        // named: before, a failing test disappeared from the check entirely.
         if !nextest_available() {
             eprintln!("skipping: cargo-nextest not installed");
             return;
@@ -2018,7 +2305,7 @@ mod real_cargo {
         let out = run(tmp.path(), &nextest_args(tmp.path(), JUNIT_NAME));
         assert!(!out.success);
         let junit = tmp.path().join("target/nextest/default").join(JUNIT_NAME);
-        let anns = parse_output_for(
+        let outcome = parse_output_for(
             "cargo_test",
             &out,
             &ParseDirs {
@@ -2028,9 +2315,68 @@ mod real_cargo {
             },
         );
         assert!(
-            anns.is_empty(),
+            outcome.annotations.is_empty(),
             "expected no annotations for Result::Err failure, got: {:?}",
-            anns
+            outcome.annotations
+        );
+        assert_eq!(outcome.unlocated.len(), 1, "{:?}", outcome.unlocated);
+        let f = &outcome.unlocated[0];
+        assert_eq!(f.test, "returns_err");
+        assert!(!f.timed_out);
+        assert!(f.detail.contains("nope"), "detail: {:?}", f.detail);
+    }
+
+    #[test]
+    fn timed_out_test_is_reported_without_a_location() {
+        // The failure mode that motivated this: nextest reports a terminated
+        // test as `<failure type="test timeout"/>` with no message, no body and
+        // no panic, so there is nothing to annotate and it used to be dropped.
+        // A timeout wave then produced a check run with nothing in it.
+        if !nextest_available() {
+            eprintln!("skipping: cargo-nextest not installed");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        write_crate(
+            tmp.path(),
+            "timeout_probe",
+            "#[test]\nfn hangs() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n",
+        );
+        let args = nextest_args(tmp.path(), JUNIT_NAME);
+        // Same tool config the helper just wrote, plus a one-second kill so the
+        // test does not wait out a realistic timeout.
+        std::fs::write(
+            canon(tmp.path()).join("fslabscli-nextest.toml"),
+            format!(
+                "[profile.default]\nslow-timeout = {{ period = \"1s\", terminate-after = 1 }}\n\
+                 [profile.default.junit]\npath = \"{JUNIT_NAME}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let out = run(tmp.path(), &args);
+        assert!(!out.success);
+        let junit = tmp.path().join("target/nextest/default").join(JUNIT_NAME);
+        let outcome = parse_output_for(
+            "cargo_test",
+            &out,
+            &ParseDirs {
+                workspace_dir: &canon(tmp.path()),
+                repo_root: &canon(tmp.path()),
+                junit_path: Some(&junit),
+            },
+        );
+        assert!(
+            outcome.annotations.is_empty(),
+            "a timeout has no location to annotate: {:?}",
+            outcome.annotations
+        );
+        assert_eq!(outcome.unlocated.len(), 1, "{:?}", outcome.unlocated);
+        assert_eq!(outcome.unlocated[0].test, "hangs");
+        assert!(
+            outcome.unlocated[0].timed_out,
+            "expected the timeout kind to be recognised: {:?}",
+            outcome.unlocated[0]
         );
     }
 
@@ -2105,7 +2451,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             anns.iter().any(|a| a.path == "sub/pkg/src/lib.rs"),
             "expected a workspace-relative path, got: {:?}",
@@ -2133,7 +2480,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: None,
             },
-        );
+        )
+        .annotations;
         assert!(
             anns.iter().any(|a| a.path == "sub/pkg/src/lib.rs"),
             "expected a workspace-relative path, got: {:?}",
@@ -2177,7 +2525,8 @@ mod real_cargo {
                 repo_root: &canon(tmp.path()),
                 junit_path: Some(&junit),
             },
-        );
+        )
+        .annotations;
         assert!(
             anns.iter().any(|a| a.path == "sub/pkg/src/lib.rs"),
             "expected a workspace-relative path, got: {:?}",
