@@ -2,8 +2,8 @@ pub mod annotations;
 mod docker_service;
 
 use crate::commands::tests::annotations::{
-    AnnotationCollector, CheckStyle, GhContext, GhTarget, collect_package_stats, parse_output_for,
-    post_annotations, resolve_token,
+    AnnotationCollector, CheckStyle, GhContext, GhTarget, ParseDirs, collect_package_stats,
+    parse_output_for, post_annotations, resolve_token,
 };
 
 use anyhow::Context;
@@ -20,14 +20,49 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env,
     fmt::{Display, Formatter},
-    fs::{File, create_dir_all, remove_dir_all},
-    io::Write,
-    path::PathBuf,
+    fs::{File, create_dir_all},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::OnceCell;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
+
+/// Nextest profile the `cargo_test` step runs under. It also names the store
+/// subdirectory the JUnit report is written into,
+/// `<target-dir>/nextest/<profile>/`, so the two must agree.
+const NEXTEST_PROFILE: &str = "default";
+
+/// Write the nextest config that asks for a JUnit report at a path we know.
+///
+/// Handed to nextest as `--tool-config-file`, which layers *below* the
+/// repository's own `.config/nextest.toml` instead of replacing it. Generating
+/// that file ourselves is not an option: nextest reads it only from the
+/// workspace root, which is exactly where a repository keeps its real nextest
+/// settings, so writing one there would overwrite them.
+///
+/// A repository that sets `junit.path` itself still wins, being higher
+/// priority. The report then lands somewhere we do not look, and annotations
+/// fall back to reading panic locations out of stdout.
+///
+/// The file goes under the target directory: absolute, which nextest requires,
+/// already ignored by git, and named per package so concurrent runs in one
+/// workspace never share it.
+fn write_nextest_tool_config(
+    target_directory: &Path,
+    package: &str,
+    version: &str,
+    junit_file_name: &str,
+) -> std::io::Result<PathBuf> {
+    let dir = target_directory.join("fslabscli");
+    create_dir_all(&dir)?;
+    let path = dir.join(format!("nextest-{package}-{version}.toml"));
+    std::fs::write(
+        &path,
+        format!("[profile.{NEXTEST_PROFILE}.junit]\npath = \"{junit_file_name}\"\n"),
+    )?;
+    Ok(path)
+}
 
 /// Checks whether a step should be skipped based on the env var `SKIP_{ID}_TEST` (uppercased).
 /// Returns `true` only when the env var is present and equals `"true"`.
@@ -594,8 +629,11 @@ pub async fn tests(
                     annotation_collector.push_many(parse_output_for(
                         "cargo_lock",
                         &lock_result,
-                        &ws_path,
-                        &repo_root,
+                        &ParseDirs {
+                            workspace_dir: &ws_path,
+                            repo_root: &repo_root,
+                            junit_path: None,
+                        },
                     ));
                     global_failed = true;
                     // The after-loop clone at the end of the labeled `'batch`
@@ -762,8 +800,15 @@ pub async fn tests(
                         // Batch step ids are `batch_fmt`/`batch_check`/... but the
                         // parsers dispatch on `cargo_fmt`/`cargo_check`/...
                         let parser_id = id.replace("batch_", "cargo_");
-                        annotation_collector
-                            .push_many(parse_output_for(&parser_id, &output, &ws_path, &repo_root));
+                        annotation_collector.push_many(parse_output_for(
+                            &parser_id,
+                            &output,
+                            &ParseDirs {
+                                workspace_dir: &ws_path,
+                                repo_root: &repo_root,
+                                junit_path: None,
+                            },
+                        ));
                         global_failed = true;
                         batch_junit_report.add_testsuite(ts);
                         // Same reason as the lock failure path: don't clone
@@ -1002,9 +1047,39 @@ async fn run_package_tests(
     let package_name = &member.package;
     let package_version = &member.version;
     let package_path = repo_root.join(&member.path);
+    // Cargo reports source paths relative to the workspace root even when it is
+    // run from a member directory, so annotations resolve against this rather
+    // than against `package_path`.
+    let workspace_path = repo_root.join(&member.workspace);
     let test_args = member.test_detail.args.clone().unwrap_or_default();
     let use_nextest = has_cargo_nextest().await;
-    let nextest_junit_path = package_path.join("target/nextest/default/junit.xml");
+    // Nextest resolves `junit.path` against its store directory,
+    // `<target-dir>/nextest/<profile>/`, which is shared by every package in
+    // the workspace. Packages are tested concurrently, so the file name has to
+    // be unique per package or two runs overwrite each other's report.
+    let junit_file_name = format!("junit-{package_name}-{package_version}.xml");
+    let nextest_junit_path = member
+        .target_directory
+        .join("nextest")
+        .join(NEXTEST_PROFILE)
+        .join(&junit_file_name);
+    let nextest_tool_config = match use_nextest {
+        false => None,
+        true => match write_nextest_tool_config(
+            &member.target_directory,
+            package_name,
+            package_version,
+            &junit_file_name,
+        ) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                // Only costs the report: the run still happens, and failures
+                // fall back to reading panic locations out of stdout.
+                tracing::warn!("Failed to write nextest tool config: {e}");
+                None
+            }
+        },
+    };
     let mut postgres_process = None;
     let mut database_url = None;
     let mut azurite_process = None;
@@ -1293,7 +1368,11 @@ async fn run_package_tests(
                 format!("{test_command} {additional_args}")
             } else if use_nextest {
                 format!(
-                    "cargo nextest run --all-targets {additional_args} --profile default --no-fail-fast --no-tests=pass {}",
+                    "cargo nextest run --all-targets {additional_args} --profile {NEXTEST_PROFILE}{} --no-fail-fast --no-tests=pass {}",
+                    nextest_tool_config
+                        .as_ref()
+                        .map(|p| format!(" --tool-config-file 'fslabscli:{}'", p.display()))
+                        .unwrap_or_default(),
                     if common_options.inner_job_limit != 0 {
                         format!("--test-threads {}", common_options.inner_job_limit)
                     } else {
@@ -1416,29 +1495,13 @@ async fn run_package_tests(
             tracing::info!("│ {} │ ► START", tc_prefix,);
             let start_time = OffsetDateTime::now_utc();
 
-            // Setup nextest configuration if this is the cargo_test step and nextest is available
-            if fslabs_test.id == "cargo_test" {
-                // Delete any stale junit.xml before this step. The annotations
-                // parser reads that path whenever it exists; leaving a prior
-                // run's file in place would let ghost annotations attach to
-                // this run even when we invoked plain `cargo test` and never
-                // regenerated it.
-                if nextest_junit_path.exists() {
-                    let _ = std::fs::remove_file(&nextest_junit_path);
-                }
-                if use_nextest {
-                    let config_dir = package_path.join(".config");
-                    let config_file = config_dir.join("nextest.toml");
-
-                    if let Err(e) = create_dir_all(&config_dir) {
-                        tracing::warn!("Failed to create .config directory: {}", e);
-                    } else if let Ok(mut file) = File::create(&config_file) {
-                        let config_content = "[profile.default.junit]\npath = \"junit.xml\"\n";
-                        if let Err(e) = file.write_all(config_content.as_bytes()) {
-                            tracing::warn!("Failed to write nextest config: {}", e);
-                        }
-                    }
-                }
+            // Delete any stale JUnit report before this step. The annotations
+            // parser reads that path whenever it exists; leaving a prior
+            // run's file in place would let ghost annotations attach to
+            // this run even when we invoked plain `cargo test` and never
+            // regenerated it.
+            if fslabs_test.id == "cargo_test" && nextest_junit_path.exists() {
+                let _ = std::fs::remove_file(&nextest_junit_path);
             }
 
             if let Some(pre_command) = fslabs_test.pre_command {
@@ -1457,7 +1520,6 @@ async fn run_package_tests(
             }
             let test_output = match fslabs_test.id == "cargo_lock" {
                 true => {
-                    let workspace_path = repo_root.join(&member.workspace);
                     let cell = {
                         let mut cache = lock_check_cache.lock().await;
                         cache
@@ -1514,14 +1576,6 @@ async fn run_package_tests(
                 }
             }
 
-            // Cleanup nextest configuration if this is the cargo_test step and nextest was used
-            if fslabs_test.id == "cargo_test" && use_nextest {
-                let config_dir = package_path.join(".config");
-                if let Err(e) = remove_dir_all(&config_dir) {
-                    tracing::debug!("Failed to cleanup .config directory: {}", e);
-                }
-            }
-
             step_span.record(
                 "otel.status_code",
                 if test_output.success { "OK" } else { "ERROR" },
@@ -1531,8 +1585,15 @@ async fn run_package_tests(
             let duration = end_time - start_time;
 
             if !test_output.success {
-                let anns =
-                    parse_output_for(&fslabs_test.id, &test_output, &package_path, &repo_root);
+                let anns = parse_output_for(
+                    &fslabs_test.id,
+                    &test_output,
+                    &ParseDirs {
+                        workspace_dir: &workspace_path,
+                        repo_root: &repo_root,
+                        junit_path: Some(&nextest_junit_path),
+                    },
+                );
                 if !anns.is_empty() {
                     annotation_collector.push_many(anns);
                 }
