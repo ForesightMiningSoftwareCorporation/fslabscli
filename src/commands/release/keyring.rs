@@ -51,6 +51,27 @@ impl TempKeyring {
         command
     }
 
+    /// Every key fingerprint in the keyring (`fpr` records of
+    /// `gpg --list-keys --with-colons`).
+    pub(crate) fn fingerprints(&self) -> anyhow::Result<Vec<String>> {
+        let output = self
+            .gpg()
+            .args(["--list-keys", "--with-colons"])
+            .output()
+            .context("cannot run gpg")?;
+        if !output.status.success() {
+            bail!(
+                "gpg --list-keys failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.starts_with("fpr:"))
+            .filter_map(|line| line.split(':').nth(9).map(str::to_string))
+            .collect())
+    }
+
     pub(crate) fn verify_detached(&self, signature: &Path, file: &Path) -> anyhow::Result<()> {
         let output = self
             .gpg()

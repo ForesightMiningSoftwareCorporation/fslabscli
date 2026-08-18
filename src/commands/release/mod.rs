@@ -22,11 +22,15 @@ use crate::PrettyPrintable;
 
 pub mod bundle_linux;
 pub mod classify;
+pub mod cleanup_drafts;
+pub mod healthcheck;
 pub(crate) mod http;
 pub(crate) mod keyring;
 pub mod probe_store;
 pub mod promote;
 pub mod publish;
+pub mod record;
+pub mod resolve;
 pub mod sign_linux;
 pub mod store;
 pub mod types;
@@ -51,6 +55,14 @@ enum ReleaseCommands {
     Publish(Box<publish::Options>),
     /// Move a channel pointer in channels.json (the only writer)
     Promote(Box<promote::Options>),
+    /// Resolve a download exactly as an installed client would
+    Resolve(Box<resolve::Options>),
+    /// Record a published release in fsl_sling by reference (best effort)
+    Record(Box<record::Options>),
+    /// Verify the published release surface end to end
+    Healthcheck(Box<healthcheck::Options>),
+    /// Delete asset-free draft releases left by the legacy tag trigger
+    CleanupDrafts(Box<cleanup_drafts::Options>),
     /// Build the Linux .deb and AppImage in the pinned floor container
     BundleLinux(Box<bundle_linux::Options>),
     /// Detach-sign Linux artifacts with the org OpenPGP key
@@ -65,6 +77,10 @@ pub enum ReleaseResult {
     ProbeStore(probe_store::ProbeStoreResult),
     Publish(publish::PublishResult),
     Promote(promote::PromoteResult),
+    Resolve(resolve::ResolveResult),
+    Record(record::RecordResult),
+    Healthcheck(healthcheck::HealthcheckResult),
+    CleanupDrafts(cleanup_drafts::CleanupDraftsResult),
     BundleLinux(bundle_linux::BundleLinuxResult),
     SignLinux(sign_linux::SignLinuxResult),
 }
@@ -77,6 +93,10 @@ impl Display for ReleaseResult {
             ReleaseResult::ProbeStore(r) => r.fmt(f),
             ReleaseResult::Publish(r) => r.fmt(f),
             ReleaseResult::Promote(r) => r.fmt(f),
+            ReleaseResult::Resolve(r) => r.fmt(f),
+            ReleaseResult::Record(r) => r.fmt(f),
+            ReleaseResult::Healthcheck(r) => r.fmt(f),
+            ReleaseResult::CleanupDrafts(r) => r.fmt(f),
             ReleaseResult::BundleLinux(r) => r.fmt(f),
             ReleaseResult::SignLinux(r) => r.fmt(f),
         }
@@ -91,6 +111,10 @@ impl PrettyPrintable for ReleaseResult {
             ReleaseResult::ProbeStore(r) => r.pretty_print(),
             ReleaseResult::Publish(r) => r.pretty_print(),
             ReleaseResult::Promote(r) => r.pretty_print(),
+            ReleaseResult::Resolve(r) => r.pretty_print(),
+            ReleaseResult::Record(r) => r.pretty_print(),
+            ReleaseResult::Healthcheck(r) => r.pretty_print(),
+            ReleaseResult::CleanupDrafts(r) => r.pretty_print(),
             ReleaseResult::BundleLinux(r) => r.pretty_print(),
             ReleaseResult::SignLinux(r) => r.pretty_print(),
         }
@@ -112,6 +136,14 @@ pub async fn release(
         ReleaseCommands::ProbeStore(o) => probe_store::run(&o).await.map(ReleaseResult::ProbeStore),
         ReleaseCommands::Publish(o) => publish::run(&o).await.map(ReleaseResult::Publish),
         ReleaseCommands::Promote(o) => promote::run(&o).await.map(ReleaseResult::Promote),
+        ReleaseCommands::Resolve(o) => resolve::run(&o).await.map(ReleaseResult::Resolve),
+        ReleaseCommands::Record(o) => record::run(&o).await.map(ReleaseResult::Record),
+        ReleaseCommands::Healthcheck(o) => {
+            healthcheck::run(&o).await.map(ReleaseResult::Healthcheck)
+        }
+        ReleaseCommands::CleanupDrafts(o) => cleanup_drafts::run(&o)
+            .await
+            .map(ReleaseResult::CleanupDrafts),
         ReleaseCommands::BundleLinux(o) => bundle_linux::run(&o, working_directory)
             .await
             .map(ReleaseResult::BundleLinux),
