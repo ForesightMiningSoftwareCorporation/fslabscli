@@ -21,6 +21,7 @@ use crate::commands::generate_wix::{Options as GenerateWixOptions, generate_wix}
 use crate::commands::generate_workflow::{Options as GenerateWorkflowOptions, generate_workflow};
 use crate::commands::github_app_token::{Options as GithubAppTokenOptions, github_app_token};
 use crate::commands::publish::{Options as PublishOptions, publish};
+use crate::commands::release::{Options as ReleaseOptions, release};
 use crate::commands::summaries::{Options as SummariesOptions, summaries};
 use crate::commands::tests::{Options as TestsOptions, tests};
 use crate::crate_graph::find_git_root;
@@ -125,6 +126,8 @@ enum Commands {
     DockerBuildPush(Box<DockerBuildPushOptions>),
     /// Create or update a draft GitHub release and upload artifacts
     DraftRelease(Box<DraftReleaseOptions>),
+    /// Application release pipeline: classify, publish, promote, resolve, verify
+    Release(Box<ReleaseOptions>),
     /// Post build findings (logs, JUnit XML) as GitHub check-run annotations
     Annotate(Box<AnnotateOptions>),
 
@@ -501,6 +504,9 @@ async fn run() -> anyhow::Result<String> {
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         Commands::DraftRelease(options) => draft_release(options, working_directory)
+            .await
+            .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::Release(options) => release(options, working_directory, repo_root)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
         // Repo root, not the working directory: annotation paths are anchored
