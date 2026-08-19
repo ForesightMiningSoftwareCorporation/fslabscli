@@ -28,6 +28,12 @@ pub struct Options {
     pub prefix: String,
 }
 
+/// An ETag that cannot match any stored object. The quotes are part of the
+/// header value, not Rust syntax noise: an unquoted ETag is a malformed
+/// If-Match and the store would reject it for the wrong reason, which the probe
+/// would then report as a missing conditional-write feature.
+const STALE_ETAG: &str = "\"00000000000000000000000000000000\"";
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ProbeCase {
     pub description: String,
@@ -147,12 +153,63 @@ pub async fn run(options: &Options) -> anyhow::Result<ProbeStoreResult> {
         cas.err().map(|e| format!("{e:#}")),
     );
 
-    let readback = store.read(&key).await?;
+    // The decisive case. Everything above passes on a store that accepts
+    // If-Match but silently IGNORES it, because ignoring a precondition still
+    // yields a successful write. Lost-update protection on index.json and
+    // channels.json, and therefore promote's backward-move gate, rest entirely
+    // on the store refusing a write whose ETag no longer matches.
+    let refused_stale = store
+        .refuses_stale_if_match(&cas_key, STALE_ETAG, b"probe-body-stale".to_vec())
+        .await;
+    let stale_ok = matches!(refused_stale, Ok(true));
     case(
-        "refused overwrite left the original bytes",
-        readback == body_one,
-        None,
+        "If-Match with a stale ETag is refused",
+        stale_ok,
+        match &refused_stale {
+            Ok(true) => None,
+            Ok(false) => Some(
+                "the write SUCCEEDED against a stale ETag: this store does not enforce If-Match"
+                    .into(),
+            ),
+            Err(e) => Some(format!("{e:#}")),
+        },
     );
+    // Only meaningful once the CAS update actually landed "updated"; if case 3
+    // failed the document still reads "seed" and reporting that as a clobber
+    // would blame the store for a write it never made.
+    if cas_ok {
+        // A store that ignored the precondition also clobbered the document, so
+        // prove the bytes are intact independently of the error it reported.
+        match store.read(&cas_key).await {
+            Ok(bytes) => case(
+                "refused stale-ETag write left the document unchanged",
+                serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map(|v| v["probe"] == "updated")
+                    .unwrap_or(false),
+                None,
+            ),
+            // Never `?`: the whole point of this command is to print a verdict,
+            // and propagating here would discard every case above it.
+            Err(e) => case(
+                "refused stale-ETag write left the document unchanged",
+                false,
+                Some(format!("could not re-read the document: {e:#}")),
+            ),
+        }
+    }
+
+    match store.read(&key).await {
+        Ok(readback) => case(
+            "refused overwrite left the original bytes",
+            readback == body_one,
+            None,
+        ),
+        Err(e) => case(
+            "refused overwrite left the original bytes",
+            false,
+            Some(format!("could not re-read the object: {e:#}")),
+        ),
+    }
 
     let passed = cases.iter().all(|c| c.passed);
     Ok(ProbeStoreResult {

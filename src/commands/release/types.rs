@@ -181,8 +181,10 @@ pub struct AppReleaseConfig {
     pub verbose_name: String,
     /// Target triples this application ships for.
     pub targets: Vec<String>,
-    /// Path to the macOS EULA, relative to the package directory.
-    #[serde(default)]
+    /// Path to the macOS EULA, relative to the package directory. Omitted
+    /// entirely when absent: `jq -r` renders a JSON null as the literal string
+    /// "null", which the macOS leg would pass to create-dmg as `--eula <dir>/null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license_macos: Option<String>,
 }
 
@@ -201,6 +203,31 @@ mod tests {
         assert_eq!(v["url"], "https://x/y.asc");
         let plain = serde_json::to_value(ArtifactSignature::Authenticode).unwrap();
         assert_eq!(plain["kind"], "authenticode");
+    }
+
+    #[test]
+    fn absent_license_macos_is_omitted_not_null() {
+        // `jq -r .config.license_macos` renders a JSON null as the literal
+        // string "null", which the macOS leg passed to create-dmg as
+        // `--eula <dir>/null`. The key must not be present at all.
+        let config = AppReleaseConfig {
+            verbose_name: "App".into(),
+            targets: vec![TARGET_LINUX.into()],
+            license_macos: None,
+        };
+        let v = serde_json::to_value(&config).unwrap();
+        assert!(
+            v.get("license_macos").is_none(),
+            "serialized as {v}, which jq -r renders as the string \"null\""
+        );
+        let with = AppReleaseConfig {
+            license_macos: Some("eula.rtf".into()),
+            ..config
+        };
+        assert_eq!(
+            serde_json::to_value(&with).unwrap()["license_macos"],
+            "eula.rtf"
+        );
     }
 
     #[test]

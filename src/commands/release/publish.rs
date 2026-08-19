@@ -436,17 +436,37 @@ pub async fn run(options: &Options) -> anyhow::Result<PublishResult> {
     };
 
     let mut written = Vec::new();
+    // Detached signatures are uploaded but are not manifest artifacts, so the
+    // manifest carries no digest for them. Record what we sent, purely so they
+    // can be read back below.
+    let mut signature_digests = Vec::new();
     for (path, key) in &uploads {
         let bytes =
             std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+        if !digests.contains_key(path) {
+            signature_digests.push((key.clone(), sha256_hex(&bytes)));
+        }
         store.put_immutable(key, bytes).await?;
         written.push(key.clone());
     }
-    // Read back and digest-compare every manifest artifact while no manifest
-    // exists yet, so nothing broken can become published-and-immutable.
+    // Read back and digest-compare while no manifest exists yet, so nothing
+    // broken can become published-and-immutable.
+    //
+    // Manifest artifacts are compared against the digest THE MANIFEST RECORDS,
+    // not against a digest recomputed from the bytes we happened to send. The
+    // latter is self-consistent by construction and would pass even if the file
+    // changed between the digesting read and the upload read, committing a
+    // manifest whose recorded digest no object matches. Going through
+    // `key_from_url` also keeps that mapping exercised here rather than only in
+    // promote.
     for artifact in &manifest.artifacts {
         let key = store.key_from_url(&artifact.url)?;
         store.verify_key(key, &artifact.sha256).await?;
+    }
+    // The signatures, which the loop above cannot cover: a truncated .asc would
+    // otherwise ship unverified and fail every client verification permanently.
+    for (key, want) in &signature_digests {
+        store.verify_key(key, want).await?;
     }
 
     // The manifest is written LAST: its existence is the atomic commit

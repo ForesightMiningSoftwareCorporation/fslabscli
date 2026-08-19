@@ -73,22 +73,72 @@ fn parse_secret_key_listing(listing: &str) -> anyhow::Result<(String, String)> {
     Ok((key_id, fingerprint))
 }
 
-async fn gpg(gnupg_home: &Path, args: &[&str]) -> anyhow::Result<std::process::Output> {
-    let output = tokio::process::Command::new("gpg")
+/// Run gpg with `stdin` fed to it. `label` is what appears in an error message:
+/// the argv is NEVER echoed, because the signing invocation carries the
+/// passphrase and a failure would otherwise print it into the job log. It is
+/// masked there only by GitHub's secret filter, which does not apply to a log
+/// read anywhere else.
+async fn gpg_with_stdin(
+    gnupg_home: &Path,
+    label: &str,
+    args: &[&str],
+    stdin_data: Option<&[u8]>,
+) -> anyhow::Result<std::process::Output> {
+    let mut command = tokio::process::Command::new("gpg");
+    command
         .args(args)
         .env("GNUPGHOME", gnupg_home)
-        .output()
-        .await
-        .context("failed to run gpg")?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(if stdin_data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to run gpg ({label})"))?;
+    // The write and the drain run concurrently. Completing the stdin write
+    // first would deadlock the moment gpg emits more than a pipe buffer of
+    // status output before reading all of its input: gpg blocks writing
+    // stderr, we block writing stdin, and the signing job hangs until the
+    // job timeout with nothing to show for it.
+    let mut stdin = match stdin_data {
+        Some(_) => Some(
+            child
+                .stdin
+                .take()
+                .with_context(|| format!("no stdin on the gpg {label}"))?,
+        ),
+        None => None,
+    };
+    let feed = async {
+        if let (Some(stdin), Some(data)) = (stdin.as_mut(), stdin_data) {
+            stdin.write_all(data).await?;
+            stdin.shutdown().await?;
+        }
+        drop(stdin.take());
+        Ok::<_, std::io::Error>(())
+    };
+    let (fed, output) = tokio::join!(feed, child.wait_with_output());
+    fed.with_context(|| format!("failed to feed gpg {label} on stdin"))?;
+    let output = output?;
     if !output.status.success() {
         bail!(
-            "gpg {} failed with {}: {}",
-            args.join(" "),
+            "gpg {label} failed with {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(output)
+}
+
+async fn gpg(
+    gnupg_home: &Path,
+    label: &str,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    gpg_with_stdin(gnupg_home, label, args, None).await
 }
 
 pub async fn run(options: &Options) -> anyhow::Result<SignLinuxResult> {
@@ -99,28 +149,22 @@ pub async fn run(options: &Options) -> anyhow::Result<SignLinuxResult> {
 
     // Import the key via stdin so it never touches the filesystem outside
     // the GNUPGHOME.
-    let mut import = tokio::process::Command::new("gpg")
-        .args(["--batch", "--quiet", "--import"])
-        .env("GNUPGHOME", home)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("failed to spawn gpg for the key import")?;
-    let mut stdin = import.stdin.take().context("no stdin on the gpg import")?;
-    stdin.write_all(options.key.as_bytes()).await?;
-    stdin.write_all(b"\n").await?;
-    drop(stdin);
-    let import = import.wait_with_output().await?;
-    if !import.status.success() {
-        bail!(
-            "gpg --import failed with {}: {}",
-            import.status,
-            String::from_utf8_lossy(&import.stderr)
-        );
-    }
+    let mut key = options.key.clone().into_bytes();
+    key.push(b'\n');
+    gpg_with_stdin(
+        home,
+        "--import",
+        &["--batch", "--quiet", "--import"],
+        Some(&key),
+    )
+    .await?;
 
-    let listing = gpg(home, &["--list-secret-keys", "--with-colons"]).await?;
+    let listing = gpg(
+        home,
+        "--list-secret-keys",
+        &["--list-secret-keys", "--with-colons"],
+    )
+    .await?;
     let (key_id, fingerprint) =
         parse_secret_key_listing(&String::from_utf8_lossy(&listing.stdout))?;
 
@@ -146,15 +190,18 @@ pub async fn run(options: &Options) -> anyhow::Result<SignLinuxResult> {
     for artifact in &artifacts {
         let artifact_str = artifact.to_string_lossy().into_owned();
         let signature = format!("{artifact_str}.asc");
-        gpg(
+        // The passphrase goes over stdin via --passphrase-fd 0, never on the
+        // argv, where every process on the runner could read it out of /proc.
+        gpg_with_stdin(
             home,
+            "--detach-sign",
             &[
                 "--batch",
                 "--yes",
                 "--pinentry-mode",
                 "loopback",
-                "--passphrase",
-                &options.passphrase,
+                "--passphrase-fd",
+                "0",
                 "--local-user",
                 &key_id,
                 "--armor",
@@ -163,11 +210,12 @@ pub async fn run(options: &Options) -> anyhow::Result<SignLinuxResult> {
                 &signature,
                 &artifact_str,
             ],
+            Some(options.passphrase.as_bytes()),
         )
         .await
         .with_context(|| format!("signing {} failed", artifact.display()))?;
         // Self-verify before anything downstream trusts the .asc.
-        gpg(home, &["--verify", &signature, &artifact_str])
+        gpg(home, "--verify", &["--verify", &signature, &artifact_str])
             .await
             .with_context(|| format!("self-verification failed for {}", artifact.display()))?;
         signed.push(

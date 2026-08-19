@@ -142,6 +142,11 @@ pub fn apply_move(
         pointers.insert(target.clone(), options.version.clone());
     }
     doc.updated_at = now.to_string();
+    // Re-assert manifest_base on every write. It was previously set only in the
+    // initial document, so a value poisoned once stayed poisoned for the life of
+    // the file. Resolution no longer trusts this field, but it is published and
+    // read by humans, so it must not be left pointing somewhere else.
+    doc.manifest_base = format!("{}/{}", options.base_url, options.releases_bucket);
     doc.provenance.insert(
         0,
         ProvenanceEntry {

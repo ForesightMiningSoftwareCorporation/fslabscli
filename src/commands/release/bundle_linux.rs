@@ -181,6 +181,32 @@ async fn download(url: &str) -> anyhow::Result<Vec<u8>> {
     super::http::get_bytes(&super::http::client()?, url).await
 }
 
+/// The one .deb in `dir`. More than one is a hard failure rather than a choice:
+/// picking by sort order would silently ship a stale .deb from an earlier
+/// version, or, in cargo-deb's untripled default directory, another package's.
+fn select_single_deb(dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut debs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("cannot list {}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "deb"))
+        .collect();
+    debs.sort();
+    match debs.len() {
+        1 => Ok(debs.remove(0)),
+        0 => bail!("cargo deb produced no .deb under {}", dir.display()),
+        n => bail!(
+            "expected exactly one .deb under {}, found {n}: {}. \
+             Refusing to guess which one to ship.",
+            dir.display(),
+            debs.iter()
+                .map(|p| p.file_name().unwrap_or_default().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn make_executable(path: &Path) -> anyhow::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .with_context(|| format!("cannot chmod {}", path.display()))
@@ -247,6 +273,35 @@ pub async fn run(
     }
 
     // Package the .deb from the already-built binary.
+    //
+    // `-o` is not optional. cargo-deb's default output directory is
+    // `target_dir_base.join("debian")` with NO target triple (config.rs
+    // `default_deb_output_dir`; the triple is appended only by
+    // `target_dependent_path`, which the deb output does not go through), so
+    // `--target` does NOT move the artifact into a per-triple directory.
+    // Reading a tripled path without passing `-o` is an unconditional ENOENT.
+    // The per-triple directory is chosen over cargo-deb's untripled default
+    // because that default is shared by every package in the workspace, and the
+    // selection below refuses to choose between multiple .debs.
+    //
+    // Cleared, not just created: the target dir survives between runs on the
+    // persistent build pool, and a .deb left by an earlier version would now be
+    // a hard failure rather than something sort order silently resolved. The
+    // AppImage path below clears its own directory for the same reason.
+    let debian_dir = target_dir.join(TARGET_LINUX).join("debian");
+    if debian_dir.exists() {
+        for entry in std::fs::read_dir(&debian_dir)
+            .with_context(|| format!("cannot list {}", debian_dir.display()))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "deb"))
+        {
+            std::fs::remove_file(&entry)
+                .with_context(|| format!("cannot remove the stale {}", entry.display()))?;
+        }
+    }
+    std::fs::create_dir_all(&debian_dir)
+        .with_context(|| format!("cannot create {}", debian_dir.display()))?;
     run_step(
         "cargo",
         &[
@@ -258,22 +313,16 @@ pub async fn run(
             TARGET_LINUX,
             "--deb-version",
             &options.version,
+            // An existing directory puts the .deb inside it under cargo-deb's
+            // own generated filename.
+            "-o",
+            &debian_dir.to_string_lossy(),
         ],
         &package_dir,
         &[],
     )
     .await?;
-    let debian_dir = target_dir.join(TARGET_LINUX).join("debian");
-    let mut debs: Vec<PathBuf> = std::fs::read_dir(&debian_dir)
-        .with_context(|| format!("cannot list {}", debian_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "deb"))
-        .collect();
-    debs.sort();
-    let Some(deb) = debs.into_iter().next() else {
-        bail!("cargo deb produced no .deb under {}", debian_dir.display());
-    };
+    let deb = select_single_deb(&debian_dir)?;
 
     // Assemble the AppDir: binary, desktop entry, icon, AppRun. Nothing else.
     let out = target_dir.join(TARGET_LINUX).join("appimage");
@@ -436,6 +485,39 @@ DYNAMIC SYMBOL TABLE:
         );
         assert!(exceeds_floor("2.2.6", "2.2.5").unwrap());
         assert!(exceeds_floor("x.y", "2.31").is_err());
+    }
+
+    #[test]
+    fn exactly_one_deb_is_required() {
+        let dir = tempfile::tempdir().unwrap();
+        // None: cargo-deb wrote nowhere we looked. This is the shape the
+        // missing -o produced, except there the directory did not exist at all.
+        let err = select_single_deb(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("produced no .deb"), "{err}");
+
+        std::fs::write(dir.path().join("app_1.2.3_amd64.deb"), "x").unwrap();
+        assert_eq!(
+            select_single_deb(dir.path()).unwrap().file_name().unwrap(),
+            "app_1.2.3_amd64.deb"
+        );
+
+        // Two: a stale build, or another package sharing cargo-deb's untripled
+        // default directory. Sort order would have shipped 1.2.3 as 1.2.4.
+        std::fs::write(dir.path().join("app_1.2.4_amd64.deb"), "x").unwrap();
+        let err = select_single_deb(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("found 2"), "{err}");
+        assert!(err.contains("Refusing to guess"), "{err}");
+        assert!(err.contains("app_1.2.3_amd64.deb"), "names both: {err}");
+        assert!(err.contains("app_1.2.4_amd64.deb"), "names both: {err}");
+    }
+
+    #[test]
+    fn a_missing_directory_is_an_error_not_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = select_single_deb(&dir.path().join("nope"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot list"), "{err}");
     }
 
     #[test]
