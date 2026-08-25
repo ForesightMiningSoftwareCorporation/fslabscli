@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::cargo::CrateChecker;
@@ -58,16 +59,15 @@ impl PackageMetadataFslabsCiPublishCargo {
                 );
                 true
             } else {
-                match cargo
+                let crate_exists = cargo
                     .check_crate_exists(registry_name.clone(), name.clone(), version.clone())
                     .await
-                {
-                    Ok(crate_exists) => !crate_exists,
-                    Err(e) => {
-                        tracing::error!("Could not check if crates already exists: {:#}", e);
-                        false
-                    }
-                }
+                    .with_context(|| {
+                        format!(
+                            "Could not check whether {name} v{version} exists in Cargo registry {registry_name}"
+                        )
+                    })?;
+                !crate_exists
             };
             self.registries_publish
                 .insert(registry_name.clone(), publish);
@@ -278,6 +278,35 @@ pub(crate) mod tests {
 
         assert!(cargo_publish.publish);
         assert!(cargo_publish.registries_publish["test_registry"]);
+    }
+
+    #[tokio::test]
+    async fn test_registry_check_error_fails_publishability_check() {
+        let toml = r#"
+        publish = true
+        alternate_registries = ["test_registry"]
+        "#;
+        let mut cargo = MockCargo::new();
+        cargo
+            .expect_check_crate_exists()
+            .returning(|_, _, _| Err(anyhow::anyhow!("registry unavailable")));
+
+        let mut cargo_publish: PackageMetadataFslabsCiPublishCargo = toml::from_str(toml).unwrap();
+        let error = cargo_publish
+            .check(
+                "test".to_string(),
+                "1.0.0".to_string(),
+                &cargo,
+                false,
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Could not check whether test v1.0.0 exists in Cargo registry test_registry"
+        ));
+        assert!(cargo_publish.registries_publish.is_empty());
     }
 
     #[test]
