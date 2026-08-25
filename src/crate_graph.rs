@@ -45,6 +45,34 @@ impl CrateGraph {
         dep_kind: Option<DependencyKind>,
         feature_resolution: FeatureResolution,
     ) -> anyhow::Result<Self> {
+        Self::new_with_skip_ci(repo_root, main_registry, dep_kind, feature_resolution, true)
+    }
+
+    /// Finds all Cargo workspaces for a release, including directories marked
+    /// with `.skip_ci`. The marker only suppresses test and change-discovery CI;
+    /// explicitly publishable crates must remain visible to release planning.
+    pub fn new_for_publish(
+        repo_root: impl Into<PathBuf>,
+        main_registry: impl Into<String> + Clone,
+        dep_kind: Option<DependencyKind>,
+        feature_resolution: FeatureResolution,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_skip_ci(
+            repo_root,
+            main_registry,
+            dep_kind,
+            feature_resolution,
+            false,
+        )
+    }
+
+    fn new_with_skip_ci(
+        repo_root: impl Into<PathBuf>,
+        main_registry: impl Into<String> + Clone,
+        dep_kind: Option<DependencyKind>,
+        feature_resolution: FeatureResolution,
+        honor_skip_ci: bool,
+    ) -> anyhow::Result<Self> {
         let repo_root = repo_root.into();
         let mut workspaces = Vec::new();
         let (ignore, err) = Gitignore::new(repo_root.join(".gitignore"));
@@ -59,6 +87,7 @@ impl CrateGraph {
             &mut workspaces,
             &envs,
             matches!(feature_resolution, FeatureResolution::DualGraph),
+            honor_skip_ci,
         )?;
         workspaces.sort_by(|r1, r2| r1.path.cmp(&r2.path));
         let dependencies = DependencyGraph::new(&repo_root, &workspaces, dep_kind, false);
@@ -90,6 +119,7 @@ impl CrateGraph {
         workspaces: &mut Vec<Workspace>,
         envs: &HashMap<String, String>,
         dual_graph: bool,
+        honor_skip_ci: bool,
     ) -> anyhow::Result<()> {
         if let Some(name) = dir.file_name()
             && name == ".git"
@@ -99,7 +129,7 @@ impl CrateGraph {
         if ignore.matched(dir, true).is_ignore() {
             return Ok(());
         }
-        if std::fs::exists(dir.join(".skip_ci"))? {
+        if honor_skip_ci && std::fs::exists(dir.join(".skip_ci"))? {
             return Ok(());
         }
 
@@ -212,6 +242,7 @@ impl CrateGraph {
                             workspaces,
                             envs,
                             dual_graph,
+                            honor_skip_ci,
                         )?;
                     }
                 }
@@ -231,6 +262,7 @@ impl CrateGraph {
                     workspaces,
                     envs,
                     dual_graph,
+                    honor_skip_ci,
                 )?;
             }
         }
@@ -740,6 +772,28 @@ mod tests {
                 name: "standalone".into(),
                 version: "0.1.0".parse().unwrap()
             }]
+        );
+    }
+
+    #[test]
+    fn test_publish_discovery_includes_skip_ci_workspace() {
+        let repo = create_simple_rust_crate();
+        std::fs::write(repo.join(".skip_ci"), "").unwrap();
+
+        let ci_graph =
+            CrateGraph::new(&repo, "", None, FeatureResolution::AllFeaturesOnly).unwrap();
+        let publish_graph =
+            CrateGraph::new_for_publish(&repo, "", None, FeatureResolution::AllFeaturesOnly)
+                .unwrap();
+
+        assert!(ci_graph.workspaces().is_empty());
+        assert_eq!(publish_graph.workspaces().len(), 1);
+        assert_eq!(
+            publish_graph.workspaces()[0].root_package_key(),
+            Some(PackageKey {
+                name: "test-lib".into(),
+                version: "0.1.0".parse().unwrap(),
+            })
         );
     }
 

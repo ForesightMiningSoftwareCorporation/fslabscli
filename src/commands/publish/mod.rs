@@ -2,13 +2,16 @@ use anyhow::Context;
 use aws_sdk_cloudfront as cloudfront;
 use cargo_metadata::{DependencyKind, PackageId};
 use clap::Parser;
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
+use hyper::{Method, Request, StatusCode, Uri};
 use junit_report::{Duration, ReportBuilder, TestCase, TestSuiteBuilder};
 use mime_guess;
 use octocrab::Octocrab;
 use octocrab::params::repos::Reference;
 use opendal::{Operator, services};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::time::SystemTime;
@@ -35,7 +38,7 @@ use crate::{
         Options as CheckWorkspaceOptions, Result as Package, check_workspace,
     },
     crate_graph::Dependency,
-    utils::cargo::{Cargo, patch_crate_for_registry},
+    utils::cargo::{Cargo, CargoRegistry, patch_crate_for_registry},
 };
 
 #[derive(Debug, Parser, Default, Clone)]
@@ -83,6 +86,18 @@ pub struct Options {
     handle_tags: bool,
     #[arg(long, default_value_t = false)]
     autopublish_cargo: bool,
+    /// Add every crate with package.metadata.fslabs.publish.cargo.publish=true
+    /// and its Cargo dependency closure to the tag-selected release plan.
+    #[arg(long, env, default_value_t = false)]
+    publish_all_marked_cargo: bool,
+    /// Restrict --publish-all-marked-cargo to releases whose captured root or
+    /// explicit whitelist contains this package.
+    #[arg(long, env, requires = "publish_all_marked_cargo")]
+    publish_all_marked_cargo_for: Option<String>,
+    /// After Cargo publication, ensure every planned crate belongs to this
+    /// Kellnr group. Requires --cargo-target-registry.
+    #[arg(long, env)]
+    ensure_cargo_group: Option<String>,
     /// Pattern for matching release tags (e.g., "v*" or "cargo-fslabscli-*")
     /// Used to filter which tags are considered for GitHub release lookup
     #[arg(long, env, default_value = "v*")]
@@ -110,7 +125,7 @@ pub struct Options {
     pub publish_steps: Option<Vec<PublishStep>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum PublishStep {
     S3,
     Cargo,
@@ -204,24 +219,25 @@ impl PublishResult {
     pub fn new(package: &Package, registries: HashSet<String>, options: &Options) -> Self {
         let crate_name = &package.package;
         let crate_version = &package.version;
+        let cargo_only = package.cargo_only;
         let mut s = Self {
             should_publish: package.publish,
             docker: PublishDetailResult {
                 name: format!("{crate_name}@{crate_version} docker buildx build && docker push"),
                 key: "docker".to_string(),
-                should_publish: package.publish_detail.docker.publish,
+                should_publish: !cargo_only && package.publish_detail.docker.publish,
                 ..Default::default()
             },
             nix_binary: PublishDetailResult {
                 name: format!("{crate_name}@{crate_version} nix build .#release --fallback"),
                 key: "nix".to_string(),
-                should_publish: package.publish_detail.nix_binary.publish,
+                should_publish: !cargo_only && package.publish_detail.nix_binary.publish,
                 ..Default::default()
             },
             git_tag: PublishDetailResult {
                 name: format!("{crate_name}@{crate_version} git tag"),
                 key: "git".to_string(),
-                should_publish: options.handle_tags,
+                should_publish: !cargo_only && options.handle_tags,
                 ..Default::default()
             },
             ..Default::default()
@@ -233,7 +249,7 @@ impl PublishResult {
                 PublishDetailResult {
                     name: format!("{crate_name}@{crate_version} s3:{dest_name}"),
                     key: format!("s3_{dest_name}"),
-                    should_publish: package.publish_detail.s3.publish,
+                    should_publish: !cargo_only && package.publish_detail.s3.publish,
                     ..Default::default()
                 },
             );
@@ -927,6 +943,374 @@ fn should_run_step(options: &Options, step: PublishStep, metadata_enabled: bool)
     }
 }
 
+fn should_expand_marked_cargo(options: &Options, whitelist: &[String]) -> bool {
+    options.publish_all_marked_cargo
+        && options
+            .publish_all_marked_cargo_for
+            .as_ref()
+            .is_none_or(|required_root| whitelist.contains(required_root))
+}
+
+fn should_run_package_step(
+    options: &Options,
+    cargo_only: bool,
+    step: PublishStep,
+    metadata_enabled: bool,
+) -> bool {
+    (!cargo_only || step == PublishStep::Cargo) && should_run_step(options, step, metadata_enabled)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoReleaseAction {
+    Publish,
+    AlreadyPresent,
+    SkipDevelopmentVersion,
+}
+
+impl Display for CargoReleaseAction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Publish => write!(f, "publish"),
+            Self::AlreadyPresent => write!(f, "already-present"),
+            Self::SkipDevelopmentVersion => write!(f, "skip-development-version"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoReleasePlanEntry {
+    package: String,
+    version: String,
+    registry: String,
+    action: CargoReleaseAction,
+    source: &'static str,
+}
+
+fn cargo_release_plan(
+    members: &HashMap<PackageId, Package>,
+    target_registry: Option<&str>,
+) -> anyhow::Result<Vec<CargoReleasePlanEntry>> {
+    let mut packages = members
+        .values()
+        .filter(|package| package.cargo_selected)
+        .collect::<Vec<_>>();
+    packages.sort_by(|a, b| {
+        (&a.package, &a.version, &a.workspace).cmp(&(&b.package, &b.version, &b.workspace))
+    });
+
+    let mut plan = Vec::new();
+    for package in packages {
+        let mut registries = package
+            .publish_detail
+            .cargo
+            .registries
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|registry| target_registry.is_none_or(|target| registry == target))
+            .collect::<Vec<_>>();
+        registries.sort();
+
+        if registries.is_empty() {
+            anyhow::bail!(
+                "Cargo release plan selected {} v{} but found no target registry",
+                package.package,
+                package.version
+            );
+        }
+
+        let source = match (package.cargo_root, package.cargo_only) {
+            (true, true) => "metadata-only-root",
+            (true, false) => "tag-scope-root",
+            (false, true) => "metadata-only-dependency",
+            (false, false) => "tag-scope-dependency",
+        };
+        for registry in registries {
+            let action = if package.version.ends_with("dev") {
+                CargoReleaseAction::SkipDevelopmentVersion
+            } else if *package
+                .publish_detail
+                .cargo
+                .registries_publish
+                .get(&registry)
+                .with_context(|| {
+                    format!(
+                        "Cargo release plan has no existence-check result for {} v{} in registry {}",
+                        package.package, package.version, registry
+                    )
+                })?
+            {
+                CargoReleaseAction::Publish
+            } else {
+                CargoReleaseAction::AlreadyPresent
+            };
+            plan.push(CargoReleasePlanEntry {
+                package: package.package.clone(),
+                version: package.version.clone(),
+                registry,
+                action,
+                source,
+            });
+        }
+    }
+
+    Ok(plan)
+}
+
+fn log_cargo_release_plan(plan: &[CargoReleasePlanEntry]) {
+    info!("Cargo release plan: {} entries", plan.len());
+    for entry in plan {
+        info!(
+            "CARGO RELEASE PLAN {}@{} registry={} action={} source={}",
+            entry.package, entry.version, entry.registry, entry.action, entry.source
+        );
+    }
+}
+
+const KELLNR_INDEX_SUFFIX: &str = "/api/v1/crates/";
+const KELLNR_MAX_ATTEMPTS: u32 = 3;
+const KELLNR_REQUEST_TIMEOUT_SECS: u64 = 15;
+const KELLNR_MAX_RETRY_DELAY_SECS: u64 = 10;
+
+#[derive(Debug, Deserialize)]
+struct KellnrMutationResponse {
+    ok: bool,
+    msg: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct KellnrGroupList {
+    groups: Vec<KellnrGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KellnrGroup {
+    #[allow(dead_code)]
+    id: i32,
+    name: String,
+}
+
+fn kellnr_api_base_url(registry: &CargoRegistry) -> anyhow::Result<url::Url> {
+    let index = registry
+        .index
+        .as_deref()
+        .context("Kellnr group reconciliation requires a Cargo registry index")?;
+    let sparse_index = index
+        .strip_prefix("sparse+")
+        .context("Kellnr group reconciliation requires a sparse Cargo registry")?;
+    let mut url = url::Url::parse(sparse_index).context("Invalid sparse Cargo registry URL")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("Kellnr group reconciliation requires an HTTP(S) registry URL");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("Kellnr sparse registry URL must not contain a query or fragment");
+    }
+    let base_path = url
+        .path()
+        .strip_suffix(KELLNR_INDEX_SUFFIX)
+        .context("Kellnr sparse registry URL must end with /api/v1/crates/")?;
+    let base_path = if base_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{base_path}/")
+    };
+    url.set_path(&base_path);
+    Ok(url)
+}
+
+fn kellnr_crate_group_url(
+    base_url: &url::Url,
+    crate_name: &str,
+    group: Option<&str>,
+) -> anyhow::Result<url::Url> {
+    let mut url = base_url.clone();
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("Kellnr API URL cannot contain path segments"))?;
+    segments
+        .pop_if_empty()
+        .extend(["api", "v1", "crates", crate_name, "crate_groups"]);
+    if let Some(group) = group {
+        segments.push(group);
+    }
+    drop(segments);
+    Ok(url)
+}
+
+fn kellnr_retry_delay(headers: &hyper::HeaderMap, attempt: u32) -> u64 {
+    headers
+        .get(hyper::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(attempt as u64)
+        .min(KELLNR_MAX_RETRY_DELAY_SECS)
+}
+
+async fn kellnr_request(
+    cargo: &Cargo,
+    registry_name: &str,
+    method: Method,
+    url: &url::Url,
+) -> anyhow::Result<Bytes> {
+    let registry = cargo
+        .get_registry(registry_name)
+        .with_context(|| format!("Unknown Cargo registry {registry_name}"))?;
+    let token = registry
+        .token
+        .as_deref()
+        .with_context(|| format!("Cargo registry {registry_name} has no authentication token"))?;
+    let client = cargo
+        .http_client()
+        .context("HTTP client required for Kellnr group reconciliation")?;
+    let uri: Uri = url
+        .as_str()
+        .parse()
+        .context("Invalid Kellnr group API URL")?;
+
+    for attempt in 1..=KELLNR_MAX_ATTEMPTS {
+        let mut request = Request::builder()
+            .method(method.clone())
+            .uri(uri.clone())
+            .header(hyper::header::AUTHORIZATION, token);
+        if let Some(user_agent) = &registry.user_agent {
+            request = request.header(hyper::header::USER_AGENT, user_agent);
+        }
+        let request = request
+            .body(Empty::default())
+            .context("Could not build Kellnr group API request")?;
+
+        let response = match tokio::time::timeout(
+            std::time::Duration::from_secs(KELLNR_REQUEST_TIMEOUT_SECS),
+            client.request(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) | Err(_) if attempt < KELLNR_MAX_ATTEMPTS => {
+                tracing::warn!(attempt, "Kellnr request failed, retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                continue;
+            }
+            Ok(Err(_)) | Err(_) => {
+                anyhow::bail!("Kellnr request failed after {KELLNR_MAX_ATTEMPTS} attempts")
+            }
+        };
+
+        let status = response.status();
+        let retry_delay = kellnr_retry_delay(response.headers(), attempt);
+        let body = match tokio::time::timeout(
+            std::time::Duration::from_secs(KELLNR_REQUEST_TIMEOUT_SECS),
+            response.into_body().collect(),
+        )
+        .await
+        {
+            Ok(Ok(body)) => body.to_bytes(),
+            Ok(Err(_)) | Err(_) if attempt < KELLNR_MAX_ATTEMPTS => {
+                tracing::warn!(attempt, "Kellnr response failed, retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                continue;
+            }
+            Ok(Err(_)) | Err(_) => {
+                anyhow::bail!("Kellnr response failed after {KELLNR_MAX_ATTEMPTS} attempts")
+            }
+        };
+
+        if status.is_success() {
+            return Ok(body);
+        }
+        let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+        if retryable && attempt < KELLNR_MAX_ATTEMPTS {
+            tracing::warn!(attempt, status = %status, "Kellnr request failed, retrying");
+            tokio::time::sleep(std::time::Duration::from_secs(retry_delay)).await;
+            continue;
+        }
+        anyhow::bail!("Kellnr group API returned HTTP {status}");
+    }
+
+    unreachable!("bounded Kellnr retry loop always returns")
+}
+
+async fn ensure_cargo_group(
+    cargo: &Cargo,
+    plan: &[CargoReleasePlanEntry],
+    registry_name: &str,
+    group: &str,
+) -> anyhow::Result<()> {
+    validate_cargo_group_configuration(cargo, registry_name, group)?;
+    let registry = cargo
+        .get_registry(registry_name)
+        .with_context(|| format!("Unknown Cargo registry {registry_name}"))?;
+    let base_url = kellnr_api_base_url(registry)?;
+    let mut crates = plan
+        .iter()
+        .filter(|entry| {
+            entry.registry == registry_name && entry.action == CargoReleaseAction::Publish
+        })
+        .map(|entry| entry.package.as_str())
+        .collect::<Vec<_>>();
+    crates.sort_unstable();
+    crates.dedup();
+
+    info!(
+        "Kellnr group reconciliation plan: {} crates, group={}",
+        crates.len(),
+        group
+    );
+    for crate_name in crates {
+        let put_url = kellnr_crate_group_url(&base_url, crate_name, Some(group))?;
+        let put_body = kellnr_request(cargo, registry_name, Method::PUT, &put_url).await?;
+        let mutation: KellnrMutationResponse = serde_json::from_slice(&put_body)
+            .context("Could not parse Kellnr group mutation response")?;
+        if !mutation.ok {
+            anyhow::bail!(
+                "Kellnr rejected group {} for crate {}: {}",
+                group,
+                crate_name,
+                mutation.msg
+            );
+        }
+
+        let get_url = kellnr_crate_group_url(&base_url, crate_name, None)?;
+        let get_body = kellnr_request(cargo, registry_name, Method::GET, &get_url).await?;
+        let groups: KellnrGroupList = serde_json::from_slice(&get_body)
+            .context("Could not parse Kellnr group verification response")?;
+        if !groups.groups.iter().any(|existing| existing.name == group) {
+            anyhow::bail!(
+                "Kellnr group verification failed for crate {} and group {}",
+                crate_name,
+                group
+            );
+        }
+        info!(
+            "Kellnr group verified: crate={} group={}",
+            crate_name, group
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_cargo_group_configuration(
+    cargo: &Cargo,
+    registry_name: &str,
+    group: &str,
+) -> anyhow::Result<()> {
+    if group.trim().is_empty() {
+        anyhow::bail!("Cargo group name must not be empty");
+    }
+    let registry = cargo
+        .get_registry(registry_name)
+        .with_context(|| format!("Unknown Cargo registry {registry_name}"))?;
+    kellnr_api_base_url(registry)?;
+    if registry.token.is_none() {
+        anyhow::bail!("Cargo registry {registry_name} has no authentication token");
+    }
+    cargo
+        .http_client()
+        .context("HTTP client required for Kellnr group reconciliation")?;
+    Ok(())
+}
+
 /// Actual Publish
 async fn do_publish_package(params: DoPublishParams) -> PublishResult {
     let DoPublishParams {
@@ -948,9 +1332,17 @@ async fn do_publish_package(params: DoPublishParams) -> PublishResult {
     // let workspace_name = &package.workspace;
     let package_version = &package.version;
     let package_name = &package.package;
+    let cargo_only = package.cargo_only;
     let package_path = repo_root.join(&package.path);
     let mut is_failed = false;
-    if !is_failed && should_run_step(&options, PublishStep::S3, package.publish_detail.s3.publish) {
+    if !is_failed
+        && should_run_package_step(
+            &options,
+            cargo_only,
+            PublishStep::S3,
+            package.publish_detail.s3.publish,
+        )
+    {
         // Extract what we need before any moves
         let s3_build_command = package.publish_detail.s3.build_command.clone();
         let s3_output_dir = package.publish_detail.s3.output_dir.clone();
@@ -1047,8 +1439,9 @@ async fn do_publish_package(params: DoPublishParams) -> PublishResult {
         }
     }
     if !is_failed
-        && should_run_step(
+        && should_run_package_step(
             &options,
+            cargo_only,
             PublishStep::Cargo,
             package.publish_detail.cargo.publish,
         )
@@ -1213,8 +1606,9 @@ async fn do_publish_package(params: DoPublishParams) -> PublishResult {
         }
     }
     if !is_failed
-        && should_run_step(
+        && should_run_package_step(
             &options,
+            cargo_only,
             PublishStep::Nix,
             package.publish_detail.nix_binary.publish,
         )
@@ -1284,8 +1678,9 @@ async fn do_publish_package(params: DoPublishParams) -> PublishResult {
         result.nix_binary.end_time = Some(SystemTime::now());
     }
     if !is_failed
-        && should_run_step(
+        && should_run_package_step(
             &options,
+            cargo_only,
             PublishStep::Docker,
             package.publish_detail.docker.publish,
         )
@@ -1400,7 +1795,14 @@ async fn do_publish_package(params: DoPublishParams) -> PublishResult {
         }
         result.docker.end_time = Some(SystemTime::now());
     }
-    if !is_failed && should_run_step(&options, PublishStep::Tags, result.git_tag.should_publish) {
+    if !is_failed
+        && should_run_package_step(
+            &options,
+            cargo_only,
+            PublishStep::Tags,
+            result.git_tag.should_publish,
+        )
+    {
         result.git_tag.start_time = Some(SystemTime::now());
         let tagged: anyhow::Result<()> = async {
             let tag = format_tag(&options.tag_format, &package.package, &package.version);
@@ -1796,6 +2198,14 @@ pub async fn publish(
         }
     }
     common_options.whitelist = whitelist;
+    let expand_marked_cargo = should_expand_marked_cargo(options, &common_options.whitelist);
+    if options.publish_all_marked_cargo && !expand_marked_cargo {
+        tracing::info!(
+            required_root = ?options.publish_all_marked_cargo_for,
+            whitelist = ?common_options.whitelist,
+            "Skipping marked Cargo expansion because the release root filter did not match"
+        );
+    }
 
     // Dev dependencies must be included in the dependency graph so publish ordering is
     // correct. `cargo publish` validates that all declared dependencies exist on the
@@ -1809,6 +2219,9 @@ pub async fn publish(
     let check_workspace_options = CheckWorkspaceOptions::new()
         .with_check_publish(true)
         .with_autopublish_cargo(options.autopublish_cargo)
+        .with_publish_all_marked_cargo(expand_marked_cargo)
+        .with_release_discovery(expand_marked_cargo)
+        .with_fail_cargo_check_error(true)
         .with_ignore_dev_dependencies(false)
         .with_force_publish(options.force_publish);
 
@@ -1821,6 +2234,12 @@ pub async fn publish(
             })
             .with_context(|| "Could not get directory information")?;
 
+    let cargo_release_plan = cargo_release_plan(
+        &results.members,
+        common_options.cargo_target_registry.as_deref(),
+    )?;
+    log_cargo_release_plan(&cargo_release_plan);
+
     let mut registries = HashSet::new();
     for member in results.members.values() {
         if let Some(r) = member.publish_detail.cargo.registries.clone() {
@@ -1828,6 +2247,15 @@ pub async fn publish(
         }
     }
     let cargo = Arc::new(Cargo::new(&registries, true)?);
+    if let Some(group) = options.ensure_cargo_group.as_deref()
+        && !options.dry_run
+    {
+        let registry_name = common_options
+            .cargo_target_registry
+            .as_deref()
+            .context("--ensure-cargo-group requires --cargo-target-registry")?;
+        validate_cargo_group_configuration(cargo.as_ref(), registry_name, group)?;
+    }
     let semaphore = Arc::new(Semaphore::new(common_options.job_limit));
 
     let mut handles = vec![];
@@ -1885,23 +2313,39 @@ pub async fn publish(
     }
     futures::future::join_all(handles).await;
 
+    let (global_success, published_members) = {
+        let mut global_success = true;
+        let mut published_members = HashMap::new();
+        let lock = publish_status.read().expect("RwLock Poisoned");
+        for (k, v) in lock.iter() {
+            if let Some(v) = v
+                && v.should_publish
+            {
+                published_members.insert(k.clone(), v.clone());
+                global_success &= v.success;
+            }
+        }
+        (global_success, published_members)
+    };
+
+    if global_success
+        && !options.dry_run
+        && let Some(group) = options.ensure_cargo_group.as_deref()
+    {
+        let registry_name = common_options
+            .cargo_target_registry
+            .as_deref()
+            .context("--ensure-cargo-group requires --cargo-target-registry")?;
+        ensure_cargo_group(cargo.as_ref(), &cargo_release_plan, registry_name, group)
+            .await
+            .context("Could not reconcile Kellnr Cargo groups")?;
+    }
+
     // Report publish result to github
     if should_run_step(options, PublishStep::Github, true) {
         report_publish_to_github(common_options, options, &artifact_dir, &repo_root)
             .await
             .with_context(|| "Failed to report publish results to GitHub")?;
-    }
-
-    let mut global_success = true;
-    let mut published_members = HashMap::new();
-    let lock = publish_status.read().expect("RwLock Poisoned");
-    for (k, v) in lock.iter() {
-        if let Some(v) = v
-            && v.should_publish
-        {
-            published_members.insert(k.clone(), v.clone());
-            global_success &= v.success;
-        }
     }
     let r = PublishResults {
         published_members,
@@ -1919,11 +2363,409 @@ pub async fn publish(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::resolve_commit_to_tag;
+    use cargo_metadata::PackageId;
+    use clap::Parser;
+    use serde_json::json;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, Request as WiremockRequest, Respond, ResponseTemplate};
+
+    use super::{
+        CargoReleaseAction, CargoReleasePlanEntry, Options, PublishStep, cargo_release_plan,
+        ensure_cargo_group, kellnr_api_base_url, kellnr_crate_group_url, kellnr_retry_delay,
+        resolve_commit_to_tag, should_expand_marked_cargo, should_run_package_step,
+    };
+    use crate::commands::check_workspace::{PackageMetadataFslabsCiPublish, Result as Package};
+    use crate::utils::cargo::{Cargo, CargoRegistry};
     use crate::utils::test::{commit_all_changes, init_repo, modify_file};
+
+    fn cargo_plan_package(
+        name: &str,
+        registry_publish: HashMap<String, bool>,
+        cargo_root: bool,
+        cargo_only: bool,
+    ) -> (PackageId, Package) {
+        let package_id = PackageId {
+            repr: format!("{name} 1.0.0"),
+        };
+        let registries = registry_publish.keys().cloned().collect::<HashSet<_>>();
+        let mut publish_detail = PackageMetadataFslabsCiPublish::default();
+        publish_detail.cargo.registries = Some(registries);
+        publish_detail.cargo.registries_publish = registry_publish;
+        let mut package = Package::default();
+        package.package = name.to_string();
+        package.package_id = Some(package_id.clone());
+        package.version = "1.0.0".to_string();
+        package.publish_detail = publish_detail;
+        package.cargo_selected = true;
+        package.cargo_root = cargo_root;
+        package.cargo_only = cargo_only;
+        (package_id, package)
+    }
+
+    const TEST_CARGO_TOKEN: &str = "test-cargo-token";
+
+    fn kellnr_test_cargo(mock_server: &MockServer) -> Cargo {
+        let mut cargo = Cargo::default();
+        cargo.add_registry(CargoRegistry {
+            name: "fsl".to_string(),
+            index: Some(format!("sparse+{}/api/v1/crates/", mock_server.uri())),
+            token: Some(TEST_CARGO_TOKEN.to_string()),
+            ..Default::default()
+        });
+        cargo
+    }
+
+    fn kellnr_test_plan(crate_name: &str) -> Vec<CargoReleasePlanEntry> {
+        vec![CargoReleasePlanEntry {
+            package: crate_name.to_string(),
+            version: "1.0.0".to_string(),
+            registry: "fsl".to_string(),
+            action: CargoReleaseAction::Publish,
+            source: "metadata-only-root",
+        }]
+    }
+
+    async fn mount_kellnr_success(
+        mock_server: &MockServer,
+        crate_name: &str,
+        group: &str,
+        expected_calls: u64,
+    ) {
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/api/v1/crates/{crate_name}/crate_groups/{group}"
+            )))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "msg": "Added groups to crate."
+            })))
+            .expect(expected_calls)
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/crates/{crate_name}/crate_groups")))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "groups": [{"id": 1, "name": group}]
+            })))
+            .expect(expected_calls)
+            .mount(mock_server)
+            .await;
+    }
+
+    #[derive(Clone)]
+    struct FailOnceThenSucceed {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Respond for FailOnceThenSucceed {
+        fn respond(&self, _request: &WiremockRequest) -> ResponseTemplate {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(503).insert_header("Retry-After", "0")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "ok": true,
+                    "msg": "Added groups to crate."
+                }))
+            }
+        }
+    }
+
+    #[test]
+    fn test_publish_all_marked_cargo_flag_parses() {
+        let options = Options::try_parse_from([
+            "publish",
+            "--repo-owner",
+            "fsl",
+            "--repo-name",
+            "fsl_libs",
+            "--publish-all-marked-cargo",
+            "--publish-all-marked-cargo-for",
+            "fdk",
+            "--ensure-cargo-group",
+            "fdk",
+        ])
+        .unwrap();
+
+        assert!(options.publish_all_marked_cargo);
+        assert_eq!(options.publish_all_marked_cargo_for.as_deref(), Some("fdk"));
+        assert_eq!(options.ensure_cargo_group.as_deref(), Some("fdk"));
+
+        assert!(
+            Options::try_parse_from([
+                "publish",
+                "--repo-owner",
+                "fsl",
+                "--repo-name",
+                "fsl_libs",
+                "--publish-all-marked-cargo-for",
+                "fdk",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_publish_all_marked_cargo_for_requires_matching_release_root() {
+        let filtered = Options {
+            publish_all_marked_cargo: true,
+            publish_all_marked_cargo_for: Some("fdk".to_string()),
+            ..Default::default()
+        };
+
+        assert!(should_expand_marked_cargo(&filtered, &["fdk".to_string()]));
+        assert!(!should_expand_marked_cargo(
+            &filtered,
+            &["spatial_studio".to_string()]
+        ));
+        assert!(!should_expand_marked_cargo(&filtered, &[]));
+
+        let generic = Options {
+            publish_all_marked_cargo: true,
+            ..Default::default()
+        };
+        assert!(should_expand_marked_cargo(
+            &generic,
+            &["spatial_studio".to_string()]
+        ));
+
+        let disabled = Options {
+            publish_all_marked_cargo_for: Some("fdk".to_string()),
+            ..Default::default()
+        };
+        assert!(!should_expand_marked_cargo(&disabled, &["fdk".to_string()]));
+    }
+
+    #[test]
+    fn test_cargo_only_scope_rejects_explicit_non_cargo_step_override() {
+        let options = Options {
+            publish_steps: Some(vec![PublishStep::Cargo, PublishStep::Nix]),
+            ..Default::default()
+        };
+        assert!(should_run_package_step(
+            &options,
+            true,
+            PublishStep::Cargo,
+            false
+        ));
+        assert!(!should_run_package_step(
+            &options,
+            true,
+            PublishStep::Nix,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_cargo_release_plan_is_sorted_and_includes_existing_versions() {
+        let (package_b_id, package_b) = cargo_plan_package(
+            "package_b",
+            HashMap::from([("fsl".to_string(), true)]),
+            true,
+            true,
+        );
+        let (package_a_id, package_a) = cargo_plan_package(
+            "package_a",
+            HashMap::from([("fsl".to_string(), false), ("other".to_string(), true)]),
+            false,
+            false,
+        );
+        let members = HashMap::from([(package_b_id, package_b), (package_a_id, package_a)]);
+
+        let plan = cargo_release_plan(&members, Some("fsl")).unwrap();
+
+        assert_eq!(
+            plan,
+            vec![
+                CargoReleasePlanEntry {
+                    package: "package_a".to_string(),
+                    version: "1.0.0".to_string(),
+                    registry: "fsl".to_string(),
+                    action: CargoReleaseAction::AlreadyPresent,
+                    source: "tag-scope-dependency",
+                },
+                CargoReleasePlanEntry {
+                    package: "package_b".to_string(),
+                    version: "1.0.0".to_string(),
+                    registry: "fsl".to_string(),
+                    action: CargoReleaseAction::Publish,
+                    source: "metadata-only-root",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_kellnr_urls_are_derived_from_sparse_index_and_encode_segments() {
+        let registry = CargoRegistry {
+            index: Some("sparse+https://crates.example.com/kellnr/api/v1/crates/".to_string()),
+            ..Default::default()
+        };
+
+        let base_url = kellnr_api_base_url(&registry).unwrap();
+        let group_url = kellnr_crate_group_url(&base_url, "crate name", Some("fdk/admin")).unwrap();
+
+        assert_eq!(base_url.as_str(), "https://crates.example.com/kellnr/");
+        assert_eq!(
+            group_url.as_str(),
+            "https://crates.example.com/kellnr/api/v1/crates/crate%20name/crate_groups/fdk%2Fadmin"
+        );
+    }
+
+    #[test]
+    fn test_kellnr_url_rejects_non_kellnr_sparse_index() {
+        let registry = CargoRegistry {
+            index: Some("sparse+https://index.crates.io/".to_string()),
+            ..Default::default()
+        };
+
+        let error = kellnr_api_base_url(&registry).unwrap_err();
+
+        assert!(error.to_string().contains("must end with /api/v1/crates/"));
+    }
+
+    #[test]
+    fn test_kellnr_retry_after_is_bounded() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(hyper::header::RETRY_AFTER, "3600".parse().unwrap());
+
+        assert_eq!(kellnr_retry_delay(&headers, 1), 10);
+        assert_eq!(kellnr_retry_delay(&hyper::HeaderMap::new(), 2), 2);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_uses_raw_token_and_verifies_membership() {
+        let mock_server = MockServer::start().await;
+        mount_kellnr_success(&mock_server, "dagger_cli", "fdk", 1).await;
+        let cargo = kellnr_test_cargo(&mock_server);
+
+        ensure_cargo_group(&cargo, &kellnr_test_plan("dagger_cli"), "fsl", "fdk")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_is_idempotent_across_repeated_runs() {
+        let mock_server = MockServer::start().await;
+        mount_kellnr_success(&mock_server, "dagger_microservice", "fdk", 2).await;
+        let cargo = kellnr_test_cargo(&mock_server);
+        let plan = kellnr_test_plan("dagger_microservice");
+
+        ensure_cargo_group(&cargo, &plan, "fsl", "fdk")
+            .await
+            .unwrap();
+        ensure_cargo_group(&cargo, &plan, "fsl", "fdk")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_skips_already_present_crates() {
+        let mock_server = MockServer::start().await;
+        let cargo = kellnr_test_cargo(&mock_server);
+        let plan = vec![CargoReleasePlanEntry {
+            package: "dagger_cli".to_string(),
+            version: "1.0.0".to_string(),
+            registry: "fsl".to_string(),
+            action: CargoReleaseAction::AlreadyPresent,
+            source: "metadata-only-root",
+        }];
+
+        ensure_cargo_group(&cargo, &plan, "fsl", "fdk")
+            .await
+            .unwrap();
+
+        assert!(mock_server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_does_not_retry_forbidden_response() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/crates/dagger_cli/crate_groups/fdk"))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let cargo = kellnr_test_cargo(&mock_server);
+
+        let error = ensure_cargo_group(&cargo, &kellnr_test_plan("dagger_cli"), "fsl", "fdk")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("HTTP 403"));
+        assert!(!error.to_string().contains(TEST_CARGO_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_retries_transient_server_error() {
+        let mock_server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/crates/dagger_cli/crate_groups/fdk"))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(FailOnceThenSucceed {
+                calls: calls.clone(),
+            })
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/crates/dagger_cli/crate_groups"))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "groups": [{"id": 1, "name": "fdk"}]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let cargo = kellnr_test_cargo(&mock_server);
+
+        ensure_cargo_group(&cargo, &kellnr_test_plan("dagger_cli"), "fsl", "fdk")
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_cargo_group_fails_when_get_does_not_verify_group() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/crates/dagger_cli/crate_groups/fdk"))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "msg": "Added groups to crate."
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/crates/dagger_cli/crate_groups"))
+            .and(header("authorization", TEST_CARGO_TOKEN))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "groups": [{"id": 2, "name": "other"}]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let cargo = kellnr_test_cargo(&mock_server);
+
+        let error = ensure_cargo_group(&cargo, &kellnr_test_plan("dagger_cli"), "fsl", "fdk")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("verification failed"));
+    }
 
     /// Helper function to create a test git repository with initial commit
     fn create_test_repo() -> (assert_fs::TempDir, PathBuf) {

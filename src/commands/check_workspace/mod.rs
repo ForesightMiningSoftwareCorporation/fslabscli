@@ -104,6 +104,12 @@ pub struct Options {
     skip_cargo: bool,
     #[arg(long, default_value_t = false)]
     autopublish_cargo: bool,
+    #[arg(skip)]
+    publish_all_marked_cargo: bool,
+    #[arg(skip)]
+    release_discovery: bool,
+    #[arg(skip)]
+    fail_cargo_check_error: bool,
     #[arg(long, default_value_t = false)]
     skip_binary: bool,
     #[arg(long, default_value_t = false)]
@@ -146,6 +152,21 @@ impl Options {
 
     pub fn with_autopublish_cargo(mut self, autopublish_cargo: bool) -> Self {
         self.autopublish_cargo = autopublish_cargo;
+        self
+    }
+
+    pub fn with_publish_all_marked_cargo(mut self, publish_all_marked_cargo: bool) -> Self {
+        self.publish_all_marked_cargo = publish_all_marked_cargo;
+        self
+    }
+
+    pub fn with_release_discovery(mut self, release_discovery: bool) -> Self {
+        self.release_discovery = release_discovery;
+        self
+    }
+
+    pub fn with_fail_cargo_check_error(mut self, fail_cargo_check_error: bool) -> Self {
+        self.fail_cargo_check_error = fail_cargo_check_error;
         self
     }
 
@@ -212,6 +233,9 @@ pub struct Result {
     pub test_detail: PackageMetadataFslabsCiTest,
     pub toolchain: String,
     ignored: bool,
+    pub(crate) cargo_selected: bool,
+    pub(crate) cargo_root: bool,
+    pub(crate) cargo_only: bool,
 }
 
 impl SerSerialize for Result {
@@ -706,8 +730,8 @@ impl Result {
                 Err(e) => self.publish_detail.npm_napi.error = Some(e.to_string()),
             };
         }
-        if !skip_cargo {
-            match self
+        if !skip_cargo
+            && let Err(error) = self
                 .publish_detail
                 .cargo
                 .check(
@@ -718,10 +742,9 @@ impl Result {
                     force_publish,
                 )
                 .await
-            {
-                Ok(_) => {}
-                Err(e) => self.publish_detail.cargo.error = Some(e.to_string()),
-            };
+        {
+            self.publish_detail.cargo.error = Some(error.to_string());
+            return Err(error);
         }
         if !skip_binary {
             match self.publish_detail.binary.check(binary_store).await {
@@ -962,16 +985,27 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
         };
         let crates = {
             let _span = tracing::info_span!("resolve_workspaces").entered();
-            CrateGraph::new(
-                &self.repo_root,
-                self.common_options.cargo_main_registry.clone(),
-                limit_dependency_kind,
-                FeatureResolution::DualGraph,
-            )?
+            if self.options.release_discovery {
+                CrateGraph::new_for_publish(
+                    &self.repo_root,
+                    self.common_options.cargo_main_registry.clone(),
+                    limit_dependency_kind,
+                    FeatureResolution::DualGraph,
+                )?
+            } else {
+                CrateGraph::new(
+                    &self.repo_root,
+                    self.common_options.cargo_main_registry.clone(),
+                    limit_dependency_kind,
+                    FeatureResolution::DualGraph,
+                )?
+            }
         };
 
         let mut packages: HashMap<PackageId, Result> = HashMap::new();
         let mut dep_to_id: HashMap<String, PackageId> = HashMap::new();
+        let mut tag_scope_roots: HashSet<PackageId> = HashSet::new();
+        let mut marked_cargo_scope_roots: HashSet<PackageId> = HashSet::new();
         // 2. For each workspace, find if one of the subcrates needs publishing
         if self.common_options.progress {
             println!(
@@ -1028,8 +1062,22 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                             !blacklist.is_empty() && blacklist.contains(&package.package);
                         let whitelisted =
                             whitelist.is_empty() || whitelist.contains(&package.package);
-                        package.ignored = blacklisted || !whitelisted;
-                        packages.insert(package.package_id.clone().unwrap().clone(), package);
+                        let tag_selected = !blacklisted && whitelisted;
+                        let marked_cargo_root = self.options.publish_all_marked_cargo
+                            && !blacklisted
+                            && package.publish_detail.cargo.actual_publish == Some(true);
+
+                        package.ignored = !(tag_selected || marked_cargo_root);
+                        package.cargo_selected = marked_cargo_root;
+                        package.cargo_root = marked_cargo_root;
+                        let package_id = package.package_id.clone().unwrap();
+                        if tag_selected {
+                            tag_scope_roots.insert(package_id.clone());
+                        }
+                        if marked_cargo_root {
+                            marked_cargo_scope_roots.insert(package_id.clone());
+                        }
+                        packages.insert(package_id, package);
                     }
                     Err(e) => {
                         let error_msg = format!("Could not check package {}: {}", package.name, e);
@@ -1042,6 +1090,33 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                     }
                 }
             }
+        }
+
+        let mut tag_scope = tag_scope_roots.clone();
+        for package_id in tag_scope_roots {
+            let cargo_requested = packages.get(&package_id).is_some_and(|package| {
+                package.publish_detail.cargo.actual_publish.unwrap_or(false)
+                    || self.options.autopublish_cargo
+            });
+            if cargo_requested {
+                tag_scope.extend(
+                    crates
+                        .dependency_graph()
+                        .get_transitive_dependencies(package_id),
+                );
+            }
+        }
+        let mut marked_cargo_scope = marked_cargo_scope_roots.clone();
+        for package_id in marked_cargo_scope_roots {
+            marked_cargo_scope.extend(
+                crates
+                    .dependency_graph()
+                    .get_transitive_dependencies(package_id),
+            );
+        }
+        for (package_id, package) in &mut packages {
+            package.cargo_only =
+                marked_cargo_scope.contains(package_id) && !tag_scope.contains(package_id);
         }
 
         let package_keys: Vec<PackageId> = packages.keys().cloned().collect();
@@ -1106,49 +1181,76 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
         }
 
         let _backfeed_span = tracing::info_span!("backfeed_publishing").entered();
-        let mut all_packages_registries: HashSet<String> = HashSet::new();
+        let mut cargo_roots = Vec::new();
         for package_key in package_keys.clone() {
-            if let Some(package) = packages.get(&package_key) {
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
+            let Some(package) = packages.get(&package_key) else {
+                continue;
+            };
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            if package.ignored {
+                continue;
+            }
 
-                if package.ignored {
-                    continue;
-                }
+            let publish_requested = package.publish_detail.cargo.actual_publish.unwrap_or(false)
+                || self.options.autopublish_cargo;
+            if !publish_requested {
+                continue;
+            }
 
-                let publish_requested =
-                    package.publish_detail.cargo.actual_publish.unwrap_or(false)
-                        || self.options.autopublish_cargo;
-
-                if !publish_requested {
-                    continue;
-                }
-
-                if let Some(registries) = &package.publish_detail.cargo.registries.clone() {
-                    all_packages_registries.extend(registries.clone());
-                    let transitive_dependencies = crates
-                        .dependency_graph()
-                        .get_transitive_dependencies(package_key.clone());
-                    // The package should be publish to some alt registries
-                    // Let's set that in all it's dependent
-                    // Let's update each transitive dep with the list of registries
-                    for dep_id in transitive_dependencies {
-                        if let Some(dep) = packages.get_mut(&dep_id) {
-                            let mut dep_registries = dep
-                                .publish_detail
-                                .cargo
-                                .registries
-                                .clone()
-                                .unwrap_or_default();
-                            for registry in registries {
-                                dep_registries.insert(registry.clone());
-                            }
-                            dep.publish_detail.cargo.registries = Some(dep_registries);
-                            dep.publish_detail.cargo.actual_publish = Some(true);
-                            dep.ignored = false;
-                        }
+            let mut registries = package
+                .publish_detail
+                .cargo
+                .registries
+                .clone()
+                .unwrap_or_default();
+            if let Some(target) = &self.common_options.cargo_target_registry {
+                registries.retain(|registry| registry == target);
+            }
+            if registries.is_empty() {
+                if package.cargo_root {
+                    if let Some(target) = &self.common_options.cargo_target_registry {
+                        anyhow::bail!(
+                            "Cargo package {} is marked for publication but does not target Cargo registry {}",
+                            package.package,
+                            target
+                        );
                     }
+                    anyhow::bail!(
+                        "Cargo package {} is marked for publication but has no configured Cargo registry",
+                        package.package
+                    );
+                }
+                continue;
+            }
+            cargo_roots.push((package_key, registries));
+        }
+
+        let mut all_packages_registries: HashSet<String> = HashSet::new();
+        for (package_key, registries) in cargo_roots {
+            all_packages_registries.extend(registries.clone());
+            if let Some(package) = packages.get_mut(&package_key) {
+                package.cargo_selected = true;
+                package.cargo_root = true;
+            }
+
+            let transitive_dependencies = crates
+                .dependency_graph()
+                .get_transitive_dependencies(package_key);
+            for dep_id in transitive_dependencies {
+                if let Some(dep) = packages.get_mut(&dep_id) {
+                    let mut dep_registries = dep
+                        .publish_detail
+                        .cargo
+                        .registries
+                        .clone()
+                        .unwrap_or_default();
+                    dep_registries.extend(registries.clone());
+                    dep.publish_detail.cargo.registries = Some(dep_registries);
+                    dep.publish_detail.cargo.actual_publish = Some(true);
+                    dep.cargo_selected = true;
+                    dep.ignored = false;
                 }
             }
         }
@@ -1207,6 +1309,7 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                 if package.ignored {
                     continue;
                 }
+                let cargo_only = package.cargo_selected && package.cargo_only;
                 if let Some(ref target) = self.common_options.cargo_target_registry
                     && let Some(ref mut registries) = package.publish_detail.cargo.registries
                 {
@@ -1215,15 +1318,15 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                 if self.options.check_publish {
                     match package
                         .check_publishable(
-                            self.options.skip_npm,
+                            self.options.skip_npm || cargo_only,
                             &npm,
                             self.options.skip_cargo,
                             &self.crate_checker,
                             self.options.autopublish_cargo,
-                            self.options.skip_docker,
+                            self.options.skip_docker || cargo_only,
                             &mut docker,
-                            self.options.skip_binary,
-                            self.options.skip_s3,
+                            self.options.skip_binary || cargo_only,
+                            self.options.skip_s3 || cargo_only,
                             &binary_store,
                             self.options.force_publish,
                         )
@@ -1237,7 +1340,7 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                                 package.package.clone(),
                                 e
                             );
-                            if self.options.fail_unit_error {
+                            if self.options.fail_unit_error || self.options.fail_cargo_check_error {
                                 anyhow::bail!(error_msg)
                             } else {
                                 tracing::warn!("{}", error_msg);
@@ -1248,6 +1351,14 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                 }
                 if let Some(ref target) = self.common_options.cargo_target_registry {
                     package.publish_detail.cargo.filter_target_registry(target);
+                }
+
+                if cargo_only {
+                    package.publish_detail.docker.publish = false;
+                    package.publish_detail.npm_napi.publish = false;
+                    package.publish_detail.binary.publish = false;
+                    package.publish_detail.nix_binary.publish = false;
+                    package.publish_detail.s3.publish = false;
                 }
 
                 package.publish = vec![
@@ -1264,6 +1375,7 @@ impl<'a, C: CrateChecker> WorkspaceChecker<'a, C> {
                 // If we are in a tag, we are only looking for the packages that build a launcher or installer. Otherwise, we are looking at all the packages
                 let package_key = package.package.clone();
                 if package.publish
+                    && !cargo_only
                     && let Ok(env_string) = std::env::var("GITHUB_REF")
                 {
                     // Regarding installer and launcher, we need to check the tag of their counterpart
@@ -1433,7 +1545,7 @@ pub async fn check_workspace<C: CrateChecker + Default>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Once;
 
     use crate::{
@@ -1776,6 +1888,310 @@ mod tests {
             .map(|p| (p.package.clone(), p.publish))
             .collect();
         assert_eq!(expected_publish_status, actual_publish_status);
+    }
+
+    #[tokio::test]
+    async fn test_publish_all_marked_cargo_adds_roots_and_dependency_closure_for_target_registry() {
+        init_crypto_provider();
+        let ws = create_complex_workspace(true);
+        let marked_manifest = ws.join("crates_g").join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&marked_manifest).unwrap();
+        std::fs::write(
+            &marked_manifest,
+            format!(
+                "{manifest}\n[package.metadata.fslabs.publish.docker]\npublish = true\nrepository = \"example.invalid\"\n"
+            ),
+        )
+        .unwrap();
+
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_d__crates_e".to_string()],
+            cargo_target_registry: Some("fake-registry".to_string()),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new()
+            .with_check_publish(true)
+            .with_publish_all_marked_cargo(true)
+            .with_release_discovery(true)
+            .with_fail_cargo_check_error(true);
+
+        let mut crate_checker = MockCargo::new();
+        crate_checker
+            .expect_add_registry()
+            .times(1)
+            .withf(|registry, _| registry == "fake-registry")
+            .returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .times(4)
+            .withf(|registry, _, _| registry == "fake-registry")
+            .returning(|_, _, _| Ok(false));
+
+        let results =
+            WorkspaceChecker::new(&common_options, &check_workspace_options, ws, crate_checker)
+                .check_workspace()
+                .await
+                .unwrap();
+
+        let cargo_selected = results
+            .members
+            .values()
+            .filter(|package| package.cargo_selected)
+            .map(|package| package.package.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            cargo_selected,
+            HashSet::from([
+                "crates_g".to_string(),
+                "workspace_a__crates_a".to_string(),
+                "workspace_a__crates_b".to_string(),
+                "workspace_d__crates_e".to_string(),
+            ])
+        );
+
+        for package in results
+            .members
+            .values()
+            .filter(|package| package.cargo_selected)
+        {
+            assert_eq!(
+                package.publish_detail.cargo.registries,
+                Some(HashSet::from(["fake-registry".to_string()]))
+            );
+        }
+        let cargo_only = results
+            .members
+            .values()
+            .filter(|package| package.cargo_only)
+            .map(|package| package.package.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            cargo_only,
+            HashSet::from([
+                "crates_g".to_string(),
+                "workspace_a__crates_a".to_string(),
+                "workspace_a__crates_b".to_string(),
+            ])
+        );
+        let marked_root = results
+            .members
+            .values()
+            .find(|package| package.package == "crates_g")
+            .unwrap();
+        assert!(marked_root.cargo_root);
+        assert!(!marked_root.publish_detail.docker.publish);
+
+        let tag_selected = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_d__crates_e")
+            .unwrap();
+        assert!(tag_selected.cargo_selected);
+        assert!(!tag_selected.cargo_only);
+
+        let shared_dependency = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_a__crates_a")
+            .unwrap();
+        assert!(shared_dependency.cargo_selected);
+        assert!(shared_dependency.cargo_only);
+    }
+
+    #[tokio::test]
+    async fn test_marked_cargo_root_missing_target_registry_fails_with_package_name() {
+        init_crypto_provider();
+        let ws = create_complex_workspace(false);
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_d__crates_e".to_string()],
+            cargo_target_registry: Some("fsl".to_string()),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new()
+            .with_publish_all_marked_cargo(true)
+            .with_release_discovery(true);
+        let result = WorkspaceChecker::new(
+            &common_options,
+            &check_workspace_options,
+            ws,
+            MockCargo::new(),
+        )
+        .check_workspace()
+        .await;
+        let error = match result {
+            Ok(_) => panic!("missing target registry should fail release planning"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("crates_g"));
+        assert!(error.to_string().contains("Cargo registry fsl"));
+    }
+
+    #[tokio::test]
+    async fn test_docker_only_tag_root_does_not_expand_non_cargo_scope_to_marked_dependency() {
+        init_crypto_provider();
+        let ws = create_complex_workspace(false);
+        let marked_manifest = ws
+            .join("workspace_a")
+            .join("crates")
+            .join("crates_a")
+            .join("Cargo.toml");
+        let marked_content = std::fs::read_to_string(&marked_manifest).unwrap();
+        std::fs::write(
+            &marked_manifest,
+            format!(
+                "{marked_content}\n[package.metadata.fslabs.publish.cargo]\npublish = true\n\n[package.metadata.fslabs.publish.docker]\npublish = true\nrepository = \"example.invalid\"\n"
+            ),
+        )
+        .unwrap();
+        let tag_manifest = ws
+            .join("workspace_d")
+            .join("crates")
+            .join("crates_e")
+            .join("Cargo.toml");
+        let tag_content = std::fs::read_to_string(&tag_manifest).unwrap();
+        std::fs::write(
+            &tag_manifest,
+            format!(
+                "{tag_content}\n[package.metadata.fslabs.publish.docker]\npublish = true\nrepository = \"example.invalid\"\n"
+            ),
+        )
+        .unwrap();
+
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_d__crates_e".to_string()],
+            cargo_target_registry: Some("fake-registry".to_string()),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new()
+            .with_publish_all_marked_cargo(true)
+            .with_release_discovery(true);
+        let mut crate_checker = MockCargo::new();
+        crate_checker
+            .expect_add_registry()
+            .times(1)
+            .withf(|registry, _| registry == "fake-registry")
+            .returning(|_, _| Ok(()));
+
+        let results =
+            WorkspaceChecker::new(&common_options, &check_workspace_options, ws, crate_checker)
+                .check_workspace()
+                .await
+                .unwrap();
+
+        let tag_root = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_d__crates_e")
+            .unwrap();
+        assert!(!tag_root.cargo_only);
+        assert!(tag_root.publish_detail.docker.publish);
+
+        let marked_dependency = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_a__crates_a")
+            .unwrap();
+        assert!(marked_dependency.cargo_selected);
+        assert!(marked_dependency.cargo_only);
+        assert!(!marked_dependency.publish_detail.docker.publish);
+    }
+
+    #[tokio::test]
+    async fn test_cargo_tag_root_keeps_shared_marked_dependency_in_normal_scope() {
+        init_crypto_provider();
+        let ws = create_complex_workspace(false);
+        let tag_manifest = ws
+            .join("workspace_d")
+            .join("crates")
+            .join("crates_e")
+            .join("Cargo.toml");
+        let tag_content = std::fs::read_to_string(&tag_manifest).unwrap();
+        std::fs::write(
+            &tag_manifest,
+            format!("{tag_content}\n[package.metadata.fslabs.publish.cargo]\npublish = true\n"),
+        )
+        .unwrap();
+
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["workspace_d__crates_e".to_string()],
+            cargo_target_registry: Some("fake-registry".to_string()),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new()
+            .with_publish_all_marked_cargo(true)
+            .with_release_discovery(true);
+        let mut crate_checker = MockCargo::new();
+        crate_checker
+            .expect_add_registry()
+            .times(1)
+            .withf(|registry, _| registry == "fake-registry")
+            .returning(|_, _| Ok(()));
+
+        let results =
+            WorkspaceChecker::new(&common_options, &check_workspace_options, ws, crate_checker)
+                .check_workspace()
+                .await
+                .unwrap();
+
+        let tag_root = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_d__crates_e")
+            .unwrap();
+        assert!(!tag_root.cargo_only);
+
+        let shared_dependency = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_a__crates_a")
+            .unwrap();
+        assert!(shared_dependency.cargo_selected);
+        assert!(!shared_dependency.cargo_only);
+
+        let metadata_only_dependency = results
+            .members
+            .values()
+            .find(|package| package.package == "workspace_a__crates_b")
+            .unwrap();
+        assert!(metadata_only_dependency.cargo_selected);
+        assert!(metadata_only_dependency.cargo_only);
+    }
+
+    #[tokio::test]
+    async fn test_publish_plan_fails_when_cargo_registry_check_fails() {
+        init_crypto_provider();
+        let ws = create_complex_workspace(false);
+        let common_options = PackageRelatedOptions {
+            whitelist: vec!["crates_g".to_string()],
+            cargo_target_registry: Some("fake-registry".to_string()),
+            ..Default::default()
+        };
+        let check_workspace_options = Options::new()
+            .with_check_publish(true)
+            .with_fail_cargo_check_error(true);
+        let mut crate_checker = MockCargo::new();
+        crate_checker
+            .expect_add_registry()
+            .times(1)
+            .withf(|registry, _| registry == "fake-registry")
+            .returning(|_, _| Ok(()));
+        crate_checker
+            .expect_check_crate_exists()
+            .times(1)
+            .returning(|_, _, _| Err(anyhow::anyhow!("registry unavailable")));
+
+        let result =
+            WorkspaceChecker::new(&common_options, &check_workspace_options, ws, crate_checker)
+                .check_workspace()
+                .await;
+        let error = match result {
+            Ok(_) => panic!("registry error should fail the publish plan"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Could not check package"));
+        assert!(error.to_string().contains("Could not check whether"));
     }
 
     #[tokio::test]
