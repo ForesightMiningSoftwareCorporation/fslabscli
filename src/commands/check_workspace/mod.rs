@@ -27,7 +27,7 @@ use crate::cli_args::{DiffOptions, DiffStrategy};
 use crate::commands::check_workspace::binary::BinaryStore;
 use crate::crate_graph::{CrateGraph, FeatureResolution};
 use crate::test_args::TestArgs;
-use crate::utils::cargo::CrateChecker;
+use crate::utils::cargo::{CRATES_IO, CrateChecker};
 use crate::utils::docker::{Docker, RealHttpClient, RealOciClient};
 use binary::PackageMetadataFslabsCiPublishBinary;
 use cargo::PackageMetadataFslabsCiPublishCargo;
@@ -362,7 +362,10 @@ impl Result {
             registries.insert(r.clone());
         }
         if publish.cargo.allow_public {
-            registries.insert("crates.io".to_string());
+            // Cargo's spelling, so this collapses with any `crates-io` already
+            // contributed by package.publish above rather than sitting beside it
+            // as a second, unusable entry.
+            registries.insert(CRATES_IO.to_string());
         }
         publish.cargo.registries = Some(registries);
 
@@ -899,11 +902,7 @@ fn find_dev_dep_missing_registry_warnings(
                     .cargo
                     .registries
                     .as_ref()
-                    .map(|regs| {
-                        regs.iter()
-                            .filter(|r| *r != "crates-io")
-                            .collect::<Vec<_>>()
-                    })
+                    .map(|regs| regs.iter().filter(|r| *r != CRATES_IO).collect::<Vec<_>>())
                     .unwrap_or_default();
 
                 if private_registries.is_empty() {
