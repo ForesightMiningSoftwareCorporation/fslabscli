@@ -23,6 +23,18 @@ use tokio::runtime::Handle;
 use toml_edit::{DocumentMut, Table, table, value};
 use walkdir::WalkDir;
 
+/// Cargo's own name for the public registry. It must be spelled exactly this
+/// way: it is what `cargo publish --registry` accepts and what `package.publish`
+/// is matched against. "crates.io" is not a legal registry name to cargo
+/// ("invalid character `.` in registry name"), so it can never be used here.
+pub const CRATES_IO: &str = "crates-io";
+
+/// crates.io's sparse index. Cargo knows this natively and no `[registries]`
+/// entry declares it, so nothing in the env or config chain can supply it.
+/// Defaulted rather than required so consumers do not have to configure the
+/// public registry to check whether a version is already on it.
+const CRATES_IO_INDEX: &str = "sparse+https://index.crates.io/";
+
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CargoRegistry {
     pub name: String,
@@ -89,6 +101,10 @@ impl CargoRegistry {
         };
         config.merge(&CargoRegistry::new_from_env(name.clone()));
         config.merge(&CargoRegistry::new_from_config(name.clone()));
+        // Last, so an explicit argument, env var or config entry still wins.
+        if config.index.is_none() && config.name == CRATES_IO {
+            config.index = Some(CRATES_IO_INDEX.to_string());
+        }
         if fetch_index {
             config.fetch_index()?;
         }
@@ -104,7 +120,7 @@ impl CargoRegistry {
         let crate_url = env::var(format!("CARGO_REGISTRIES_{env_name}_CRATE_URL")).ok();
         let token = env::var(format!("CARGO_REGISTRIES_{env_name}_TOKEN")).ok();
         let user_agent = match name.as_str() {
-            "crates.io" => None,
+            CRATES_IO => None,
             _ => env::var(format!("CARGO_REGISTRIES_{env_name}_USER_AGENT")).ok(),
         };
 
@@ -1552,6 +1568,52 @@ dependencies = [
         };
 
         assert!(registry.is_sparse());
+    }
+
+    /// Regression: crates-io has no `[registries]` entry to read an index from,
+    /// so before the default it resolved with `index: None`. `check_crate_exists`
+    /// then bailed with "unknown registry" / no index, the caller swallowed that
+    /// into `publish = false`, and a crate with `allow_public` silently never
+    /// reached crates.io.
+    #[test]
+    fn test_crates_io_defaults_to_its_sparse_index() {
+        let registry =
+            CargoRegistry::new(CRATES_IO.to_string(), None, None, None, None, None, false).unwrap();
+
+        assert_eq!(registry.index.as_deref(), Some(CRATES_IO_INDEX));
+        assert!(
+            registry.is_sparse(),
+            "existence checks take the sparse path, so the default must be a sparse URL"
+        );
+    }
+
+    #[test]
+    fn test_explicit_index_beats_the_crates_io_default() {
+        let registry = CargoRegistry::new(
+            CRATES_IO.to_string(),
+            Some("sparse+https://mirror.example/".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            registry.index.as_deref(),
+            Some("sparse+https://mirror.example/")
+        );
+    }
+
+    /// Cargo rejects a registry name containing `.`, so this constant is what
+    /// makes `cargo publish --registry` and `package.publish` matching work.
+    #[test]
+    fn test_crates_io_name_is_a_legal_cargo_registry_name() {
+        assert!(
+            !CRATES_IO.contains('.'),
+            "cargo: invalid character `.` in registry name"
+        );
     }
 
     #[test]
