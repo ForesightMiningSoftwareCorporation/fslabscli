@@ -389,6 +389,12 @@ pub trait CrateChecker {
         version: String,
     ) -> anyhow::Result<bool>;
 
+    async fn check_crate_name_exists(
+        &self,
+        registry_name: String,
+        name: String,
+    ) -> anyhow::Result<bool>;
+
     fn add_registry(&mut self, registry_name: String, fetch_indexes: bool) -> anyhow::Result<()>;
 }
 
@@ -418,6 +424,100 @@ impl Cargo {
     pub fn http_client(&self) -> Option<&HyperClient<HttpsConnector<HttpConnector>, Empty<Bytes>>> {
         self.client.as_ref()
     }
+
+    async fn sparse_index_body(
+        &self,
+        registry_name: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let registry = self
+            .registries
+            .get(registry_name)
+            .ok_or_else(|| anyhow::anyhow!("unknown registry {registry_name}"))?;
+        let index = registry
+            .index
+            .as_ref()
+            .context("Cannot check crate existence without index")?;
+        let base_url = index
+            .strip_prefix("sparse+")
+            .context("Crate existence checks require a sparse registry index")?;
+        let base_url = if base_url.ends_with('/') {
+            base_url.to_string()
+        } else {
+            format!("{base_url}/")
+        };
+        let package_dir = get_package_file_dir(name)?;
+        let url: Uri = format!("{base_url}{package_dir}/{name}").parse()?;
+        let client = self
+            .client
+            .as_ref()
+            .context("HTTP client required for sparse registry")?;
+
+        let mut last_error = None;
+        for attempt in 1..=3u32 {
+            let mut req_builder = Request::builder().method(Method::GET).uri(url.clone());
+            if let Some(token) = &registry.token {
+                req_builder = req_builder.header("Authorization", token);
+            }
+            if let Some(user_agent) = &registry.user_agent {
+                req_builder = req_builder.header("User-Agent", user_agent);
+            }
+            let req = req_builder.body(Empty::default())?;
+
+            match client.request(req).await {
+                Ok(res) => {
+                    if res.status().as_u16() == 404 {
+                        return Ok(None);
+                    }
+                    if res.status().as_u16() == 429 || res.status().is_server_error() {
+                        last_error = Some(format!("HTTP {}", res.status()));
+                        if attempt < 3 {
+                            tracing::warn!(
+                                crate_name = %name,
+                                attempt,
+                                status = %res.status(),
+                                "sparse registry request failed, retrying"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(attempt as u64))
+                                .await;
+                            continue;
+                        }
+                        break;
+                    }
+                    if res.status().as_u16() >= 400 {
+                        anyhow::bail!(
+                            "Failed to fetch crate index for {name}: HTTP {}",
+                            res.status()
+                        );
+                    }
+                    let body = res
+                        .into_body()
+                        .collect()
+                        .await
+                        .context("Could not get body from sparse registry")?
+                        .to_bytes();
+                    return Ok(Some(String::from_utf8_lossy(&body).to_string()));
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    if attempt < 3 {
+                        tracing::warn!(
+                            crate_name = %name,
+                            attempt,
+                            error = %last_error.as_deref().unwrap_or_default(),
+                            "sparse registry request failed, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                    }
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Could not fetch from sparse registry after 3 attempts: {url}"
+        ))
+        .with_context(|| format!("last error: {}", last_error.unwrap_or_default()))
+    }
 }
 
 pub fn get_package_file_dir(package_name: &str) -> anyhow::Result<String> {
@@ -443,6 +543,22 @@ pub struct IndexPackageVersion {
     pub checksum: Option<String>,
 }
 
+fn index_has_package_name(body: &str, expected_name: &str) -> anyhow::Result<bool> {
+    let mut found = false;
+    for line in body.lines() {
+        let package: IndexPackageVersion = serde_json::from_str(line)
+            .with_context(|| format!("Failed to parse JSON line for {expected_name}"))?;
+        if package.name != expected_name {
+            anyhow::bail!(
+                "Registry index for {expected_name} returned package {}",
+                package.name
+            );
+        }
+        found = true;
+    }
+    Ok(found)
+}
+
 impl CrateChecker for Cargo {
     async fn check_crate_exists(
         &self,
@@ -456,106 +572,55 @@ impl CrateChecker for Cargo {
             .ok_or_else(|| anyhow::anyhow!("unknown registry"))?;
 
         if registry.is_sparse() {
-            let index = registry
-                .index
-                .as_ref()
-                .context("Cannot check crate existence without index")?;
-            let base_url = index
-                .strip_prefix("sparse+")
-                .context("Invalid sparse index URL")?;
-
-            // Catches URL construction footgun that leads to strange errors.
-            let base_url = if base_url.ends_with('/') {
-                base_url
-            } else {
-                &format!("{}/", base_url)
+            let Some(body) = self.sparse_index_body(&registry_name, &name).await? else {
+                return Ok(false);
             };
-
-            let package_dir = get_package_file_dir(&name)?;
-            let url: Uri = format!("{}{}/{}", base_url, package_dir, name).parse()?;
-
-            let client = self
-                .client
-                .as_ref()
-                .context("HTTP client required for sparse registry")?;
-
-            let mut last_err = None;
-            for attempt in 1..=3u32 {
-                // Rebuild the request on each attempt — hyper consumes it on send.
-                let mut req_builder = Request::builder().method(Method::GET).uri(url.clone());
-                if let Some(token) = &registry.token {
-                    req_builder = req_builder.header("Authorization", token);
-                }
-                if let Some(user_agent) = &registry.user_agent {
-                    req_builder = req_builder.header("User-Agent", user_agent);
-                }
-                let req = req_builder.body(Empty::default())?;
-
-                match client.request(req).await {
-                    Ok(res) => {
-                        if res.status().as_u16() == 404 {
-                            return Ok(false);
-                        }
-
-                        if res.status().as_u16() >= 400 {
-                            anyhow::bail!(
-                                "Failed to fetch crate index for {}: HTTP {}",
-                                name,
-                                res.status()
-                            );
-                        }
-
-                        let body = res
-                            .into_body()
-                            .collect()
-                            .await
-                            .context("Could not get body from sparse registry")?
-                            .to_bytes();
-
-                        let body_str = String::from_utf8_lossy(&body);
-
-                        for line in body_str.lines() {
-                            let pkg_version: IndexPackageVersion = serde_json::from_str(line)
-                                .with_context(|| {
-                                    format!("Failed to parse JSON line for {}", name)
-                                })?;
-
-                            if pkg_version.version == version && !pkg_version.yanked {
-                                return Ok(true);
-                            }
-                        }
-
-                        return Ok(false);
-                    }
-                    Err(e) => {
-                        last_err = Some(e);
-                        if attempt < 3 {
-                            tracing::warn!(
-                                crate_name = %name,
-                                attempt = attempt,
-                                error = %last_err.as_ref().unwrap(),
-                                "sparse registry request failed, retrying"
-                            );
-                            tokio::time::sleep(std::time::Duration::from_secs(attempt as u64))
-                                .await;
-                        }
-                    }
+            for line in body.lines() {
+                let package: IndexPackageVersion = serde_json::from_str(line)
+                    .with_context(|| format!("Failed to parse JSON line for {name}"))?;
+                if package.version == version && !package.yanked {
+                    return Ok(true);
                 }
             }
-
-            return Err(anyhow::anyhow!(
-                "Could not fetch from sparse registry after 3 attempts: {}",
-                url
-            ))
-            .with_context(|| {
-                format!(
-                    "last error: {}",
-                    last_err.map(|e| e.to_string()).unwrap_or_default()
-                )
-            });
+            return Ok(false);
         }
 
         Ok(false)
+    }
+
+    async fn check_crate_name_exists(
+        &self,
+        registry_name: String,
+        name: String,
+    ) -> anyhow::Result<bool> {
+        let registry = self
+            .registries
+            .get(&registry_name)
+            .ok_or_else(|| anyhow::anyhow!("unknown registry {registry_name}"))?;
+        if registry.is_sparse() {
+            let Some(body) = self.sparse_index_body(&registry_name, &name).await? else {
+                return Ok(false);
+            };
+            return index_has_package_name(&body, &name);
+        }
+
+        let local_index_path = registry
+            .local_index_path
+            .as_ref()
+            .context("Cannot check crate existence in an unfetched registry")?;
+        let package_path = local_index_path
+            .join(get_package_file_dir(&name)?)
+            .join(&name);
+        let file = match File::open(package_path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let body = BufReader::new(file)
+            .lines()
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n");
+        index_has_package_name(&body, &name)
     }
 
     fn add_registry(&mut self, registry_name: String, fetch_indexes: bool) -> anyhow::Result<()> {
@@ -1017,6 +1082,12 @@ pub(crate) mod tests {
                 _version: String,
             ) -> anyhow::Result<bool>;
 
+            async fn check_crate_name_exists(
+                &self,
+                _registry_name: String,
+                _name: String,
+            ) -> anyhow::Result<bool>;
+
             fn add_registry(
                 &mut self,
                 _registry_name: String,
@@ -1027,6 +1098,28 @@ pub(crate) mod tests {
 
     use super::*;
     use std::fs;
+
+    #[test]
+    fn crate_name_exists_when_all_versions_are_yanked() {
+        let body = r#"{"name":"example","vers":"1.0.0","yanked":true,"cksum":"abc"}"#;
+        assert!(index_has_package_name(body, "example").unwrap());
+    }
+
+    #[test]
+    fn empty_index_means_crate_name_is_missing() {
+        assert!(!index_has_package_name("", "example").unwrap());
+    }
+
+    #[test]
+    fn mismatched_index_package_name_fails_closed() {
+        let body = r#"{"name":"other","vers":"1.0.0","yanked":false,"cksum":"abc"}"#;
+        let error = index_has_package_name(body, "example").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Registry index for example returned package other"
+        );
+    }
+
     #[test]
     fn test_publish_key_replaced_if_present() {
         let original_registry = CargoRegistry::new(

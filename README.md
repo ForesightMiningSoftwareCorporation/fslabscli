@@ -73,6 +73,30 @@ Give each job its own `--check-name` (Bazel defaults to
 one would overwrite each other's findings. `--reproduce` and `--rerun-job` set
 the corresponding sections of the Details page.
 
+## Cargo publish policy
+
+`fslabscli check-cargo-publish-policy` compares committed Cargo manifests at
+`PULL_BASE_SHA` and `PULL_PULL_SHA`. For a pull request, `PULL_PULL_SHA` must
+resolve to the prospective merge commit rather than the branch head. This
+keeps crates added to the current base visible when an older branch is merged.
+
+- `--check approval` fails when a crate is newly added with
+  `[package.metadata.fslabs.publish.cargo] publish = true`, or changes from
+  missing/false to true, unless `PULL_REQUEST_LABELS` contains `add-crate`.
+- `--check registry` fails when a crate marked on both the pull request base
+  and head does not exist in `--cargo-target-registry` by name. Removing or
+  unmarking an unpublished crate remains possible as a recovery change.
+- `--check all` runs both checks and is the default.
+
+The command reads manifests directly from Git objects and never publishes.
+Normal version changes to an already marked crate do not require `add-crate`.
+Publication remains release-tag-driven. If a new crate depends on an
+unpublished local crate version, the release plan includes that exact version
+and publishes it before the new crate. If the dependency's version already
+exists, registry users receive that published artifact; unpublished source
+changes with the same version are not distributed. Pull requests and ordinary
+main merges publish nothing.
+
 ## Release Process
 
 **Version source of truth:** `Cargo.toml`
