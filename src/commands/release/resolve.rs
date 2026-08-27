@@ -218,11 +218,25 @@ pub async fn run(options: &Options) -> anyhow::Result<ResolveResult> {
         );
     };
 
-    // Step 2: the manifest, from the base the channels document names.
-    let manifest_url = format!(
-        "{}/{}/{}/manifest.json",
-        channels.manifest_base, options.app, version
-    );
+    // Step 2: the manifest, from the CLIENT'S OWN production base, never from
+    // `channels.manifest_base`.
+    //
+    // channels.json is written by the promotion credential, whose whole point
+    // is that it cannot write artifacts. Building the manifest URL from a field
+    // inside that document hands it exactly that power: point manifest_base at
+    // any reachable host and every digest check downstream is satisfied against
+    // the attacker's own manifest, while a `"kind": "authenticode"` entry skips
+    // client signature verification altogether. manifest_base stays in the
+    // contract as informational only.
+    let manifest_base = format!("{}/{}", options.base_url, options.prod_bucket);
+    if channels.manifest_base != manifest_base {
+        tracing::warn!(
+            "channels.json manifest_base is {} but resolution uses {manifest_base}; \
+             the field is informational and is not trusted for resolution",
+            channels.manifest_base
+        );
+    }
+    let manifest_url = format!("{manifest_base}/{}/{}/manifest.json", options.app, version);
     let bytes = http_get(&manifest_url)
         .await
         .with_context(|| format!("cannot fetch {manifest_url}"))?;

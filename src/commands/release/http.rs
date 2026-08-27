@@ -22,6 +22,19 @@ pub(crate) type Client = HyperClient<HttpsConnector<HttpConnector>, Full<Bytes>>
 
 pub(crate) const MAX_REDIRECTS: usize = 5;
 
+/// A non-2xx response, carrying the status so callers can branch on it.
+///
+/// Detect with `err.downcast_ref::<HttpStatus>()`. Callers that must tell "the
+/// object is not there" from "we could not find out" need the code itself: a
+/// substring match on the message silently changes meaning the next time the
+/// wording moves, and the two answers are not equally safe to guess at.
+#[derive(Debug, thiserror::Error)]
+#[error("GET {url} returned {status}")]
+pub(crate) struct HttpStatus {
+    pub(crate) url: String,
+    pub(crate) status: StatusCode,
+}
+
 pub(crate) fn client() -> anyhow::Result<Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let tls_config = rustls::ClientConfig::builder()
@@ -93,7 +106,11 @@ async fn get_response(
             continue;
         }
         if !res.status().is_success() {
-            bail!("GET {current} returned {}", res.status());
+            return Err(HttpStatus {
+                url: current.to_string(),
+                status: res.status(),
+            }
+            .into());
         }
         return Ok(res);
     }

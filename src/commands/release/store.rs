@@ -178,6 +178,12 @@ impl ReleaseStore {
     /// version forever. A version prefix with artifacts but no manifest is
     /// invisible, because the manifest is the commit point.
     pub async fn assert_monotonic(&self, app: &str, version: &str) -> anyhow::Result<Vec<String>> {
+        // Parse the candidate BEFORE the comparison loop. Otherwise the very
+        // first publication of an app skips validation entirely (the loop body
+        // never runs), so an unparseable version commits once and then refuses
+        // every subsequent production publish forever, because `semver_gt`
+        // errors on the stored value.
+        Version::parse(version).with_context(|| format!("unparseable version: {version}"))?;
         let mut published = Vec::new();
         let entries = self
             .op
@@ -206,6 +212,28 @@ impl ReleaseStore {
         Ok(published)
     }
 
+    /// Attempt a write with a deliberately stale ETag. Returns `Ok(true)` when
+    /// the store REFUSED it, which is the behaviour publication depends on.
+    ///
+    /// Exists solely for `probe-store`: the positive CAS path cannot detect a
+    /// store that ignores `If-Match` on PUT, because ignoring the precondition
+    /// still produces a successful update. Without this, the probe reports
+    /// conditional writes as supported while lost-update protection on
+    /// index.json and channels.json is silently absent.
+    pub async fn refuses_stale_if_match(
+        &self,
+        key: &str,
+        stale_etag: &str,
+        data: Vec<u8>,
+    ) -> anyhow::Result<bool> {
+        match self.op.write_with(key, data).if_match(stale_etag).await {
+            Ok(_) => Ok(false),
+            Err(e) if e.kind() == ErrorKind::ConditionNotMatch => Ok(true),
+            Err(e) => Err(e)
+                .with_context(|| format!("stale-if-match probe on s3://{}/{key}", self.bucket)),
+        }
+    }
+
     /// Re-read one object and compare its digest. Used between the artifact
     /// writes and the manifest write, before any manifest exists.
     pub async fn verify_key(&self, key: &str, want_sha256: &str) -> anyhow::Result<()> {
@@ -220,7 +248,11 @@ impl ReleaseStore {
     /// Turn a manifest artifact URL back into this bucket's object key.
     pub fn key_from_url<'a>(&self, url: &'a str) -> anyhow::Result<&'a str> {
         let marker = format!("/{}/", self.bucket);
-        match url.find(&marker) {
+        // Last occurrence, not first: a public base URL that itself contains the
+        // bucket name yields a doubled marker, and taking the leftmost match
+        // returns a key with the bucket prefixed. That surfaces as a read-back
+        // failure at publish time, AFTER every artifact is already immutable.
+        match url.rfind(&marker) {
             Some(idx) => Ok(&url[idx + marker.len()..]),
             None => bail!(
                 "artifact url {url} does not reference bucket {}",
@@ -233,6 +265,38 @@ impl ReleaseStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store(bucket: &str) -> ReleaseStore {
+        // No I/O: key_from_url is pure string work over the bucket name.
+        ReleaseStore::new(
+            Operator::new(opendal::services::Memory::default())
+                .unwrap()
+                .finish(),
+            bucket,
+        )
+    }
+
+    #[test]
+    fn key_from_url_takes_the_last_bucket_segment() {
+        let s = store("fsl-releases");
+        assert_eq!(
+            s.key_from_url("https://api.s3.fsl.dev/fsl-releases/app/1.0.0/a.deb")
+                .unwrap(),
+            "app/1.0.0/a.deb"
+        );
+        // A public base URL that itself contains the bucket name. Taking the
+        // FIRST match returned "fsl-releases/app/1.0.0/a.deb", which only
+        // surfaced as a read-back failure after every artifact was immutable.
+        assert_eq!(
+            s.key_from_url("https://api.s3.fsl.dev/fsl-releases/fsl-releases/app/1.0.0/a.deb")
+                .unwrap(),
+            "app/1.0.0/a.deb"
+        );
+        assert!(
+            s.key_from_url("https://api.s3.fsl.dev/other/app/a.deb")
+                .is_err()
+        );
+    }
 
     #[test]
     fn semver_ordering_is_real_precedence() {
