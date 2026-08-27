@@ -8,6 +8,7 @@ pub mod generate_wix;
 pub mod generate_workflow;
 pub mod github_app_token;
 pub mod publish;
+pub mod release;
 pub mod release_utils;
 #[cfg(test)]
 pub mod release_utils_tests;
