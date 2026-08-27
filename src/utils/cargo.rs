@@ -35,6 +35,13 @@ pub const CRATES_IO: &str = "crates-io";
 /// public registry to check whether a version is already on it.
 const CRATES_IO_INDEX: &str = "sparse+https://index.crates.io/";
 
+/// Index to fall back on when nothing in the env or config chain supplies one.
+/// Kept separate from `CargoRegistry::new` so it is testable without depending
+/// on the ambient `CARGO_REGISTRIES_*` vars, which CI does set.
+fn default_index(registry_name: &str) -> Option<&'static str> {
+    (registry_name == CRATES_IO).then_some(CRATES_IO_INDEX)
+}
+
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CargoRegistry {
     pub name: String,
@@ -102,8 +109,8 @@ impl CargoRegistry {
         config.merge(&CargoRegistry::new_from_env(name.clone()));
         config.merge(&CargoRegistry::new_from_config(name.clone()));
         // Last, so an explicit argument, env var or config entry still wins.
-        if config.index.is_none() && config.name == CRATES_IO {
-            config.index = Some(CRATES_IO_INDEX.to_string());
+        if config.index.is_none() {
+            config.index = default_index(&config.name).map(str::to_string);
         }
         if fetch_index {
             config.fetch_index()?;
@@ -1571,22 +1578,34 @@ dependencies = [
     }
 
     /// Regression: crates-io has no `[registries]` entry to read an index from,
-    /// so before the default it resolved with `index: None`. `check_crate_exists`
-    /// then bailed with "unknown registry" / no index, the caller swallowed that
-    /// into `publish = false`, and a crate with `allow_public` silently never
-    /// reached crates.io.
+    /// so with nothing in the env chain it resolved with `index: None`, and
+    /// `check_crate_exists` had no index to query.
+    ///
+    /// Asserted on `default_index` rather than on a constructed registry: `new`
+    /// merges `CARGO_REGISTRIES_CRATES_IO_INDEX` first, and CI sets it, so the
+    /// same assertion through `new` passes locally and fails there.
     #[test]
     fn test_crates_io_defaults_to_its_sparse_index() {
-        let registry =
-            CargoRegistry::new(CRATES_IO.to_string(), None, None, None, None, None, false).unwrap();
+        assert_eq!(default_index(CRATES_IO), Some(CRATES_IO_INDEX));
 
-        assert_eq!(registry.index.as_deref(), Some(CRATES_IO_INDEX));
+        let registry = CargoRegistry {
+            name: CRATES_IO.to_string(),
+            index: Some(CRATES_IO_INDEX.to_string()),
+            ..Default::default()
+        };
         assert!(
             registry.is_sparse(),
             "existence checks take the sparse path, so the default must be a sparse URL"
         );
     }
 
+    #[test]
+    fn test_no_default_index_for_other_registries() {
+        assert_eq!(default_index("fsl"), None);
+    }
+
+    /// An explicitly passed index is never overwritten: `merge` only fills
+    /// fields that are still None, so this holds whatever the env supplies.
     #[test]
     fn test_explicit_index_beats_the_crates_io_default() {
         let registry = CargoRegistry::new(
