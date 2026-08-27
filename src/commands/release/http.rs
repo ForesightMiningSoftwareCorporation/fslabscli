@@ -5,14 +5,18 @@
 //! calls). One module means one TLS, redirect, and error behaviour to
 //! review.
 
+use std::io::Write;
+use std::path::Path;
+
 use anyhow::{Context, bail};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use hyper::{Method, Request};
+use hyper::{Method, Request, StatusCode};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use sha2::{Digest, Sha256};
 
 pub(crate) type Client = HyperClient<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
@@ -30,6 +34,35 @@ pub(crate) fn client() -> anyhow::Result<Client> {
         .enable_http1()
         .build();
     Ok(HyperClient::builder(TokioExecutor::new()).build(https))
+}
+
+/// One request, no redirect handling: record's API calls, where a redirect
+/// would be a misconfiguration, and callers that inspect the status
+/// themselves.
+pub(crate) async fn request(
+    client: &Client,
+    method: Method,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+) -> anyhow::Result<(StatusCode, Bytes)> {
+    let mut builder = Request::builder().method(method).uri(url);
+    for (name, value) in headers {
+        builder = builder.header(*name, value);
+    }
+    let req = builder.body(Full::new(Bytes::from(body)))?;
+    let res = client
+        .request(req)
+        .await
+        .with_context(|| format!("request to {url} failed"))?;
+    let status = res.status();
+    let bytes = res
+        .into_body()
+        .collect()
+        .await
+        .with_context(|| format!("could not read the response body from {url}"))?
+        .to_bytes();
+    Ok((status, bytes))
 }
 
 /// GET following up to [`MAX_REDIRECTS`] redirects (GitHub release downloads
@@ -70,4 +103,39 @@ async fn get_response(
 pub(crate) async fn get_bytes(client: &Client, url: &str) -> anyhow::Result<Vec<u8>> {
     let response = get_response(client, url).await?;
     Ok(response.into_body().collect().await?.to_bytes().to_vec())
+}
+
+/// Stream a GET straight to `path`, returning the sha256 of the bytes as
+/// written so verification covers the file on disk, not an in-memory copy.
+pub(crate) async fn get_to_file(client: &Client, url: &str, path: &Path) -> anyhow::Result<String> {
+    let response = get_response(client, url).await?;
+    let mut body = response.into_body();
+    let mut file =
+        std::fs::File::create(path).with_context(|| format!("cannot create {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.with_context(|| format!("GET {url}: body stream failed"))?;
+        if let Ok(data) = frame.into_data() {
+            file.write_all(&data)?;
+            hasher.update(&data);
+        }
+    }
+    file.flush()?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// HEAD, where a redirect counts as present: the semantics of
+/// `curl -fsSI` without `-L` (only >= 400 fails).
+pub(crate) async fn head_present(client: &Client, url: &str) -> bool {
+    let Ok(req) = Request::builder()
+        .method(Method::HEAD)
+        .uri(url)
+        .body(Full::new(Bytes::new()))
+    else {
+        return false;
+    };
+    match client.request(req).await {
+        Ok(res) => res.status().is_success() || res.status().is_redirection(),
+        Err(_) => false,
+    }
 }
