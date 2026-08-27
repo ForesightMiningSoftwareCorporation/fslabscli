@@ -10,6 +10,9 @@ use clap_mangen::Man;
 use utils::cargo::Cargo;
 
 use crate::commands::annotate::{Options as AnnotateOptions, annotate};
+use crate::commands::check_cargo_publish_policy::{
+    Options as CheckCargoPublishPolicyOptions, check_cargo_publish_policy,
+};
 use crate::commands::check_workspace::{Options as CheckWorkspaceOptions, check_workspace};
 use crate::commands::docker_build_push::{Options as DockerBuildPushOptions, docker_build_push};
 use crate::commands::download_artifacts::{
@@ -43,6 +46,7 @@ use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::fmt::format::{DefaultFields, Writer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod cargo_publish_policy;
 mod cli_args;
 mod commands;
 mod crate_graph;
@@ -127,6 +131,8 @@ enum Commands {
     DraftRelease(Box<DraftReleaseOptions>),
     /// Post build findings (logs, JUnit XML) as GitHub check-run annotations
     Annotate(Box<AnnotateOptions>),
+    /// Enforce Cargo publication approval and registry state
+    CheckCargoPublishPolicy(Box<CheckCargoPublishPolicyOptions>),
 
     // Packages Related Commands
     //
@@ -509,6 +515,11 @@ async fn run() -> anyhow::Result<String> {
         Commands::Annotate(options) => annotate(options, repo_root)
             .await
             .map(|r| display_results(cli.json, cli.pretty_print, r)),
+        Commands::CheckCargoPublishPolicy(options) => {
+            check_cargo_publish_policy(options, repo_root)
+                .await
+                .map(|r| display_results(cli.json, cli.pretty_print, r))
+        }
         Commands::FixLockFiles {
             common_options,
             options,
